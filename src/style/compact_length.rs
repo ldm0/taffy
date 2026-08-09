@@ -229,6 +229,8 @@ impl CompactLength {
     pub const FIT_CONTENT_PX_TAG: usize = 0b00010111;
     /// The tag indicating a fit-content value with percent limit
     pub const FIT_CONTENT_PERCENT_TAG: usize = 0b00011111;
+    /// The tag indicating the `content` flex-basis value
+    pub const CONTENT_TAG: usize = 0b00100111;
 }
 
 impl CompactLength {
@@ -264,6 +266,13 @@ impl CompactLength {
     #[inline(always)]
     pub const fn auto() -> Self {
         Self(CompactLengthInner::from_tag(Self::AUTO_TAG))
+    }
+
+    /// The flex basis should be derived from the item's content rather than its
+    /// preferred main size.
+    #[inline(always)]
+    pub const fn content() -> Self {
+        Self(CompactLengthInner::from_tag(Self::CONTENT_TAG))
     }
 
     /// The dimension as a fraction of the total available grid space (`fr` units in CSS)
@@ -359,6 +368,12 @@ impl CompactLength {
     #[inline(always)]
     pub fn is_auto(self) -> bool {
         self.tag() == Self::AUTO_TAG
+    }
+
+    /// Returns true if the value is the `content` flex-basis keyword.
+    #[inline(always)]
+    pub fn is_content(self) -> bool {
+        self.tag() == Self::CONTENT_TAG
     }
 
     /// Returns true if the value is min-content
@@ -530,6 +545,7 @@ impl<'de> serde::Deserialize<'de> for CompactLength {
                 | CompactLength::MAX_CONTENT_TAG
                 | CompactLength::FIT_CONTENT_PX_TAG
                 | CompactLength::FIT_CONTENT_PERCENT_TAG
+                | CompactLength::CONTENT_TAG
                 | CompactLength::FR_TAG
         ) {
             Ok(value)
