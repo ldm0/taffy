@@ -29,6 +29,12 @@ struct FlexItem {
 
     /// The base size of this item
     size: Size<Option<f32>>,
+    /// The preferred size before transferring a dimension through `aspect-ratio`
+    /// or applying a content-box padding/border adjustment.
+    ///
+    /// `flex-basis: content` must ignore a preferred main size, but it may use
+    /// an independently definite cross size with the intrinsic aspect ratio.
+    untransferred_size: Size<Option<f32>>,
     /// The minimum allowable size of this item
     min_size: Size<Option<f32>>,
     /// The maximum allowable size of this item
@@ -536,14 +542,18 @@ fn generate_anonymous_flex_items(
             let pb_sum = (padding + border).sum_axes();
             let box_sizing_adjustment =
                 if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
+            let untransferred_size =
+                child_style.size().maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis));
+            let size_for_aspect_ratio = if child_style.flex_basis().is_content() {
+                untransferred_size.with_main(constants.dir, None)
+            } else {
+                untransferred_size
+            };
             FlexItem {
                 node: child,
                 order: index as u32,
-                size: child_style
-                    .size()
-                    .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(aspect_ratio)
-                    .maybe_add(box_sizing_adjustment),
+                size: size_for_aspect_ratio.maybe_apply_aspect_ratio(aspect_ratio).maybe_add(box_sizing_adjustment),
+                untransferred_size,
                 min_size: child_style
                     .min_size()
                     .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
@@ -672,6 +682,14 @@ fn determine_flex_base_size(
 
     for child in flex_items.iter_mut() {
         let child_style = tree.get_flexbox_child_style(child.node);
+        let flex_basis_style = child_style.flex_basis();
+        let flex_basis_is_content = flex_basis_style.is_content();
+        let aspect_ratio = child_style.aspect_ratio();
+        let box_sizing_adjustment = if child_style.box_sizing() == BoxSizing::ContentBox {
+            (child.padding + child.border).sum_axes()
+        } else {
+            Size::ZERO
+        };
 
         // Parent size for child sizing
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
@@ -703,7 +721,11 @@ fn determine_flex_base_size(
 
         // Known dimensions for child sizing
         let child_known_dimensions = {
-            let mut ckd = child.size.with_main(dir, None);
+            let mut ckd = if flex_basis_is_content {
+                child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
+            } else {
+                child.size.with_main(dir, None)
+            };
             // Clamp the definite cross size by the cross min/max sizes so that sizes
             // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
             // are based on the used cross size.
@@ -725,18 +747,19 @@ fn determine_flex_base_size(
         };
 
         let container_width = constants.node_inner_size.main(dir);
-        let box_sizing_adjustment = if child_style.box_sizing() == BoxSizing::ContentBox {
-            let padding = child_style.padding().resolve_or_zero(container_width, |val, basis| tree.calc(val, basis));
-            let border = child_style.border().resolve_or_zero(container_width, |val, basis| tree.calc(val, basis));
-            (padding + border).sum_axes()
-        } else {
-            Size::ZERO
-        }
-        .main(dir);
-        let flex_basis = child_style
-            .flex_basis()
+        let flex_basis = flex_basis_style
             .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment);
+            .maybe_add(box_sizing_adjustment.main(dir));
+        let content_ratio_size = if flex_basis_is_content {
+            child_known_dimensions
+                .maybe_sub(box_sizing_adjustment)
+                .maybe_max(Size::ZERO)
+                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_add(box_sizing_adjustment)
+                .main(dir)
+        } else {
+            None
+        };
 
         drop(child_style);
 
@@ -748,9 +771,10 @@ fn determine_flex_base_size(
             //    then the flex base size is calculated from its inner
             //    cross size and the flex item’s intrinsic aspect ratio.
 
-            // Note: `child.size` has already been resolved against aspect_ratio in generate_anonymous_flex_items
-            // So B will just work here by using main_size without special handling for aspect_ratio
-            let main_size = child.size.main(dir);
+            // A `content` basis ignores a preferred main size. It can still use
+            // a main size transferred from an independently definite cross
+            // size (including an align-self stretch size) through aspect-ratio.
+            let main_size = if flex_basis_is_content { content_ratio_size } else { child.size.main(dir) };
             if let Some(flex_basis) = flex_basis.or(main_size) {
                 break 'flex_basis flex_basis;
             };

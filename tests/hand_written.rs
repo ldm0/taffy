@@ -3,6 +3,7 @@ mod hand_written {
     mod block_replaced;
     mod border_and_padding;
     mod caching;
+    mod flex_basis_content;
     mod floats;
     mod measure;
     mod min_max_overrides;
