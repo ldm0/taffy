@@ -291,6 +291,13 @@ impl Dimension {
         Self(CompactLength::auto())
     }
 
+    /// Derive the flex basis from the item's content, ignoring its preferred
+    /// main size. This value is only meaningful for [`Style::flex_basis`](crate::Style::flex_basis).
+    #[inline(always)]
+    pub const fn content() -> Self {
+        Self(CompactLength::content())
+    }
+
     /// A `calc()` value. The value passed here is treated as an opaque handle to
     /// the actual calc representation and may be a pointer, index, etc.
     ///
@@ -328,6 +335,12 @@ impl Dimension {
         self.0.is_auto()
     }
 
+    /// Returns true if this is the `content` flex-basis value.
+    #[inline(always)]
+    pub fn is_content(self) -> bool {
+        self.0.is_content()
+    }
+
     /// Get the raw `CompactLength` tag
     pub fn tag(self) -> usize {
         self.0.tag()
@@ -347,7 +360,13 @@ impl<'de> serde::Deserialize<'de> for Dimension {
     {
         let inner = CompactLength::deserialize(deserializer)?;
         // Note: validation intentionally excludes the CALC_TAG as deserializing calc() values is not supported
-        if matches!(inner.tag(), CompactLength::LENGTH_TAG | CompactLength::PERCENT_TAG | CompactLength::AUTO_TAG) {
+        if matches!(
+            inner.tag(),
+            CompactLength::LENGTH_TAG
+                | CompactLength::PERCENT_TAG
+                | CompactLength::AUTO_TAG
+                | CompactLength::CONTENT_TAG
+        ) {
             Ok(Self(inner))
         } else {
             Err(serde::de::Error::custom("Invalid tag"))
