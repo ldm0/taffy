@@ -14,6 +14,8 @@ use crate::{
     TextAlign,
 };
 
+use super::common::absolute::fit_content_width;
+
 #[cfg(feature = "float_layout")]
 use super::float::{ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 #[cfg(feature = "float_layout")]
@@ -1239,6 +1241,32 @@ fn perform_absolute_layout_on_absolute_children(
         if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
             let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
+            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        }
+
+        // If width is still auto then one or both horizontal insets are also auto. CSS 2.2
+        // 10.3.7 requires a shrink-to-fit width rather than the unconstrained content width.
+        // Account for the specified inset (or the static position when both are auto) and
+        // non-auto margins before clamping the available width between min/max-content.
+        if known_dimensions.width.is_none() {
+            let non_auto_margin_width = margin.left.unwrap_or(0.0) + margin.right.unwrap_or(0.0);
+            let static_position_in_area = item.static_position.x - area_offset.x;
+            let available_width = match (left, right) {
+                (Some(left), None) => area_width - left,
+                (None, Some(right)) => area_width - right,
+                (None, None) if direction.is_rtl() => static_position_in_area,
+                (None, None) => area_width - static_position_in_area,
+                (Some(_), Some(_)) => unreachable!("both insets already resolve auto width"),
+            } - non_auto_margin_width;
+            known_dimensions.width = Some(fit_content_width(
+                tree,
+                item.node_id,
+                known_dimensions,
+                area_size.map(Some),
+                AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                available_width,
+                SizingMode::ContentSize,
+            ));
             known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
         }
 
