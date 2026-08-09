@@ -15,6 +15,7 @@ use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
+use super::common::absolute::fit_content_width;
 use super::common::alignment::apply_alignment_fallback;
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
@@ -2318,6 +2319,25 @@ fn perform_absolute_layout_on_absolute_children(
             let new_height_raw =
                 inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
+            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        }
+        if known_dimensions.width.is_none() {
+            let non_auto_margin_width = margin.left.unwrap_or(0.0) + margin.right.unwrap_or(0.0);
+            let available_width = match (left, right) {
+                (Some(left), None) => inset_relative_size.width - left,
+                (None, Some(right)) => inset_relative_size.width - right,
+                (None, None) => inset_relative_size.width,
+                (Some(_), Some(_)) => unreachable!("both insets already resolve auto width"),
+            } - non_auto_margin_width;
+            known_dimensions.width = Some(fit_content_width(
+                tree,
+                child,
+                known_dimensions,
+                constants.node_inner_size,
+                AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                available_width,
+                SizingMode::InherentSize,
+            ));
             known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
         }
         let measured_size = tree.measure_child_size_both(
