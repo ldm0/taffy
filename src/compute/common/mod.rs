@@ -1,4 +1,8 @@
 //! Generic code that is shared between multiple layout algorithms
+#[cfg(any(feature = "block_layout", feature = "flexbox"))]
+/// Shared sizing helpers for absolutely positioned boxes.
+pub(crate) mod absolute;
+
 pub(crate) mod alignment;
 
 #[cfg(feature = "content_size")]

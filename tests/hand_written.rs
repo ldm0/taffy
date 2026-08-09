@@ -1,4 +1,5 @@
 mod hand_written {
+    mod absolute_position;
     mod adversarial_styles;
     mod baseline;
     mod block_replaced;
