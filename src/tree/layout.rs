@@ -126,6 +126,14 @@ pub struct LayoutInput {
     ///   "The exact size of this node is WIDTHxHEIGHT. Please lay out your children"
     ///
     pub known_dimensions: Size<Option<f32>>,
+    /// Definite dimensions of this node which descendants may use as a percentage basis.
+    ///
+    /// This usually matches `known_dimensions`, but differs when a parent's final
+    /// used size is known without making the corresponding CSS size definite. For
+    /// example, an absolutely positioned auto-height box clamped by `min-height`
+    /// has a known final height, while percentage block-axis insets in its children
+    /// must remain unresolved.
+    pub definite_dimensions: Size<Option<f32>>,
     /// Parent size dimensions are intended to be used for percentage resolution.
     pub parent_size: Size<Option<f32>>,
     /// Available space represents an amount of space to layout into, and is used as a soft constraint
@@ -142,6 +150,7 @@ impl LayoutInput {
         run_mode: RunMode::PerformHiddenLayout,
         // The rest will be ignored
         known_dimensions: Size::NONE,
+        definite_dimensions: Size::NONE,
         parent_size: Size::NONE,
         available_space: Size::MAX_CONTENT,
         sizing_mode: SizingMode::InherentSize,
