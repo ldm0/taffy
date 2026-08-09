@@ -547,6 +547,10 @@ fn compute_inner(
 
     let container_percentage_resolution_height =
         known_dimensions.height.or(size.height.maybe_max(min_size.height)).or(min_size.height);
+    // Relative block-axis percentage insets only resolve against a definite
+    // containing-block height. A min-height may determine the eventual used
+    // height, but it does not make an otherwise-auto height definite.
+    let relative_inset_percentage_resolution_height = known_dimensions.height.or(size.height);
 
     // 3. Perform final item layout and return content height
     //
@@ -573,6 +577,7 @@ fn compute_inner(
         &mut items,
         container_outer_width,
         container_percentage_resolution_height,
+        relative_inset_percentage_resolution_height,
         content_box_inset,
         resolved_content_box_inset,
         resolved_border,
@@ -887,6 +892,7 @@ fn perform_final_layout_on_in_flow_children(
     items: &mut [BlockItem],
     container_outer_width: f32,
     container_percentage_resolution_height: Option<f32>,
+    relative_inset_percentage_resolution_height: Option<f32>,
     content_box_inset: Rect<f32>,
     resolved_content_box_inset: Rect<f32>,
     resolved_border: Rect<f32>,
@@ -900,6 +906,10 @@ fn perform_final_layout_on_in_flow_children(
     let container_percentage_resolution_height =
         container_percentage_resolution_height.maybe_sub(resolved_content_box_inset.vertical_axis_sum());
     let parent_size = Size { width: Some(container_inner_width), height: container_percentage_resolution_height };
+    let relative_inset_parent_size = Size {
+        width: Some(container_inner_width),
+        height: relative_inset_percentage_resolution_height.maybe_sub(resolved_content_box_inset.vertical_axis_sum()),
+    };
     // Vertical available space in block flow is indefinite, NOT a min-content
     // constraint: MaxContent is taffy's representation of "indefinite".
     // Passing MinContent here made every descendant grid believe it was being
@@ -1222,9 +1232,9 @@ fn perform_final_layout_on_in_flow_children(
             };
 
             // Resolve item inset
-            let inset = item.inset.zip_size(Size { width: container_inner_width, height: 0.0 }, |p, s| {
-                p.maybe_resolve(s, |val, basis| tree.calc(val, basis))
-            });
+            let inset = item
+                .inset
+                .zip_size(relative_inset_parent_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
             let inset_offset = Point {
                 x: if direction.is_rtl() {
                     inset.right.map(|x| -x).or(inset.left).unwrap_or(0.0)
@@ -1474,6 +1484,45 @@ fn perform_final_layout_on_in_flow_children(
     (inflow_content_size, content_height, first_child_top_margin_set, last_child_bottom_margin_set, first_baseline)
 }
 
+/// Resolve auto margins in one axis of an absolutely positioned box.
+///
+/// Auto margins only participate when both insets in the axis are definite.
+/// In the inline axis, negative free space is assigned to the non-dominant
+/// side so the direction's start edge remains visible. In the block axis it
+/// is shared equally, matching CSS Positioned Layout and browser behavior.
+#[inline]
+fn resolve_absolute_axis_margins(
+    margin: Line<Option<f32>>,
+    inset: Line<Option<f32>>,
+    area_size: f32,
+    box_size: f32,
+    share_negative_space: bool,
+    start_is_dominant: bool,
+) -> Line<f32> {
+    if inset.start.is_none() || inset.end.is_none() {
+        return Line { start: margin.start.unwrap_or(0.0), end: margin.end.unwrap_or(0.0) };
+    }
+
+    let free_space = area_size
+        - inset.start.unwrap()
+        - inset.end.unwrap()
+        - box_size
+        - margin.start.unwrap_or(0.0)
+        - margin.end.unwrap_or(0.0);
+
+    match (margin.start, margin.end) {
+        (Some(start), Some(end)) => Line { start, end },
+        (None, Some(end)) => Line { start: free_space, end },
+        (Some(start), None) => Line { start, end: free_space },
+        (None, None) if free_space > 0.0 || share_negative_space => {
+            let start = free_space / 2.0;
+            Line { start, end: free_space - start }
+        }
+        (None, None) if start_is_dominant => Line { start: 0.0, end: free_space },
+        (None, None) => Line { start: free_space, end: 0.0 },
+    }
+}
+
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
 fn perform_absolute_layout_on_absolute_children(
@@ -1579,76 +1628,27 @@ fn perform_absolute_layout_on_absolute_children(
             Line::FALSE,
         );
 
-        let non_auto_margin = Rect {
-            left: if left.is_some() { margin.left.unwrap_or(0.0) } else { 0.0 },
-            right: if right.is_some() { margin.right.unwrap_or(0.0) } else { 0.0 },
-            top: if top.is_some() { margin.top.unwrap_or(0.0) } else { 0.0 },
-            bottom: if bottom.is_some() { margin.bottom.unwrap_or(0.0) } else { 0.0 },
-        };
-
-        // Expand auto margins to fill available space
-        // https://www.w3.org/TR/CSS21/visudet.html#abs-non-replaced-width
-        let auto_margin = {
-            // Auto margins for absolutely positioned elements in block containers only resolve
-            // if inset is set. Otherwise they resolve to 0.
-            let absolute_auto_margin_space = Point {
-                x: right.map(|right| area_size.width - right - left.unwrap_or(0.0)).unwrap_or(final_size.width),
-                y: bottom.map(|bottom| area_size.height - bottom - top.unwrap_or(0.0)).unwrap_or(final_size.height),
-            };
-            let free_space = Size {
-                width: absolute_auto_margin_space.x - final_size.width - non_auto_margin.horizontal_axis_sum(),
-                height: absolute_auto_margin_space.y - final_size.height - non_auto_margin.vertical_axis_sum(),
-            };
-
-            let auto_margin_size = Size {
-                // If all three of 'left', 'width', and 'right' are 'auto': First set any 'auto' values for 'margin-left' and 'margin-right' to 0.
-                // Then, if the 'direction' property of the element establishing the static-position containing block is 'ltr' set 'left' to the
-                // static position and apply rule number three below; otherwise, set 'right' to the static position and apply rule number one below.
-                //
-                // If none of the three is 'auto': If both 'margin-left' and 'margin-right' are 'auto', solve the equation under the extra constraint
-                // that the two margins get equal values, unless this would make them negative, in which case when direction of the containing block is
-                // 'ltr' ('rtl'), set 'margin-left' ('margin-right') to zero and solve for 'margin-right' ('margin-left'). If one of 'margin-left' or
-                // 'margin-right' is 'auto', solve the equation for that value. If the values are over-constrained, ignore the value for 'left' (in case
-                // the 'direction' property of the containing block is 'rtl') or 'right' (in case 'direction' is 'ltr') and solve for that value.
-                width: {
-                    let auto_margin_count = margin.left.is_none() as u8 + margin.right.is_none() as u8;
-                    if auto_margin_count == 2
-                        && (style_size.width.is_none() || style_size.width.unwrap() >= free_space.width)
-                    {
-                        0.0
-                    } else if auto_margin_count > 0 {
-                        free_space.width / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-                height: {
-                    let auto_margin_count = margin.top.is_none() as u8 + margin.bottom.is_none() as u8;
-                    if auto_margin_count == 2
-                        && (style_size.height.is_none() || style_size.height.unwrap() >= free_space.height)
-                    {
-                        0.0
-                    } else if auto_margin_count > 0 {
-                        free_space.height / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-            };
-
-            Rect {
-                left: margin.left.map(|_| 0.0).unwrap_or(auto_margin_size.width),
-                right: margin.right.map(|_| 0.0).unwrap_or(auto_margin_size.width),
-                top: margin.top.map(|_| 0.0).unwrap_or(auto_margin_size.height),
-                bottom: margin.bottom.map(|_| 0.0).unwrap_or(auto_margin_size.height),
-            }
-        };
-
+        let horizontal_margin = resolve_absolute_axis_margins(
+            Line { start: margin.left, end: margin.right },
+            Line { start: left, end: right },
+            area_width,
+            final_size.width,
+            false,
+            !direction.is_rtl(),
+        );
+        let vertical_margin = resolve_absolute_axis_margins(
+            Line { start: margin.top, end: margin.bottom },
+            Line { start: top, end: bottom },
+            area_height,
+            final_size.height,
+            true,
+            true,
+        );
         let resolved_margin = Rect {
-            left: margin.left.unwrap_or(auto_margin.left),
-            right: margin.right.unwrap_or(auto_margin.right),
-            top: margin.top.unwrap_or(auto_margin.top),
-            bottom: margin.bottom.unwrap_or(auto_margin.bottom),
+            left: horizontal_margin.start,
+            right: horizontal_margin.end,
+            top: vertical_margin.start,
+            bottom: vertical_margin.end,
         };
 
         let x_offset = match (left, right) {
