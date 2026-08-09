@@ -8,6 +8,7 @@ mod hand_written {
     mod floats;
     mod measure;
     mod min_max_overrides;
+    mod relative_position;
     mod relayout;
     mod root_constraints;
     mod rounding;
