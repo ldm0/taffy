@@ -430,7 +430,13 @@ fn compute_inner(
     #[allow(unused_mut)] mut block_ctx: &mut BlockContext<'_>,
 ) -> LayoutOutput {
     let LayoutInput {
-        known_dimensions, parent_size, available_space, run_mode, vertical_margins_are_collapsible, ..
+        known_dimensions,
+        definite_dimensions,
+        parent_size,
+        available_space,
+        run_mode,
+        vertical_margins_are_collapsible,
+        ..
     } = inputs;
 
     let style = tree.get_block_container_style(node_id);
@@ -552,7 +558,7 @@ fn compute_inner(
     // Relative block-axis percentage insets only resolve against a definite
     // containing-block height. A min-height may determine the eventual used
     // height, but it does not make an otherwise-auto height definite.
-    let relative_inset_percentage_resolution_height = known_dimensions.height.or(size.height);
+    let relative_inset_percentage_resolution_height = definite_dimensions.height.or(size.height);
 
     // 3. Perform final item layout and return content height
     let resolved_padding = raw_padding.resolve_or_zero(Some(container_outer_width), |val, basis| tree.calc(val, basis));
@@ -1150,6 +1156,7 @@ fn perform_final_layout_on_in_flow_children(
                 sizing_mode: SizingMode::InherentSize,
                 axis: RequestedAxis::Both,
                 known_dimensions,
+                definite_dimensions: known_dimensions,
                 parent_size,
                 available_space: available_space.map_width(|_| AvailableSpace::Definite(stretch_width)),
                 vertical_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
@@ -1627,16 +1634,21 @@ fn perform_absolute_layout_on_absolute_children(
 
         let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
 
-        let layout_output = tree.perform_child_layout(
+        let layout_output = tree.compute_child_layout(
             item.node_id,
-            final_size.map(Some),
-            area_size.map(Some),
-            Size {
-                width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
-                height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+            LayoutInput {
+                known_dimensions: final_size.map(Some),
+                definite_dimensions: known_dimensions,
+                parent_size: area_size.map(Some),
+                available_space: Size {
+                    width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                },
+                sizing_mode: SizingMode::ContentSize,
+                axis: RequestedAxis::Both,
+                run_mode: RunMode::PerformLayout,
+                vertical_margins_are_collapsible: Line::FALSE,
             },
-            SizingMode::ContentSize,
-            Line::FALSE,
         );
 
         let horizontal_margin = resolve_absolute_axis_margins(
