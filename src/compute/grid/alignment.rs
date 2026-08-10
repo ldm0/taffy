@@ -3,18 +3,19 @@ use super::types::GridTrack;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
+use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
     Position,
 };
-use crate::tree::{Layout, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::tree::{Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode};
 use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::compute_content_size_contribution;
-use crate::{BoxSizing, Direction, LayoutGridContainer};
+use crate::{BoxSizing, Direction, LayoutGridContainer, RequestedAxis};
 
 /// Align the grid tracks within the grid according to the align-content (rows) or
 /// justify-content (columns) property. This only does anything if the size of the
@@ -128,23 +129,72 @@ pub(super) fn align_and_position_item(
     let box_sizing_adjustment =
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let inherent_size = style
-        .size()
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let mut inherent_size = raw_size
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
         .maybe_apply_aspect_ratio(aspect_ratio)
         .maybe_add(box_sizing_adjustment);
-    let min_size = style
-        .min_size()
+    let mut min_size = raw_min_size
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_add(box_sizing_adjustment)
+        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_add(box_sizing_adjustment);
+    let mut max_size = raw_max_size
+        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_add(box_sizing_adjustment);
+
+    // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
+    // resolve against the WIDTH of the grid area.
+    let margin =
+        style.margin().map(|margin| margin.resolve_to_option(grid_area_size.width, |val, basis| tree.calc(val, basis)));
+
+    drop(style);
+
+    let grid_area_minus_item_margins_size = Size {
+        width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
+        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
+    };
+    let intrinsic_available_width = if position == Position::Absolute {
+        grid_area_minus_item_margins_size.width
+            - inset_horizontal.start.unwrap_or(0.0)
+            - inset_horizontal.end.unwrap_or(0.0)
+    } else {
+        grid_area_minus_item_margins_size.width
+    };
+    let intrinsic_available_space = AvailableSpace::Definite(f32_max(intrinsic_available_width, 0.0));
+    let intrinsic_inputs = LayoutInput {
+        run_mode: RunMode::ComputeSize,
+        sizing_mode: SizingMode::InherentSize,
+        axis: RequestedAxis::Horizontal,
+        known_dimensions: Size::NONE,
+        definite_dimensions: Size::NONE,
+        parent_size: grid_area_size.map(Some),
+        available_space: Size {
+            width: intrinsic_available_space,
+            height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
+        },
+        vertical_margins_are_collapsible: Line::FALSE,
+    };
+    let intrinsic = resolve_intrinsic_width_constraints(
+        tree,
+        node,
+        intrinsic_inputs,
+        raw_size.width,
+        raw_min_size.width,
+        raw_max_size.width,
+        intrinsic_available_space,
+    );
+    inherent_size.width = inherent_size.width.or(intrinsic.preferred);
+    min_size.width = min_size.width.or(intrinsic.min);
+    max_size.width = max_size.width.or(intrinsic.max);
+    inherent_size = inherent_size.maybe_apply_aspect_ratio(aspect_ratio);
+    min_size = min_size
+        .maybe_apply_aspect_ratio(aspect_ratio)
         .or(padding_border_size.map(Some))
-        .maybe_max(padding_border_size)
-        .maybe_apply_aspect_ratio(aspect_ratio);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
+        .maybe_max(padding_border_size);
+    max_size = max_size.maybe_apply_aspect_ratio(aspect_ratio);
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
@@ -165,16 +215,6 @@ pub(super) fn align_and_position_item(
                 AlignSelf::STRETCH
             }
         }),
-    };
-
-    // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
-    // resolve against the WIDTH of the grid area.
-    let margin =
-        style.margin().map(|margin| margin.resolve_to_option(grid_area_size.width, |val, basis| tree.calc(val, basis)));
-
-    let grid_area_minus_item_margins_size = Size {
-        width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
-        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
     };
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
@@ -234,8 +274,6 @@ pub(super) fn align_and_position_item(
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
 
     // Layout node
-    drop(style);
-
     let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
         tree.measure_child_size_both(
             node,

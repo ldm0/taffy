@@ -53,16 +53,35 @@ pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCal
 use crate::geometry::{Line, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
 use crate::tree::{
-    Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree, SizingMode,
+    Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree, RunMode, SizingMode,
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
 use crate::util::ResolveOrZero;
-use crate::{CacheTree, MaybeMath, MaybeResolve};
+use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
+
+pub use self::common::intrinsic_size::resolve_intrinsic_width_inputs;
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
-    let mut known_dimensions = Size::NONE;
+    // A block root only falls back to filling definite available space when
+    // its preferred width is auto. Resolve intrinsic sizing keywords before
+    // that fallback so they remain explicit used sizes at the root seam.
+    let root_inputs = resolve_intrinsic_width_inputs(
+        tree,
+        root,
+        LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: SizingMode::InherentSize,
+            axis: RequestedAxis::Both,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: available_space.into_options(),
+            available_space,
+            vertical_margins_are_collapsible: Line::FALSE,
+        },
+    );
+    let mut known_dimensions = root_inputs.known_dimensions;
 
     #[cfg(feature = "block_layout")]
     {

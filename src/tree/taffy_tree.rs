@@ -296,6 +296,8 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
+        let inputs = crate::compute::resolve_intrinsic_width_inputs(self, node_id, inputs);
+
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
         //   - Else call the passed closure (below) to compute the result

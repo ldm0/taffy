@@ -7,6 +7,7 @@ mod hand_written {
     mod flex_auto_margins;
     mod flex_basis_content;
     mod floats;
+    mod intrinsic_width;
     mod measure;
     mod min_max_overrides;
     mod relative_position;
