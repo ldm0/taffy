@@ -231,6 +231,10 @@ impl CompactLength {
     pub const FIT_CONTENT_PERCENT_TAG: usize = 0b00011111;
     /// The tag indicating the `content` flex-basis value
     pub const CONTENT_TAG: usize = 0b00100111;
+    /// The tag indicating the `fit-content` sizing keyword
+    pub const FIT_CONTENT_KEYWORD_TAG: usize = 0b00101111;
+    /// The tag indicating the `stretch` sizing keyword
+    pub const STRETCH_TAG: usize = 0b00110111;
 }
 
 impl CompactLength {
@@ -273,6 +277,19 @@ impl CompactLength {
     #[inline(always)]
     pub const fn content() -> Self {
         Self(CompactLengthInner::from_tag(Self::CONTENT_TAG))
+    }
+
+    /// The size should use the fit-content formula with the available space as
+    /// its stretch-fit limit.
+    #[inline(always)]
+    pub const fn fit_content_keyword() -> Self {
+        Self(CompactLengthInner::from_tag(Self::FIT_CONTENT_KEYWORD_TAG))
+    }
+
+    /// The margin box should fill the available space in the relevant axis.
+    #[inline(always)]
+    pub const fn stretch() -> Self {
+        Self(CompactLengthInner::from_tag(Self::STRETCH_TAG))
     }
 
     /// The dimension as a fraction of the total available grid space (`fr` units in CSS)
@@ -374,6 +391,18 @@ impl CompactLength {
     #[inline(always)]
     pub fn is_content(self) -> bool {
         self.tag() == Self::CONTENT_TAG
+    }
+
+    /// Returns true if the value is the bare `fit-content` sizing keyword.
+    #[inline(always)]
+    pub fn is_fit_content_keyword(self) -> bool {
+        self.tag() == Self::FIT_CONTENT_KEYWORD_TAG
+    }
+
+    /// Returns true if the value is the `stretch` sizing keyword.
+    #[inline(always)]
+    pub fn is_stretch(self) -> bool {
+        self.tag() == Self::STRETCH_TAG
     }
 
     /// Returns true if the value is min-content
@@ -546,6 +575,8 @@ impl<'de> serde::Deserialize<'de> for CompactLength {
                 | CompactLength::FIT_CONTENT_PX_TAG
                 | CompactLength::FIT_CONTENT_PERCENT_TAG
                 | CompactLength::CONTENT_TAG
+                | CompactLength::FIT_CONTENT_KEYWORD_TAG
+                | CompactLength::STRETCH_TAG
                 | CompactLength::FR_TAG
         ) {
             Ok(value)

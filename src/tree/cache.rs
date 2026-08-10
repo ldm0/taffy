@@ -4,7 +4,7 @@
 
 use crate::geometry::Size;
 use crate::style::AvailableSpace;
-use crate::tree::{LayoutInput, LayoutOutput, RunMode};
+use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode};
 use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
@@ -92,6 +92,8 @@ struct CacheKey {
     /// Whether each known dimension is definite. Normalized such that an axis
     /// without a known dimension is always `true`.
     known_dimensions_are_definite: Size<bool>,
+    /// Whether inherent size styles participate in this computation.
+    sizing_mode: SizingMode,
 }
 
 impl CacheKey {
@@ -124,6 +126,7 @@ impl From<&LayoutInput> for CacheKey {
             known_dimensions_are_definite: input
                 .known_dimensions_are_definite
                 .zip_map(input.known_dimensions, |is_definite, kd| is_definite || kd.is_none()),
+            sizing_mode: input.sizing_mode,
         }
     }
 }

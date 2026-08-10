@@ -261,6 +261,10 @@ impl FromCss for Dimension {
             Token::Percentage { unit_value, .. } => Ok(Self::percent(unit_value)),
             Token::Dimension { unit, value, .. } if unit == "px" => Ok(Self::length(value)),
             Token::Ident(ident) if ident == "auto" => Ok(Self::auto()),
+            Token::Ident(ident) if ident == "min-content" => Ok(Self::min_content()),
+            Token::Ident(ident) if ident == "max-content" => Ok(Self::max_content()),
+            Token::Ident(ident) if ident == "fit-content" => Ok(Self::fit_content()),
+            Token::Ident(ident) if ident == "stretch" || ident == "-webkit-fill-available" => Ok(Self::stretch()),
             token => Err(parser.new_unexpected_token_error(token))?,
         }
     }
@@ -296,6 +300,30 @@ impl Dimension {
     #[inline(always)]
     pub const fn content() -> Self {
         Self(CompactLength::content())
+    }
+
+    /// Use the min-content size in this axis.
+    #[inline(always)]
+    pub const fn min_content() -> Self {
+        Self(CompactLength::min_content())
+    }
+
+    /// Use the max-content size in this axis.
+    #[inline(always)]
+    pub const fn max_content() -> Self {
+        Self(CompactLength::max_content())
+    }
+
+    /// Use the fit-content formula with the available space as its limit.
+    #[inline(always)]
+    pub const fn fit_content() -> Self {
+        Self(CompactLength::fit_content_keyword())
+    }
+
+    /// Stretch the margin box to fill the available space in this axis.
+    #[inline(always)]
+    pub const fn stretch() -> Self {
+        Self(CompactLength::stretch())
     }
 
     /// A `calc()` value. The value passed here is treated as an opaque handle to
@@ -341,6 +369,37 @@ impl Dimension {
         self.0.is_content()
     }
 
+    /// Returns true if this is the `min-content` sizing keyword.
+    #[inline(always)]
+    pub fn is_min_content(self) -> bool {
+        self.0.is_min_content()
+    }
+
+    /// Returns true if this is the `max-content` sizing keyword.
+    #[inline(always)]
+    pub fn is_max_content(self) -> bool {
+        self.0.is_max_content()
+    }
+
+    /// Returns true if this is the bare `fit-content` sizing keyword.
+    #[inline(always)]
+    pub fn is_fit_content(self) -> bool {
+        self.0.is_fit_content_keyword()
+    }
+
+    /// Returns true if this is the `stretch` sizing keyword.
+    #[inline(always)]
+    pub fn is_stretch(self) -> bool {
+        self.0.is_stretch()
+    }
+
+    /// Returns true for sizing keywords whose used value depends on intrinsic
+    /// content contributions or available space.
+    #[inline(always)]
+    pub fn is_intrinsic(self) -> bool {
+        self.is_min_content() || self.is_max_content() || self.is_fit_content()
+    }
+
     /// Get the raw `CompactLength` tag
     pub fn tag(self) -> usize {
         self.0.tag()
@@ -366,6 +425,10 @@ impl<'de> serde::Deserialize<'de> for Dimension {
                 | CompactLength::PERCENT_TAG
                 | CompactLength::AUTO_TAG
                 | CompactLength::CONTENT_TAG
+                | CompactLength::MIN_CONTENT_TAG
+                | CompactLength::MAX_CONTENT_TAG
+                | CompactLength::FIT_CONTENT_KEYWORD_TAG
+                | CompactLength::STRETCH_TAG
         ) {
             Ok(Self(inner))
         } else {

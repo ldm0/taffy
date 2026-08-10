@@ -60,7 +60,12 @@ impl MaybeResolve<Option<f32>, Option<f32>> for Dimension {
     /// Can return `None`
     fn maybe_resolve(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> Option<f32> {
         match self.0.tag() {
-            CompactLength::AUTO_TAG | CompactLength::CONTENT_TAG => None,
+            CompactLength::AUTO_TAG
+            | CompactLength::CONTENT_TAG
+            | CompactLength::MIN_CONTENT_TAG
+            | CompactLength::MAX_CONTENT_TAG
+            | CompactLength::FIT_CONTENT_KEYWORD_TAG
+            | CompactLength::STRETCH_TAG => None,
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
             #[cfg(feature = "calc")]
@@ -200,6 +205,18 @@ mod tests {
             mr_case(Dimension::AUTO, Some(5.0), None);
             mr_case(Dimension::AUTO, Some(-5.0), None);
             mr_case(Dimension::AUTO, Some(0.), None);
+        }
+
+        /// Intrinsic and stretch keywords require content/available-space
+        /// layout and therefore remain unresolved by the scalar resolver.
+        #[test]
+        fn intrinsic_keywords_remain_unresolved() {
+            for value in
+                [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content(), Dimension::stretch()]
+            {
+                mr_case(value, None, None);
+                mr_case(value, Some(50.0), None);
+            }
         }
 
         /// `Dimension::Length` should always return `Some(f32)`
