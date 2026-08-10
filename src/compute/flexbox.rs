@@ -1743,7 +1743,7 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
             }
         }
 
-        if free_space > 0.0 && num_auto_margins > 0 {
+        let justification_free_space = if free_space > 0.0 && num_auto_margins > 0 {
             let margin = free_space / num_auto_margins as f32;
 
             for child in line.items.iter_mut() {
@@ -1762,17 +1762,29 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
                     }
                 }
             }
-        }
+            // Positive free space has been consumed in full by the auto
+            // margins, so justify-content has no remaining space to align.
+            0.0
+        } else {
+            free_space
+        };
 
         let num_items = line.items.len();
         let layout_reverse = constants.dir.is_reverse();
         let gap = constants.gap.main(constants.dir);
         let raw_justify_content_mode = constants.justify_content.unwrap_or(JustifyContent::FLEX_START);
-        let justify_content_mode = apply_alignment_fallback(free_space, num_items, raw_justify_content_mode);
+        let justify_content_mode =
+            apply_alignment_fallback(justification_free_space, num_items, raw_justify_content_mode);
 
         let justify_item = |(i, child): (usize, &mut FlexItem)| {
-            child.offset_main =
-                compute_alignment_offset(free_space, num_items, gap, justify_content_mode, layout_reverse, i == 0);
+            child.offset_main = compute_alignment_offset(
+                justification_free_space,
+                num_items,
+                gap,
+                justify_content_mode,
+                layout_reverse,
+                i == 0,
+            );
         };
 
         if layout_reverse {
