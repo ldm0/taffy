@@ -5,5 +5,7 @@ pub(crate) mod absolute;
 
 pub(crate) mod alignment;
 
+pub(crate) mod intrinsic_size;
+
 #[cfg(feature = "content_size")]
 pub(crate) mod content_size;
