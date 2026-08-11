@@ -18,6 +18,7 @@ use crate::{
 
 use super::common::absolute::fit_content_width;
 use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
     resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints, IntrinsicAxisInput,
 };
@@ -1258,49 +1259,6 @@ struct BlockContainerLayoutContext {
     writing_direction: WritingDirection,
     /// Whether block-start/end margins may collapse with children.
     own_margins_collapse_with_children: Line<bool>,
-}
-
-/// Project a child baseline into its parent's logical block axis.
-fn logical_block_baseline(
-    baseline: Point<Option<f32>>,
-    child_size: Size<f32>,
-    writing_direction: WritingDirection,
-) -> Option<f32> {
-    if writing_direction.mode.is_horizontal() {
-        baseline.y
-    } else {
-        baseline.x.map(
-            |offset| {
-                if writing_direction.is_block_flow_reversed() {
-                    child_size.width - offset
-                } else {
-                    offset
-                }
-            },
-        )
-    }
-}
-
-/// Materialize one logical block-axis baseline in physical coordinates.
-fn physical_baseline(
-    baseline: Option<f32>,
-    container_size: Size<f32>,
-    writing_direction: WritingDirection,
-) -> Point<Option<f32>> {
-    if writing_direction.mode.is_horizontal() {
-        Point { x: None, y: baseline }
-    } else {
-        Point {
-            x: baseline.map(|offset| {
-                if writing_direction.is_block_flow_reversed() {
-                    container_size.width - offset
-                } else {
-                    offset
-                }
-            }),
-            y: None,
-        }
-    }
 }
 
 #[cfg(feature = "content_size")]
