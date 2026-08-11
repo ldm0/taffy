@@ -341,7 +341,7 @@ impl LayoutOutput {
     /// low-level cached layout dispatcher still transports both operation
     /// results through `LayoutOutput`.
     #[inline(always)]
-    pub(crate) fn intrinsic_size_result(self) -> IntrinsicSizeResult {
+    pub fn into_intrinsic_size_result(self) -> IntrinsicSizeResult {
         IntrinsicSizeResult {
             size: self.size,
             depends_on_block_constraints: self.depends_on_block_constraints,

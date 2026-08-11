@@ -221,7 +221,7 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// layout and intrinsic-sizing protocols.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        self.compute_child_layout(node_id, inputs).intrinsic_size_result()
+        self.compute_child_layout(node_id, inputs).into_intrinsic_size_result()
     }
 }
 
@@ -238,7 +238,7 @@ pub trait CacheTree {
     /// Try to retrieve an intrinsic size result from the node's measurement
     /// cache.
     fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.cache_get(node_id, input).map(LayoutOutput::intrinsic_size_result)
+        self.cache_get(node_id, input).map(LayoutOutput::into_intrinsic_size_result)
     }
 
     /// Store an intrinsic size result in the node's measurement cache.

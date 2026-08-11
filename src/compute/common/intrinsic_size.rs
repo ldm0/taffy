@@ -146,18 +146,34 @@ pub fn resolve_intrinsic_width_inputs(
     node_id: crate::NodeId,
     inputs: LayoutInput,
 ) -> LayoutInput {
-    resolve_intrinsic_width_inputs_with_metadata(tree, node_id, inputs).0
+    resolve_intrinsic_width_inputs_with_provenance(tree, node_id, inputs).inputs
 }
 
-/// Internal variant of [`resolve_intrinsic_width_inputs`] that retains
-/// dependency metadata from recursive content measurements.
-pub(crate) fn resolve_intrinsic_width_inputs_with_metadata(
+/// Resolved input for an intrinsic sizing operation and the provenance needed
+/// by the node sizing boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedIntrinsicWidthInputs {
+    /// Layout input with intrinsic inline-size keywords resolved into a known
+    /// border-box width.
+    pub inputs: LayoutInput,
+    /// Whether resolving those keywords measured content whose inline
+    /// contribution depends on the containing block's block-size.
+    pub depends_on_block_constraints: bool,
+}
+
+/// Resolve intrinsic inline-size keywords while retaining dependency
+/// provenance from recursive content measurements.
+///
+/// Browser integrations that implement [`LayoutPartialTree`] directly should
+/// use this entry point before [`crate::compute_cached_size`], so a resolved
+/// `known_dimensions.width` does not erase the dependency that produced it.
+pub fn resolve_intrinsic_width_inputs_with_provenance(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     mut inputs: LayoutInput,
-) -> (LayoutInput, bool) {
+) -> ResolvedIntrinsicWidthInputs {
     if inputs.sizing_mode != SizingMode::InherentSize {
-        return (inputs, false);
+        return ResolvedIntrinsicWidthInputs { inputs, depends_on_block_constraints: false };
     }
 
     let (
@@ -213,5 +229,5 @@ pub(crate) fn resolve_intrinsic_width_inputs_with_metadata(
     let max_size = transferred_max_width.or(intrinsic.max);
 
     inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
-    (inputs, intrinsic.depends_on_block_constraints)
+    ResolvedIntrinsicWidthInputs { inputs, depends_on_block_constraints: intrinsic.depends_on_block_constraints }
 }
