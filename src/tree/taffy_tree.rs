@@ -1654,8 +1654,8 @@ mod tests {
             tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
 
         assert_eq!(output.size, Size { width: 30.0, height: 10.0 });
-        assert_eq!(output.first_baselines, Point { x: Some(20.0), y: None });
-        assert_eq!(output.last_baselines, Point { x: Some(0.0), y: None });
+        assert_eq!(output.first_baselines, Point { x: Some(25.0), y: None });
+        assert_eq!(output.last_baselines, Point { x: Some(5.0), y: None });
     }
 
     #[test]

@@ -2,7 +2,7 @@
 use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
 use crate::compute::common::baseline::{
     determine_baseline_writing_mode, determine_first_baseline_group, logical_block_baseline,
-    logical_block_baseline_or_synthesize, physical_baseline, synthesized_logical_baseline, BaselineGroup,
+    logical_block_baseline_or_synthesize, physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline,
 };
 use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
 use crate::style::{
@@ -1933,6 +1933,8 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
+    let font_baseline = FontBaseline::for_writing_mode(constants.writing_mode);
+
     for line in flex_lines {
         for child in line.items.iter_mut() {
             // Only calculate baselines for children participating in baseline alignment
@@ -1984,9 +1986,11 @@ fn calculate_children_base_lines(
                     child_size,
                     baseline_writing_direction,
                 )
-                .unwrap_or_else(|| synthesized_logical_baseline(baseline_block_size, baseline_writing_direction))
+                .unwrap_or_else(|| {
+                    synthesized_logical_baseline(baseline_block_size, baseline_writing_direction, font_baseline)
+                })
             } else {
-                synthesized_logical_baseline(baseline_block_size, baseline_writing_direction)
+                synthesized_logical_baseline(baseline_block_size, baseline_writing_direction, font_baseline)
             };
 
             // Scroll containers' baselines are determined from their content as if scrolled to the
@@ -2557,6 +2561,7 @@ fn calculate_flex_item(
     // flex container selects its own first and last baseline. Relative
     // positioning intentionally does not alter the in-flow baseline position.
     let writing_direction = constants.writing_direction();
+    let font_baseline = FontBaseline::for_writing_mode(constants.writing_mode);
     let child_block_size = constants.writing_mode.to_logical(size).block_size;
     let logical_block_offset =
         writing_direction.converter(constants.container_size).to_logical_point(static_location, size).block_offset;
@@ -2567,10 +2572,18 @@ fn calculate_flex_item(
             baseline
         }
     };
-    let inner_first_baseline =
-        clamp_baseline(logical_block_baseline_or_synthesize(layout_output.first_baselines, size, writing_direction));
-    let inner_last_baseline =
-        clamp_baseline(logical_block_baseline_or_synthesize(layout_output.last_baselines, size, writing_direction));
+    let inner_first_baseline = clamp_baseline(logical_block_baseline_or_synthesize(
+        layout_output.first_baselines,
+        size,
+        writing_direction,
+        font_baseline,
+    ));
+    let inner_last_baseline = clamp_baseline(logical_block_baseline_or_synthesize(
+        layout_output.last_baselines,
+        size,
+        writing_direction,
+        font_baseline,
+    ));
     item.first_block_baseline = logical_block_offset + inner_first_baseline;
     item.last_block_baseline = logical_block_offset + inner_last_baseline;
 

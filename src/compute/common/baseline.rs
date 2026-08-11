@@ -14,6 +14,28 @@ pub(crate) enum BaselineGroup {
     Minor,
 }
 
+/// Font baseline used when an alignment subject cannot expose a compatible
+/// fragment baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FontBaseline {
+    /// Alphabetic baseline synthesized on the line-under edge.
+    Alphabetic,
+    /// Central baseline synthesized halfway through the alignment axis.
+    Central,
+}
+
+impl FontBaseline {
+    /// Resolve the CSS initial baseline for a writing mode. Upright vertical
+    /// text uses the central baseline; horizontal and sideways text use the
+    /// alphabetic baseline.
+    pub(crate) fn for_writing_mode(writing_mode: WritingMode) -> Self {
+        match writing_mode {
+            WritingMode::VerticalRl | WritingMode::VerticalLr => Self::Central,
+            WritingMode::HorizontalTb | WritingMode::SidewaysRl | WritingMode::SidewaysLr => Self::Alphabetic,
+        }
+    }
+}
+
 /// Select the writing mode in which a child's baseline participates in an
 /// alignment context.
 ///
@@ -107,11 +129,15 @@ pub(crate) fn logical_block_baseline(
 /// CSS synthesizes this baseline on the line-under edge. In Taffy's logical
 /// block coordinates that is block-end for normal line direction and
 /// block-start for flipped-line writing modes such as `vertical-lr`.
-pub(crate) fn synthesized_logical_baseline(block_size: f32, writing_direction: WritingDirection) -> f32 {
-    if writing_direction.mode.is_line_direction_flipped() {
-        0.0
-    } else {
-        block_size
+pub(crate) fn synthesized_logical_baseline(
+    block_size: f32,
+    writing_direction: WritingDirection,
+    font_baseline: FontBaseline,
+) -> f32 {
+    match font_baseline {
+        FontBaseline::Central => block_size / 2.0,
+        FontBaseline::Alphabetic if writing_direction.mode.is_line_direction_flipped() => 0.0,
+        FontBaseline::Alphabetic => block_size,
     }
 }
 
@@ -121,9 +147,14 @@ pub(crate) fn logical_block_baseline_or_synthesize(
     baseline: Point<Option<f32>>,
     child_size: Size<f32>,
     writing_direction: WritingDirection,
+    font_baseline: FontBaseline,
 ) -> f32 {
     logical_block_baseline(baseline, child_size, writing_direction).unwrap_or_else(|| {
-        synthesized_logical_baseline(writing_direction.mode.to_logical(child_size).block_size, writing_direction)
+        synthesized_logical_baseline(
+            writing_direction.mode.to_logical(child_size).block_size,
+            writing_direction,
+            font_baseline,
+        )
     })
 }
 
@@ -163,19 +194,45 @@ mod tests {
     }
 
     #[test]
-    fn synthesized_baseline_uses_the_line_under_edge() {
+    fn alphabetic_synthesis_uses_the_line_under_edge() {
         assert_eq!(
-            synthesized_logical_baseline(40.0, WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),),
+            synthesized_logical_baseline(
+                40.0,
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+                FontBaseline::Alphabetic,
+            ),
             40.0,
         );
         assert_eq!(
-            synthesized_logical_baseline(40.0, WritingDirection::new(WritingMode::VerticalLr, Direction::Ltr)),
+            synthesized_logical_baseline(
+                40.0,
+                WritingDirection::new(WritingMode::VerticalLr, Direction::Ltr),
+                FontBaseline::Alphabetic,
+            ),
             0.0,
         );
         assert_eq!(
-            synthesized_logical_baseline(40.0, WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr)),
+            synthesized_logical_baseline(
+                40.0,
+                WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr),
+                FontBaseline::Alphabetic,
+            ),
             40.0,
         );
+    }
+
+    #[test]
+    fn central_synthesis_uses_the_axis_midpoint() {
+        for writing_mode in [WritingMode::HorizontalTb, WritingMode::VerticalLr, WritingMode::VerticalRl] {
+            assert_eq!(
+                synthesized_logical_baseline(
+                    40.0,
+                    WritingDirection::new(writing_mode, Direction::Ltr),
+                    FontBaseline::Central,
+                ),
+                20.0,
+            );
+        }
     }
 
     #[test]
