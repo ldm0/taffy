@@ -20,6 +20,83 @@ pub enum AbsoluteAxis {
     Vertical,
 }
 
+/// The physical orientation and block-flow direction established by CSS
+/// `writing-mode`.
+///
+/// Layout algorithms should use [`LogicalSize`] while resolving constraints
+/// and convert to [`Size`] only at physical tree and fragment boundaries.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum WritingMode {
+    /// Horizontal lines whose blocks progress from top to bottom.
+    #[default]
+    HorizontalTb,
+    /// Vertical lines whose blocks progress from right to left.
+    VerticalRl,
+    /// Vertical lines whose blocks progress from left to right.
+    VerticalLr,
+    /// Sideways lines whose blocks progress from right to left.
+    SidewaysRl,
+    /// Sideways lines whose blocks progress from left to right.
+    SidewaysLr,
+}
+
+impl WritingMode {
+    /// Whether the inline axis is the physical horizontal axis.
+    #[inline(always)]
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::HorizontalTb)
+    }
+
+    /// Whether this writing mode is orthogonal to `other`.
+    #[inline(always)]
+    pub const fn is_orthogonal_to(self, other: Self) -> bool {
+        self.is_horizontal() != other.is_horizontal()
+    }
+
+    /// The physical axis corresponding to the logical inline axis.
+    #[inline(always)]
+    pub const fn inline_axis(self) -> AbsoluteAxis {
+        if self.is_horizontal() {
+            AbsoluteAxis::Horizontal
+        } else {
+            AbsoluteAxis::Vertical
+        }
+    }
+
+    /// The physical axis corresponding to the logical block axis.
+    #[inline(always)]
+    pub const fn block_axis(self) -> AbsoluteAxis {
+        self.inline_axis().other_axis()
+    }
+
+    /// Whether block progression runs in the reverse physical direction.
+    #[inline(always)]
+    pub const fn is_block_flow_reversed(self) -> bool {
+        matches!(self, Self::VerticalRl | Self::SidewaysRl)
+    }
+
+    /// Project a physical size into this writing mode's logical axes.
+    #[inline(always)]
+    pub fn to_logical<T>(self, size: Size<T>) -> LogicalSize<T> {
+        if self.is_horizontal() {
+            LogicalSize { inline_size: size.width, block_size: size.height }
+        } else {
+            LogicalSize { inline_size: size.height, block_size: size.width }
+        }
+    }
+
+    /// Project a logical size in this writing mode back to physical axes.
+    #[inline(always)]
+    pub fn to_physical<T>(self, size: LogicalSize<T>) -> Size<T> {
+        if self.is_horizontal() {
+            Size { width: size.inline_size, height: size.block_size }
+        } else {
+            Size { width: size.block_size, height: size.inline_size }
+        }
+    }
+}
+
 impl AbsoluteAxis {
     /// Returns the other variant of the enum
     #[inline]
@@ -346,6 +423,30 @@ pub struct Size<T> {
     pub width: T,
     /// The y extent of the rectangle
     pub height: T,
+}
+
+/// A size expressed in CSS flow-relative axes.
+///
+/// Unlike [`Size`], these fields retain their meaning when the writing mode is
+/// vertical. This mirrors the logical geometry consumed by browser layout
+/// algorithms before their results are converted into physical fragments.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LogicalSize<T> {
+    /// Extent along the inline axis.
+    pub inline_size: T,
+    /// Extent along the block axis.
+    pub block_size: T,
+}
+
+impl<T> LogicalSize<T> {
+    /// Applies `f` to both logical dimensions.
+    pub fn map<R, F>(self, f: F) -> LogicalSize<R>
+    where
+        F: Fn(T) -> R,
+    {
+        LogicalSize { inline_size: f(self.inline_size), block_size: f(self.block_size) }
+    }
 }
 
 // Generic Add impl for Size<T> + Size<U> where T + U has an Add impl
