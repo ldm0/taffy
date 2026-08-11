@@ -1,6 +1,6 @@
 //! This module is a partial implementation of the CSS Grid Level 1 specification
 //! <https://www.w3.org/TR/css-grid-1>
-use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline};
+use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, FontBaseline};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
@@ -890,7 +890,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
     debug_assert!(!items.is_empty());
 
-    let synthesize = |item: &GridItem| synthesized_logical_baseline(item.block_size, flow.writing_direction());
+    let synthesize = |item: &GridItem| {
+        synthesized_logical_baseline(
+            item.block_size,
+            flow.writing_direction(),
+            FontBaseline::for_writing_mode(flow.writing_direction().mode),
+        )
+    };
 
     let compare_in_flow_order = |axis: AbstractAxis, a: u16, b: u16| {
         if flow.axis_is_reversed(axis) {
@@ -1332,14 +1338,14 @@ mod tests {
                 core::slice::from_ref(&item),
                 GridFlow::new(crate::WritingMode::VerticalLr, Direction::Ltr),
             ),
-            (10.0, 10.0),
+            (20.0, 20.0),
         );
         assert_eq!(
             grid_container_baselines(
                 core::slice::from_ref(&item),
                 GridFlow::new(crate::WritingMode::VerticalRl, Direction::Ltr),
             ),
-            (30.0, 30.0),
+            (20.0, 20.0),
         );
     }
 }

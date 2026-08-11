@@ -331,7 +331,7 @@ fn vertical_row_aligns_synthesized_baselines_on_the_logical_block_axis() {
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
-    assert_eq!(tree.layout(narrow).unwrap().location.x, 10.0);
+    assert_eq!(tree.layout(narrow).unwrap().location.x, 15.0);
     assert_eq!(tree.layout(wide).unwrap().location.x, 10.0);
 }
 

@@ -1,7 +1,7 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::compute::common::baseline::logical_block_baseline_or_synthesize;
+use crate::compute::common::baseline::{logical_block_baseline_or_synthesize, FontBaseline};
 use crate::geometry::{AbstractAxis, Line, LogicalSize, Size};
 use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
@@ -514,6 +514,7 @@ fn resolve_item_baselines(
                 measured_size_and_baselines.first_baselines,
                 measured_size_and_baselines.size,
                 writing_direction,
+                FontBaseline::for_writing_mode(writing_direction.mode),
             );
 
             let percentage_basis = inner_node_size.inline_size;
