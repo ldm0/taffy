@@ -373,8 +373,8 @@ pub fn compute_block_layout(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let (min_size, max_size, clamped_style_size) = match inputs.sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
+    let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
+        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
             let raw_size = style.size();
             let resolved = resolve_size_constraints(
@@ -397,7 +397,7 @@ pub fn compute_block_layout(
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
-            (min_size, max_size, preferred_size)
+            (min_size, max_size, preferred_size, resolved.aspect_ratio_applied.width)
         }
     };
 
@@ -408,6 +408,10 @@ pub fn compute_block_layout(
         (Some(min), Some(max)) if max <= min => Some(min),
         _ => None,
     });
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize
+        && known_dimensions.width.is_none()
+        && min_max_definite_size.width.is_none()
+        && preferred_inline_from_aspect_ratio;
 
     let styled_based_known_dimensions =
         known_dimensions.or(min_max_definite_size).or(clamped_style_size).maybe_max(padding_border_size);
@@ -416,20 +420,22 @@ pub fn compute_block_layout(
     // is ComputeSize (and thus the container's size is all that we're interested in)
     if run_mode == RunMode::ComputeSize {
         if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
-            return LayoutOutput::from_outer_size(Size { width, height });
+            return LayoutOutput::from_outer_size(Size { width, height })
+                .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
         // We can also short-circuit if the width is known and only the width has been requested.
         if inputs.axis == RequestedAxis::Horizontal {
             if let Some(width) = styled_based_known_dimensions.width {
-                return LayoutOutput::from_outer_size(Size { width, height: 0.0 });
+                return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
     }
 
     // Unwrap the block formatting context if one was passed, or else create a new one
     debug_log!("BLOCK");
-    match block_ctx {
+    let output = match block_ctx {
         Some(inherited_bfc) if !establishes_new_bfc => compute_inner(
             tree,
             node_id,
@@ -446,7 +452,8 @@ pub fn compute_block_layout(
                 &mut root_ctx,
             )
         }
-    }
+    };
+    output.with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Computes the layout of [`LayoutBlockContainer`] according to the block layout algorithm

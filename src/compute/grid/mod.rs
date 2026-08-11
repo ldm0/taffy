@@ -67,8 +67,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let (min_size, max_size, preferred_size) = match inputs.sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
+    let (min_size, max_size, preferred_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
+        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
             let raw_size = style.size();
             let resolved = resolve_size_constraints(
@@ -88,9 +88,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 aspect_ratio,
                 padding_border_size,
             );
-            (resolved.min_size, resolved.max_size, resolved.size)
+            (resolved.min_size, resolved.max_size, resolved.size, resolved.aspect_ratio_applied.width)
         }
     };
+    let applied_aspect_ratio =
+        run_mode == RunMode::ComputeSize && known_dimensions.width.is_none() && preferred_inline_from_aspect_ratio;
 
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
@@ -155,13 +157,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // is ComputeSize (and thus the container's size is all that we're interested in)
     if run_mode == RunMode::ComputeSize {
         if let Size { width: Some(width), height: Some(height) } = outer_node_size {
-            return LayoutOutput::from_outer_size(Size { width, height });
+            return LayoutOutput::from_outer_size(Size { width, height })
+                .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
         // We can also short-circuit if the width is known and only the width has been requested.
         if inputs.axis == RequestedAxis::Horizontal {
             if let Some(width) = outer_node_size.width {
-                return LayoutOutput::from_outer_size(Size { width, height: 0.0 });
+                return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
     }
@@ -387,7 +391,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(container_border_box)
-            .with_block_constraint_dependency(depends_on_block_constraints);
+            .with_block_constraint_dependency(depends_on_block_constraints)
+            .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 
     // 7. Resolve percentage track base sizes
@@ -578,7 +583,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(container_border_box)
-            .with_block_constraint_dependency(depends_on_block_constraints);
+            .with_block_constraint_dependency(depends_on_block_constraints)
+            .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 
     // 8. Track Alignment

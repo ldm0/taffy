@@ -7,6 +7,9 @@ use crate::{BoxSizing, ResolvedAspectRatio, Size};
 pub(crate) struct ResolvedSizeConstraints {
     /// Preferred border-box size after applying the ratio transfer.
     pub size: Size<Option<f32>>,
+    /// Axes whose preferred size was synthesized from the opposite axis by the
+    /// preferred aspect ratio.
+    pub aspect_ratio_applied: Size<bool>,
     /// Used minimum constraint for the requested transfer mode.
     pub min_size: Size<Option<f32>>,
     /// Used maximum constraint for the requested transfer mode.
@@ -64,11 +67,14 @@ pub(crate) fn resolve_size_constraints(
         height: merge_maximum(max_size.height, transferred_max.height, min_size.height),
     };
 
-    ResolvedSizeConstraints {
-        size: size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border),
-        min_size,
-        max_size,
-    }
+    let resolved_size =
+        size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
+    let aspect_ratio_applied = Size {
+        width: size.width.is_none() && resolved_size.width.is_some(),
+        height: size.height.is_none() && resolved_size.height.is_some(),
+    };
+
+    ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size }
 }
 
 /// Transfer one pair of axis constraints through the preferred ratio.
@@ -141,6 +147,7 @@ mod tests {
         );
 
         assert_eq!(resolved.size, Size { width: Some(50.0), height: Some(100.0) });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: false, height: true });
         assert_eq!(resolved.min_size, Size { width: Some(100.0), height: Some(100.0) });
         assert_eq!(resolved.max_size, Size { width: None, height: Some(100.0) });
     }
