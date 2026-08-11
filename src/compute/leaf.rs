@@ -60,12 +60,12 @@ where
 
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-    let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
+    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match sizing_mode {
         SizingMode::ContentSize => {
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled())
+            (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled(), false)
         }
         SizingMode::InherentSize => {
             let raw_size = style.size();
@@ -81,17 +81,23 @@ where
             let style_size = resolved.size;
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
+            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
 
             // A parent formatting context may make exactly one border-box axis
             // definite (for example a stretched flex cross size). Resolve the
             // other axis through the preferred ratio at the leaf boundary just
             // like an authored one-axis size.
-            let node_size = known_dimensions.or(style_size).maybe_apply_aspect_ratio_with_box_sizing(
+            let size_before_ratio = known_dimensions.or(style_size);
+            let node_size = size_before_ratio.maybe_apply_aspect_ratio_with_box_sizing(
                 resolved_aspect_ratio,
                 BoxSizing::BorderBox,
                 pb_sum,
             );
-            (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
+            let applied_aspect_ratio = run_mode == RunMode::ComputeSize
+                && known_dimensions.width.is_none()
+                && (preferred_inline_from_aspect_ratio
+                    || (size_before_ratio.width.is_none() && node_size.width.is_some()));
+            (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
         }
     };
 
@@ -129,7 +135,7 @@ where
             let size = Size { width, height }
                 .maybe_clamp(node_min_size, node_max_size)
                 .maybe_max(padding_border.sum_axes().map(Some));
-            return LayoutOutput::from_outer_size(size);
+            return LayoutOutput::from_outer_size(size).with_applied_aspect_ratio(applied_aspect_ratio);
         };
     }
 
@@ -180,5 +186,5 @@ where
     let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
     output.margins_can_collapse_through =
         !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
-    output
+    output.with_applied_aspect_ratio(applied_aspect_ratio)
 }

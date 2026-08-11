@@ -323,6 +323,14 @@ impl LayoutOutput {
         self.depends_on_block_constraints = depends;
     }
 
+    /// Record operation-local aspect-ratio provenance on a transitional
+    /// combined dispatcher result.
+    #[inline(always)]
+    pub(crate) fn with_applied_aspect_ratio(mut self, applied: bool) -> Self {
+        self.applied_aspect_ratio |= applied;
+        self
+    }
+
     /// Construct the transitional combined result from a dedicated intrinsic
     /// sizing result.
     #[inline(always)]
