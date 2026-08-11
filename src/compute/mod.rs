@@ -19,6 +19,7 @@
 //! | Function                          | Requires                                                                                                                                                                                           | Purpose                                                              |
 //! | ---                               | ---                                                                                                                                                                                                | ---                                                                  |
 //! | [`round_layout`]                  | [`RoundTree`]                                                                                                                                                                                      | Round a tree of float-valued layouts to integer pixels               |
+//! | [`round_layout_with_scale_factor`]| [`RoundTree`]                                                                                                                                                                                      | Round a tree to a caller-selected subpixel grid                      |
 //! | [`print_tree`](crate::print_tree) | [`PrintTree`](crate::PrintTree)                                                                                                                                                                    | Print a debug representation of a node tree and it's computed layout |
 //!
 pub(crate) mod common;
@@ -323,45 +324,85 @@ fn node_block_constraint_dependency(
 /// In order to prevent innacuracies caused by rounding already-rounded values, we read from `unrounded_layout`
 /// and write to `final_layout`.
 pub fn round_layout(tree: &mut impl RoundTree, node_id: NodeId) {
-    return round_layout_inner(tree, node_id, 0.0, 0.0);
+    round_layout_with_scale_factor(tree, node_id, 1.0);
+}
+
+/// Rounds the calculated layout to a caller-selected subpixel grid.
+///
+/// `scale_factor` is the number of grid steps per layout unit. For example,
+/// `1.0` rounds to integer layout units and `64.0` rounds to 1/64th of a
+/// layout unit. The scale factor must be finite and greater than zero.
+///
+/// Like [`round_layout`], endpoints are rounded in the cumulative coordinate
+/// space so that rounded sizes are derived from rounded edges rather than by
+/// rounding sizes independently.
+pub fn round_layout_with_scale_factor(tree: &mut impl RoundTree, node_id: NodeId, scale_factor: f32) {
+    assert!(
+        scale_factor.is_finite() && scale_factor > 0.0,
+        "layout rounding scale factor must be finite and greater than zero"
+    );
+    round_layout_inner(tree, node_id, 0.0, 0.0, scale_factor);
 
     /// Recursive function to apply rounding to all descendents
-    fn round_layout_inner(tree: &mut impl RoundTree, node_id: NodeId, cumulative_x: f32, cumulative_y: f32) {
+    fn round_layout_inner(
+        tree: &mut impl RoundTree,
+        node_id: NodeId,
+        cumulative_x: f32,
+        cumulative_y: f32,
+        scale_factor: f32,
+    ) {
         let unrounded_layout = tree.get_unrounded_layout(node_id);
         let mut layout = unrounded_layout;
 
         let cumulative_x = cumulative_x + unrounded_layout.location.x;
         let cumulative_y = cumulative_y + unrounded_layout.location.y;
 
-        layout.location.x = round(unrounded_layout.location.x);
-        layout.location.y = round(unrounded_layout.location.y);
-        layout.size.width = round(cumulative_x + unrounded_layout.size.width) - round(cumulative_x);
-        layout.size.height = round(cumulative_y + unrounded_layout.size.height) - round(cumulative_y);
-        layout.scrollbar_size.width = round(unrounded_layout.scrollbar_size.width);
-        layout.scrollbar_size.height = round(unrounded_layout.scrollbar_size.height);
-        layout.border.left = round(cumulative_x + unrounded_layout.border.left) - round(cumulative_x);
-        layout.border.right = round(cumulative_x + unrounded_layout.size.width)
-            - round(cumulative_x + unrounded_layout.size.width - unrounded_layout.border.right);
-        layout.border.top = round(cumulative_y + unrounded_layout.border.top) - round(cumulative_y);
-        layout.border.bottom = round(cumulative_y + unrounded_layout.size.height)
-            - round(cumulative_y + unrounded_layout.size.height - unrounded_layout.border.bottom);
-        layout.padding.left = round(cumulative_x + unrounded_layout.padding.left) - round(cumulative_x);
-        layout.padding.right = round(cumulative_x + unrounded_layout.size.width)
-            - round(cumulative_x + unrounded_layout.size.width - unrounded_layout.padding.right);
-        layout.padding.top = round(cumulative_y + unrounded_layout.padding.top) - round(cumulative_y);
-        layout.padding.bottom = round(cumulative_y + unrounded_layout.size.height)
-            - round(cumulative_y + unrounded_layout.size.height - unrounded_layout.padding.bottom);
+        layout.location.x = round_to_scale(unrounded_layout.location.x, scale_factor);
+        layout.location.y = round_to_scale(unrounded_layout.location.y, scale_factor);
+        layout.size.width = round_to_scale(cumulative_x + unrounded_layout.size.width, scale_factor)
+            - round_to_scale(cumulative_x, scale_factor);
+        layout.size.height = round_to_scale(cumulative_y + unrounded_layout.size.height, scale_factor)
+            - round_to_scale(cumulative_y, scale_factor);
+        layout.scrollbar_size.width = round_to_scale(unrounded_layout.scrollbar_size.width, scale_factor);
+        layout.scrollbar_size.height = round_to_scale(unrounded_layout.scrollbar_size.height, scale_factor);
+        layout.border.left = round_to_scale(cumulative_x + unrounded_layout.border.left, scale_factor)
+            - round_to_scale(cumulative_x, scale_factor);
+        layout.border.right = round_to_scale(cumulative_x + unrounded_layout.size.width, scale_factor)
+            - round_to_scale(cumulative_x + unrounded_layout.size.width - unrounded_layout.border.right, scale_factor);
+        layout.border.top = round_to_scale(cumulative_y + unrounded_layout.border.top, scale_factor)
+            - round_to_scale(cumulative_y, scale_factor);
+        layout.border.bottom = round_to_scale(cumulative_y + unrounded_layout.size.height, scale_factor)
+            - round_to_scale(
+                cumulative_y + unrounded_layout.size.height - unrounded_layout.border.bottom,
+                scale_factor,
+            );
+        layout.padding.left = round_to_scale(cumulative_x + unrounded_layout.padding.left, scale_factor)
+            - round_to_scale(cumulative_x, scale_factor);
+        layout.padding.right = round_to_scale(cumulative_x + unrounded_layout.size.width, scale_factor)
+            - round_to_scale(cumulative_x + unrounded_layout.size.width - unrounded_layout.padding.right, scale_factor);
+        layout.padding.top = round_to_scale(cumulative_y + unrounded_layout.padding.top, scale_factor)
+            - round_to_scale(cumulative_y, scale_factor);
+        layout.padding.bottom = round_to_scale(cumulative_y + unrounded_layout.size.height, scale_factor)
+            - round_to_scale(
+                cumulative_y + unrounded_layout.size.height - unrounded_layout.padding.bottom,
+                scale_factor,
+            );
 
         #[cfg(feature = "content_size")]
-        round_content_size(&mut layout, unrounded_layout.content_size, cumulative_x, cumulative_y);
+        round_content_size(&mut layout, unrounded_layout.content_size, cumulative_x, cumulative_y, scale_factor);
 
         tree.set_final_layout(node_id, &layout);
 
         let child_count = tree.child_count(node_id);
         for index in 0..child_count {
             let child = tree.get_child_id(node_id, index);
-            round_layout_inner(tree, child, cumulative_x, cumulative_y);
+            round_layout_inner(tree, child, cumulative_x, cumulative_y, scale_factor);
         }
+    }
+
+    #[inline(always)]
+    fn round_to_scale(value: f32, scale_factor: f32) -> f32 {
+        round(value * scale_factor) / scale_factor
     }
 
     #[cfg(feature = "content_size")]
@@ -373,9 +414,12 @@ pub fn round_layout(tree: &mut impl RoundTree, node_id: NodeId) {
         unrounded_content_size: Size<f32>,
         cumulative_x: f32,
         cumulative_y: f32,
+        scale_factor: f32,
     ) {
-        layout.content_size.width = round(cumulative_x + unrounded_content_size.width) - round(cumulative_x);
-        layout.content_size.height = round(cumulative_y + unrounded_content_size.height) - round(cumulative_y);
+        layout.content_size.width = round_to_scale(cumulative_x + unrounded_content_size.width, scale_factor)
+            - round_to_scale(cumulative_x, scale_factor);
+        layout.content_size.height = round_to_scale(cumulative_y + unrounded_content_size.height, scale_factor)
+            - round_to_scale(cumulative_y, scale_factor);
     }
 }
 
@@ -404,10 +448,68 @@ pub mod detailed_info {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_hidden_layout;
+    use super::{compute_hidden_layout, round_layout_with_scale_factor};
     use crate::geometry::{Point, Size};
     use crate::style::{Display, Style};
-    use crate::TaffyTree;
+    use crate::{Layout, NodeId, RoundTree, TaffyTree, TraversePartialTree, TraverseTree};
+
+    struct RoundNode {
+        children: Vec<NodeId>,
+        unrounded: Layout,
+        final_layout: Layout,
+    }
+
+    struct TestRoundTree(Vec<RoundNode>);
+
+    impl TraversePartialTree for TestRoundTree {
+        type ChildIter<'a> = core::iter::Copied<core::slice::Iter<'a, NodeId>>;
+
+        fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
+            self.0[usize::from(parent_node_id)].children.iter().copied()
+        }
+
+        fn child_count(&self, parent_node_id: NodeId) -> usize {
+            self.0[usize::from(parent_node_id)].children.len()
+        }
+
+        fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId {
+            self.0[usize::from(parent_node_id)].children[child_index]
+        }
+    }
+
+    impl TraverseTree for TestRoundTree {}
+
+    impl RoundTree for TestRoundTree {
+        fn get_unrounded_layout(&self, node_id: NodeId) -> Layout {
+            self.0[usize::from(node_id)].unrounded
+        }
+
+        fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
+            self.0[usize::from(node_id)].final_layout = *layout;
+        }
+    }
+
+    #[test]
+    fn scaled_rounding_preserves_subpixel_geometry() {
+        let root = NodeId::new(0);
+        let child = NodeId::new(1);
+        let layout = |x, width| Layout {
+            location: Point { x, y: 0.0 },
+            size: Size { width, height: 10.0 },
+            ..Layout::with_order(0)
+        };
+        let mut tree = TestRoundTree(vec![
+            RoundNode { children: vec![child], unrounded: layout(0.2, 100.3), final_layout: Layout::with_order(0) },
+            RoundNode { children: Vec::new(), unrounded: layout(0.333, 10.333), final_layout: Layout::with_order(0) },
+        ]);
+
+        round_layout_with_scale_factor(&mut tree, root, 64.0);
+
+        assert_eq!(tree.0[0].final_layout.location.x, 0.203125);
+        assert_eq!(tree.0[0].final_layout.size.width, 100.296875);
+        assert_eq!(tree.0[1].final_layout.location.x, 0.328125);
+        assert_eq!(tree.0[1].final_layout.size.width, 10.328125);
+    }
 
     #[test]
     fn hidden_layout_should_hide_recursively() {
