@@ -128,6 +128,7 @@ pub fn resolve_intrinsic_width_inputs(
         transferred_min_width,
         transferred_max_width,
     ) = {
+        let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
         let style = tree.get_core_container_style(node_id);
         let raw_size = style.size();
         let raw_min_size = style.min_size();
@@ -137,10 +138,11 @@ pub fn resolve_intrinsic_width_inputs(
         let border = style.border().resolve_or_zero(inputs.parent_size.width, |value, basis| tree.calc(value, basis));
         let box_sizing_adjustment =
             if style.box_sizing() == BoxSizing::ContentBox { (padding + border).sum_axes() } else { Size::ZERO };
-        let aspect_ratio = style.aspect_ratio();
+        let padding_border_size = (padding + border).sum_axes();
+        let box_sizing = style.box_sizing();
         let transferred_width = |raw: Size<Dimension>| {
             raw.maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment)
                 .width
         };

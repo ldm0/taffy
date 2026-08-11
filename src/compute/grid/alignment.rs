@@ -105,11 +105,11 @@ pub(super) fn align_and_position_item(
 ) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
 
+    let aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let style = tree.get_grid_child_style(node);
 
     let overflow = style.overflow();
     let scrollbar_width = style.scrollbar_width();
-    let aspect_ratio = style.aspect_ratio();
     // Resolve writing-mode-relative self-start/self-end keywords against the item's own
     // direction. The horizontal axis is the inline axis (Taffy only supports horizontal-tb);
     // the vertical (block) axis resolves them to plain start/end.
@@ -140,23 +140,23 @@ pub(super) fn align_and_position_item(
         style.border().map(|p| p.resolve_or_zero(Some(grid_area_size.width), |val, basis| tree.calc(val, basis)));
     let padding_border_size = (padding + border).sum_axes();
 
-    let box_sizing_adjustment =
-        if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let box_sizing = style.box_sizing();
+    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
     let mut inherent_size = raw_size
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
         .maybe_add(box_sizing_adjustment);
     let mut min_size = raw_min_size
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
         .maybe_add(box_sizing_adjustment);
     let mut max_size = raw_max_size
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
         .maybe_add(box_sizing_adjustment);
 
     // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
@@ -204,12 +204,14 @@ pub(super) fn align_and_position_item(
     inherent_size.width = inherent_size.width.or(intrinsic.preferred);
     min_size.width = min_size.width.or(intrinsic.min);
     max_size.width = max_size.width.or(intrinsic.max);
-    inherent_size = inherent_size.maybe_apply_aspect_ratio(aspect_ratio);
+    inherent_size =
+        inherent_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
     min_size = min_size
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size)
         .or(padding_border_size.map(Some))
         .maybe_max(padding_border_size);
-    max_size = max_size.maybe_apply_aspect_ratio(aspect_ratio);
+    max_size =
+        max_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
@@ -224,7 +226,7 @@ pub(super) fn align_and_position_item(
             }
         }),
         vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || aspect_ratio.is_some() {
+            if inherent_size.height.is_some() || aspect_ratio.ratio.is_some() {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH
@@ -259,7 +261,11 @@ pub(super) fn align_and_position_item(
     });
 
     // Reapply aspect ratio after stretch and absolute position width adjustments
-    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio(aspect_ratio);
+    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio_with_box_sizing(
+        aspect_ratio,
+        BoxSizing::BorderBox,
+        padding_border_size,
+    );
 
     let height = height.or_else(|| {
         if position == Position::Absolute {
@@ -283,7 +289,11 @@ pub(super) fn align_and_position_item(
         None
     });
     // Reapply aspect ratio after stretch and absolute position height adjustments
-    let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio);
+    let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio_with_box_sizing(
+        aspect_ratio,
+        BoxSizing::BorderBox,
+        padding_border_size,
+    );
 
     // Clamp size by min and max width/height
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);

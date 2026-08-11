@@ -348,6 +348,7 @@ pub fn compute_block_layout(
     block_ctx: Option<&mut BlockContext<'_>>,
 ) -> LayoutOutput {
     let LayoutInput { known_dimensions, parent_size, run_mode, .. } = inputs;
+    let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
     let style = tree.get_block_container_style(node_id);
 
     // Pull these out earlier to avoid borrowing issues
@@ -356,12 +357,16 @@ pub fn compute_block_layout(
     // css-align-3 §5.1.1: a non-`normal` `align-content` makes a block container establish an
     // independent formatting context. <https://drafts.csswg.org/css-align-3/#distribution-block>
     let establishes_new_bfc = is_scroll_container || style.align_content().is_some();
-    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { style.aspect_ratio() } else { None };
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize {
+        resolved_aspect_ratio
+    } else {
+        resolved_aspect_ratio.disabled()
+    };
     let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let padding_border_size = (padding + border).sum_axes();
-    let box_sizing_adjustment =
-        if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let box_sizing = style.box_sizing();
+    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
     let (min_size, max_size, clamped_style_size) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
@@ -369,17 +374,17 @@ pub fn compute_block_layout(
             let min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let max_size = style
                 .max_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let preferred_size = style
                 .size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment)
                 .maybe_clamp(min_size, max_size);
             (min_size, max_size, preferred_size)
@@ -452,11 +457,13 @@ fn compute_inner(
         ..
     } = inputs;
 
+    let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
     let style = tree.get_block_container_style(node_id);
     let raw_padding = style.padding();
     let raw_border = style.border();
     let raw_margin = style.margin();
-    let aspect_ratio = if sizing_mode == SizingMode::InherentSize { style.aspect_ratio() } else { None };
+    let aspect_ratio =
+        if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { resolved_aspect_ratio.disabled() };
     let padding = raw_padding.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let border = raw_border.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let direction = style.direction();
@@ -482,25 +489,25 @@ fn compute_inner(
     #[cfg(feature = "float_layout")]
     block_ctx.apply_content_box_inset([content_box_inset.left, content_box_inset.right]);
 
-    let box_sizing_adjustment =
-        if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let box_sizing = style.box_sizing();
+    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
     let (size, min_size, max_size) = match sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
         SizingMode::InherentSize => (
             style
                 .size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment),
             style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment),
             style
                 .max_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment),
         ),
     };
@@ -513,7 +520,9 @@ fn compute_inner(
     // newly-filled axis is adopted (and clamped); an incoming known size is left
     // as the parent resolved it (re-clamping would undo padding/border overrides).
     let known_dimensions = {
-        let derived = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        let derived = known_dimensions
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size)
+            .maybe_clamp(min_size, max_size);
         Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
     };
     let percentage_basis_dimensions = Size {
@@ -797,6 +806,7 @@ fn generate_item_list(
     child_ids
         .into_iter()
         .filter_map(|child_node_id| {
+            let aspect_ratio = tree.get_resolved_aspect_ratio(child_node_id);
             let child_style = tree.get_block_child_style(child_node_id);
             if child_style.box_generation_mode() == BoxGenerationMode::None {
                 return None;
@@ -808,28 +818,27 @@ fn generate_item_list(
             // containing-block basis here.
             let contribution_parent_size =
                 Size { width: node_inner_size.width.or(Some(0.0)), height: node_inner_size.height };
-            let aspect_ratio = child_style.aspect_ratio();
             let padding =
                 child_style.padding().resolve_or_zero(contribution_parent_size, |val, basis| tree.calc(val, basis));
             let border =
                 child_style.border().resolve_or_zero(contribution_parent_size, |val, basis| tree.calc(val, basis));
             let pb_sum = (padding + border).sum_axes();
-            let box_sizing_adjustment =
-                if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
+            let box_sizing = child_style.box_sizing();
+            let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
             let raw_size = child_style.size();
             let raw_min_size = child_style.min_size();
             let raw_max_size = child_style.max_size();
             let mut size = raw_size
                 .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, pb_sum)
                 .maybe_add(box_sizing_adjustment);
             let mut min_size = raw_min_size
                 .maybe_resolve(contribution_parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, pb_sum)
                 .maybe_add(box_sizing_adjustment);
             let mut max_size = raw_max_size
                 .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, pb_sum)
                 .maybe_add(box_sizing_adjustment);
             let position = child_style.position();
             let overflow = child_style.overflow();
@@ -999,28 +1008,28 @@ fn resolve_block_item_final_style(
     item: &mut BlockItem,
     parent_size: Size<Option<f32>>,
 ) {
+    let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
     let (size, min_size, max_size, padding, border) = {
         let style = tree.get_block_child_style(item.node_id);
-        let aspect_ratio = style.aspect_ratio();
         let padding = style.padding().resolve_or_zero(parent_size, |val, basis| tree.calc(val, basis));
         let border = style.border().resolve_or_zero(parent_size, |val, basis| tree.calc(val, basis));
         let padding_border_sum = (padding + border).sum_axes();
-        let box_sizing_adjustment =
-            if style.box_sizing() == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
+        let box_sizing = style.box_sizing();
+        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
         let size = style
             .size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
         let min_size = style
             .min_size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
         let max_size = style
             .max_size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
         (size, min_size, max_size, padding, border)
     };
@@ -1729,6 +1738,7 @@ fn perform_absolute_layout_on_absolute_children(
     let mut absolute_content_size = Size::ZERO;
 
     for item in items.iter().filter(|item| item.position == Position::Absolute) {
+        let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
         let child_style = tree.get_block_child_style(item.node_id);
 
         // Skip items that are display:none or are not position:absolute
@@ -1737,14 +1747,13 @@ fn perform_absolute_layout_on_absolute_children(
             continue;
         }
 
-        let aspect_ratio = child_style.aspect_ratio();
         let margin =
             child_style.margin().map(|margin| margin.resolve_to_option(area_width, |val, basis| tree.calc(val, basis)));
         let padding = child_style.padding().resolve_or_zero(Some(area_width), |val, basis| tree.calc(val, basis));
         let border = child_style.border().resolve_or_zero(Some(area_width), |val, basis| tree.calc(val, basis));
         let padding_border_sum = (padding + border).sum_axes();
-        let box_sizing_adjustment =
-            if child_style.box_sizing() == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
+        let box_sizing = child_style.box_sizing();
+        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
         // Resolve inset
         let left = child_style.inset().left.maybe_resolve(area_width, |val, basis| tree.calc(val, basis));
@@ -1761,15 +1770,15 @@ fn perform_absolute_layout_on_absolute_children(
         // Compute numeric known dimensions from min/max/inherent size styles.
         let mut style_size = raw_size
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
         let mut min_size = raw_min_size
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
         let mut max_size = raw_max_size
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_sum)
             .maybe_add(box_sizing_adjustment);
 
         drop(child_style);
@@ -1811,11 +1820,14 @@ fn perform_absolute_layout_on_absolute_children(
         max_size.width = max_size.width.or(intrinsic.max);
 
         let min_size = min_size
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
             .or(padding_border_sum.map(Some))
             .maybe_max(padding_border_sum);
-        let max_size = max_size.maybe_apply_aspect_ratio(aspect_ratio);
-        let mut known_dimensions = style_size.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        let max_size =
+            max_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum);
+        let mut known_dimensions = style_size
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+            .maybe_clamp(min_size, max_size);
 
         // Fill in width from left/right and reapply aspect ratio if:
         //   - Width is not already known
@@ -1823,7 +1835,9 @@ fn perform_absolute_layout_on_absolute_children(
         if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
             let new_width_raw = area_width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
             known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+                .maybe_clamp(min_size, max_size);
         }
 
         // Fill in height from top/bottom and reapply aspect ratio if:
@@ -1832,7 +1846,9 @@ fn perform_absolute_layout_on_absolute_children(
         if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
             let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+                .maybe_clamp(min_size, max_size);
         }
 
         // If width is still auto then one or both horizontal insets are also auto. CSS 2.2
@@ -1849,7 +1865,9 @@ fn perform_absolute_layout_on_absolute_children(
                 available_width,
                 SizingMode::ContentSize,
             ));
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+                .maybe_clamp(min_size, max_size);
         }
 
         let measured_size = tree.measure_child_size_both(

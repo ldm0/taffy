@@ -18,7 +18,8 @@ use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout,
+    compute_cached_layout, compute_hidden_layout, compute_leaf_layout_with_aspect_ratio, compute_root_layout,
+    round_layout,
 };
 use crate::CacheTree;
 
@@ -320,11 +321,15 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
+                    let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
                     let node_key = node_id.into();
                     let style = &tree.taffy.nodes[node_key].style;
                     let has_context = tree.taffy.nodes[node_key].has_context;
                     let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    (tree.measure_function)(inputs, node_id, node_context, style)
+                    let measure_function = |known_dimensions, available_space| {
+                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
+                    };
+                    compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
                 }
             }
         })
