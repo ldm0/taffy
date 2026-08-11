@@ -884,7 +884,7 @@ fn generate_anonymous_flex_items(
                 parent_size: constants.node_inner_size,
                 parent_writing_mode: constants.writing_mode,
                 available_space: child_available_space,
-                vertical_margins_are_collapsible: Line::FALSE,
+                block_margins_are_collapsible: Line::FALSE,
             };
             let intrinsic = resolve_intrinsic_width_constraints(
                 tree,
@@ -2732,7 +2732,7 @@ fn perform_absolute_layout_on_absolute_children(
                 width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
                 height: AvailableSpace::Definite(container_height),
             },
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
         let intrinsic = resolve_intrinsic_width_constraints(
             tree,

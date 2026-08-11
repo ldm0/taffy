@@ -39,7 +39,7 @@ fn measure_intrinsic_axis(
             inputs.parent_writing_mode,
             available_space,
             SizingMode::ContentSize,
-            inputs.vertical_margins_are_collapsible,
+            inputs.block_margins_are_collapsible,
         ),
         RequestedAxis::from(axis),
     )
