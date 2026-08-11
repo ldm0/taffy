@@ -38,10 +38,17 @@ struct FlexItem {
     /// `flex-basis: content` must ignore a preferred main size, but it may use
     /// an independently definite cross size with the intrinsic aspect ratio.
     untransferred_size: Size<Option<f32>>,
-    /// The minimum allowable size of this item
+    /// The minimum allowable size with aspect-ratio transfers ignored.
+    ///
+    /// Flexible-length resolution uses this constraint; transferred constraints
+    /// only affect the hypothetical size.
     min_size: Size<Option<f32>>,
-    /// The maximum allowable size of this item
+    /// The maximum allowable size with aspect-ratio transfers ignored.
     max_size: Size<Option<f32>>,
+    /// The minimum allowable size after aspect-ratio constraint transfer.
+    transferred_min_size: Size<Option<f32>>,
+    /// The maximum allowable size after aspect-ratio constraint transfer.
+    transferred_max_size: Size<Option<f32>>,
     /// The used aspect ratio and the CSS sizing box that it constrains.
     aspect_ratio: ResolvedAspectRatio,
     /// The CSS sizing box used by authored size properties.
@@ -686,16 +693,16 @@ fn generate_anonymous_flex_items(
             max_size.width = max_size.width.or(intrinsic.max);
             let resolved = resolve_size_constraints(size, min_size, max_size, size_is_auto, aspect_ratio, pb_sum);
             size = resolved.size;
-            min_size = resolved.min_size;
-            max_size = resolved.max_size;
 
             Some(FlexItem {
                 node: child,
                 order: index as u32,
                 size,
                 untransferred_size,
-                min_size,
-                max_size,
+                min_size: resolved.min_size_without_transfer,
+                max_size: resolved.max_size_without_transfer,
+                transferred_min_size: resolved.min_size,
+                transferred_max_size: resolved.max_size,
                 aspect_ratio,
                 box_sizing,
 
@@ -822,8 +829,8 @@ fn determine_flex_base_size(
         // Min/max sizes transferred through the aspect ratio are taken into account here
         // https://github.com/w3c/csswg-drafts/issues/10997
         let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
-        let transferred_min_size = child.min_size;
-        let transferred_max_size = child.max_size;
+        let transferred_min_size = child.transferred_min_size;
+        let transferred_max_size = child.transferred_max_size;
         let child_min_cross = transferred_min_size.cross(dir).maybe_add(cross_axis_margin_sum);
         let child_max_cross = transferred_max_size.cross(dir).maybe_add(cross_axis_margin_sum);
 
@@ -1552,18 +1559,28 @@ fn determine_hypothetical_cross_size(
     available_space: Size<AvailableSpace>,
 ) {
     for child in line.items.iter_mut() {
-        let padding_border_sum = (child.padding + child.border).sum_axes().cross(constants.dir);
+        let padding_border = (child.padding + child.border).sum_axes();
+        let padding_border_sum = padding_border.cross(constants.dir);
 
         let child_known_main = constants.container_size.main(constants.dir).into();
 
         // Sizes transferred through the aspect ratio clamp the hypothetical cross size
         // https://github.com/w3c/csswg-drafts/issues/10997
-        let transferred_min_cross = child.min_size.cross(constants.dir);
-        let transferred_max_cross = child.max_size.cross(constants.dir);
+        let transferred_min_cross = child.transferred_min_size.cross(constants.dir);
+        let transferred_max_cross = child.transferred_max_size.cross(constants.dir);
 
+        // The flexed main size is a fixed input to hypothetical cross-size
+        // layout. Content-size measurement intentionally ignores authored size
+        // properties, so transfer that fixed input through the preferred ratio
+        // at this ownership boundary, matching Blink's child constraint space.
+        let ratio_cross = Size::NONE
+            .with_main(constants.dir, Some(child.target_size.main(constants.dir)))
+            .maybe_apply_aspect_ratio_with_box_sizing(child.aspect_ratio, BoxSizing::BorderBox, padding_border)
+            .cross(constants.dir);
         let child_cross = child
             .size
             .cross(constants.dir)
+            .or(ratio_cross)
             .maybe_clamp(transferred_min_cross, transferred_max_cross)
             .maybe_max(padding_border_sum);
 

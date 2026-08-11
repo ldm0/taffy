@@ -6,8 +6,15 @@ use crate::{BoxSizing, ResolvedAspectRatio, Size};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ResolvedSizeConstraints {
     pub size: Size<Option<f32>>,
+    /// Minimum constraint after applying aspect-ratio size transfers.
     pub min_size: Size<Option<f32>>,
+    /// Maximum constraint after applying aspect-ratio size transfers.
     pub max_size: Size<Option<f32>>,
+    /// Minimum constraint with transferred sizes ignored.
+    pub min_size_without_transfer: Size<Option<f32>>,
+    /// Maximum constraint with transferred sizes ignored and the CSS
+    /// minimum-wins-over-maximum rule applied.
+    pub max_size_without_transfer: Size<Option<f32>>,
 }
 
 /// Apply a preferred aspect ratio to resolved border-box sizes and merge
@@ -29,6 +36,11 @@ pub(crate) fn resolve_size_constraints(
 ) -> ResolvedSizeConstraints {
     let transferred_min = transferred_constraints(min_size, size_is_auto, aspect_ratio, padding_border);
     let transferred_max = transferred_constraints(max_size, size_is_auto, aspect_ratio, padding_border);
+    let min_size_without_transfer = min_size;
+    let max_size_without_transfer = Size {
+        width: merge_maximum(max_size.width, None, min_size.width),
+        height: merge_maximum(max_size.height, None, min_size.height),
+    };
 
     let min_size = Size {
         width: merge_minimum(min_size.width, transferred_min.width, max_size.width),
@@ -43,6 +55,8 @@ pub(crate) fn resolve_size_constraints(
         size: size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border),
         min_size,
         max_size,
+        min_size_without_transfer,
+        max_size_without_transfer,
     }
 }
 

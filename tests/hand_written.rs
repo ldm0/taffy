@@ -5,6 +5,7 @@ mod hand_written {
     mod block_replaced;
     mod border_and_padding;
     mod caching;
+    mod flex_aspect_ratio;
     mod flex_auto_margins;
     mod flex_basis_content;
     mod floats;
