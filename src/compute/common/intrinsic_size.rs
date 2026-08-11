@@ -6,9 +6,9 @@
 //! seam so every formatting context uses the same pass-local cache and no
 //! retained intrinsic-size state is required.
 
-use crate::geometry::{AbsoluteAxis, Size};
+use crate::geometry::Size;
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
-use crate::tree::{LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
+use crate::tree::{LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::BoxSizing;
 
@@ -18,16 +18,25 @@ fn measure_intrinsic_width(
     node_id: crate::NodeId,
     inputs: LayoutInput,
     constraint: AvailableSpace,
-) -> f32 {
-    tree.measure_child_size(
+) -> LayoutOutput {
+    tree.measure_child_size_with_metadata(
         node_id,
         Size { width: None, height: inputs.known_dimensions.height },
         inputs.parent_size,
         Size { width: constraint, height: inputs.available_space.height },
         SizingMode::ContentSize,
-        AbsoluteAxis::Horizontal,
+        RequestedAxis::Horizontal,
         inputs.vertical_margins_are_collapsible,
     )
+}
+
+/// One resolved intrinsic width together with cache dependency metadata.
+#[derive(Clone, Copy, Debug, Default)]
+struct IntrinsicWidthValue {
+    /// Resolved border-box width, or `None` when the value is not intrinsic.
+    value: Option<f32>,
+    /// Whether measuring the value observed a block-constraint dependency.
+    depends_on_block_constraints: bool,
 }
 
 /// Resolve a horizontal sizing value that may depend on the box's intrinsic
@@ -35,35 +44,46 @@ fn measure_intrinsic_width(
 ///
 /// `available_width` is the border-box space left after horizontal margins.
 /// Returned values are border-box sizes, matching `LayoutInput::known_dimensions`.
-pub(crate) fn resolve_intrinsic_width_value(
+fn resolve_intrinsic_width_value(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
     value: Dimension,
     available_width: AvailableSpace,
-) -> Option<f32> {
+) -> IntrinsicWidthValue {
     if value.is_stretch() {
-        return available_width.into_option();
+        return IntrinsicWidthValue { value: available_width.into_option(), depends_on_block_constraints: false };
     }
     if !value.is_intrinsic() {
-        return None;
+        return IntrinsicWidthValue::default();
     }
 
     if value.is_min_content() {
-        return Some(measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MinContent));
+        let measured = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MinContent);
+        return IntrinsicWidthValue {
+            value: Some(measured.size.width),
+            depends_on_block_constraints: measured.depends_on_block_constraints,
+        };
     }
 
     let max_content = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MaxContent);
     if value.is_max_content() {
-        return Some(max_content);
+        return IntrinsicWidthValue {
+            value: Some(max_content.size.width),
+            depends_on_block_constraints: max_content.depends_on_block_constraints,
+        };
     }
 
     let min_content = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MinContent);
-    Some(match available_width {
-        AvailableSpace::MinContent => min_content,
-        AvailableSpace::MaxContent => max_content,
-        AvailableSpace::Definite(limit) => limit.clamp(min_content, max_content),
-    })
+    IntrinsicWidthValue {
+        value: Some(match available_width {
+            AvailableSpace::MinContent => min_content.size.width,
+            AvailableSpace::MaxContent => max_content.size.width,
+            AvailableSpace::Definite(limit) => limit.clamp(min_content.size.width, max_content.size.width),
+        }),
+        depends_on_block_constraints: min_content.depends_on_block_constraints
+            || max_content.depends_on_block_constraints,
+    }
 }
 
 /// Intrinsic components of the preferred, minimum, and maximum inline sizes.
@@ -79,6 +99,9 @@ pub(crate) struct IntrinsicWidthConstraints {
     pub min: Option<f32>,
     /// Intrinsic component of `max-width`.
     pub max: Option<f32>,
+    /// Whether any measured contribution changes with the containing block's
+    /// block-size.
+    pub depends_on_block_constraints: bool,
 }
 
 /// Resolve all three horizontal intrinsic sizing properties at one ownership
@@ -96,10 +119,16 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     max: Dimension,
     available_width: AvailableSpace,
 ) -> IntrinsicWidthConstraints {
+    let preferred = resolve_intrinsic_width_value(tree, node_id, inputs, preferred, available_width);
+    let min = resolve_intrinsic_width_value(tree, node_id, inputs, min, available_width);
+    let max = resolve_intrinsic_width_value(tree, node_id, inputs, max, available_width);
     IntrinsicWidthConstraints {
-        preferred: resolve_intrinsic_width_value(tree, node_id, inputs, preferred, available_width),
-        min: resolve_intrinsic_width_value(tree, node_id, inputs, min, available_width),
-        max: resolve_intrinsic_width_value(tree, node_id, inputs, max, available_width),
+        preferred: preferred.value,
+        min: min.value,
+        max: max.value,
+        depends_on_block_constraints: preferred.depends_on_block_constraints
+            || min.depends_on_block_constraints
+            || max.depends_on_block_constraints,
     }
 }
 
@@ -113,10 +142,20 @@ pub(crate) fn resolve_intrinsic_width_constraints(
 pub fn resolve_intrinsic_width_inputs(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
-    mut inputs: LayoutInput,
+    inputs: LayoutInput,
 ) -> LayoutInput {
+    resolve_intrinsic_width_inputs_with_metadata(tree, node_id, inputs).0
+}
+
+/// Internal variant of [`resolve_intrinsic_width_inputs`] that retains
+/// dependency metadata from recursive content measurements.
+pub(crate) fn resolve_intrinsic_width_inputs_with_metadata(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    mut inputs: LayoutInput,
+) -> (LayoutInput, bool) {
     if inputs.sizing_mode != SizingMode::InherentSize {
-        return inputs;
+        return (inputs, false);
     }
 
     let (
@@ -172,5 +211,5 @@ pub fn resolve_intrinsic_width_inputs(
     let max_size = transferred_max_width.or(intrinsic.max);
 
     inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
-    inputs
+    (inputs, intrinsic.depends_on_block_constraints)
 }

@@ -189,6 +189,13 @@ impl LayoutInput {
 pub struct LayoutOutput {
     /// The size of the node
     pub size: Size<f32>,
+    /// Whether this measured result can change when the containing block's
+    /// block-size changes.
+    ///
+    /// This metadata is meaningful for [`RunMode::ComputeSize`] results. It is
+    /// propagated through intrinsic-size calculations so the measurement cache
+    /// can ignore parent block-size only when doing so is safe.
+    pub depends_on_block_constraints: bool,
     #[cfg(feature = "content_size")]
     /// The size of the content within the node
     pub content_size: Size<f32>,
@@ -211,6 +218,7 @@ impl LayoutOutput {
     /// An all-zero `LayoutOutput` for hidden nodes
     pub const HIDDEN: Self = Self {
         size: Size::ZERO,
+        depends_on_block_constraints: false,
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
         first_baselines: Point::NONE,
@@ -241,6 +249,7 @@ impl LayoutOutput {
     ) -> Self {
         Self {
             size,
+            depends_on_block_constraints: false,
             #[cfg(feature = "content_size")]
             content_size,
             first_baselines,
@@ -259,6 +268,13 @@ impl LayoutOutput {
     /// Construct a `LayoutOutput` from just the container's size.
     pub fn from_outer_size(size: Size<f32>) -> Self {
         Self::from_sizes(size, Size::zero())
+    }
+
+    /// Add block-constraint dependency metadata to a measured result.
+    #[inline(always)]
+    pub(crate) fn with_block_constraint_dependency(mut self, depends: bool) -> Self {
+        self.depends_on_block_constraints |= depends;
+        self
     }
 }
 
