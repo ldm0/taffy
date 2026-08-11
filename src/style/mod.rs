@@ -97,6 +97,15 @@ pub trait CoreStyle {
     fn is_block(&self) -> bool {
         false
     }
+    /// Is this node laid out using the block formatting algorithm?
+    ///
+    /// Unlike `is_block`, this includes independent `flow-root` boxes. It is
+    /// used for algorithm-specific behavior such as inline-block baseline
+    /// propagation, not margin-collapsing participation.
+    #[inline(always)]
+    fn uses_block_layout(&self) -> bool {
+        self.is_block()
+    }
     /// Is it a compressible replaced element?
     /// <https://drafts.csswg.org/css-sizing-3/#min-content-zero>
     #[inline(always)]
@@ -694,6 +703,11 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
         matches!(self.display, Display::Block)
     }
     #[inline(always)]
+    #[cfg(feature = "block_layout")]
+    fn uses_block_layout(&self) -> bool {
+        matches!(self.display, Display::Block | Display::FlowRoot)
+    }
+    #[inline(always)]
     fn is_compressible_replaced(&self) -> bool {
         self.item_is_replaced
     }
@@ -761,6 +775,10 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
     #[inline(always)]
     fn is_block(&self) -> bool {
         (*self).is_block()
+    }
+    #[inline(always)]
+    fn uses_block_layout(&self) -> bool {
+        (*self).uses_block_layout()
     }
     #[inline(always)]
     fn is_compressible_replaced(&self) -> bool {
