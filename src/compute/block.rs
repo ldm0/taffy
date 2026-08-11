@@ -286,6 +286,12 @@ struct BlockItem {
     /// <https://www.w3.org/TR/CSS22/visudet.html#block-replaced-width>
     is_replaced: bool,
 
+    /// Whether this item is laid out by the block formatting algorithm.
+    ///
+    /// Inline-block baseline propagation uses a block child's last baseline,
+    /// while other formatting contexts contribute their first baseline.
+    uses_block_layout: bool,
+
     /// Whether the child is a non-independent block or inline node
     is_in_same_bfc: bool,
 
@@ -588,6 +594,7 @@ fn compute_inner(
         first_child_top_margin_set,
         last_child_bottom_margin_set,
         mut first_baseline,
+        mut last_baseline,
     ) = perform_final_layout_on_in_flow_children(
         tree,
         run_mode,
@@ -642,6 +649,7 @@ fn compute_inner(
             let keyword = apply_alignment_fallback(free_space, 1, align_content);
             let group_offset = compute_alignment_offset(free_space, 1, 0.0, keyword, false, true);
             first_baseline = first_baseline.map(|baseline| baseline + group_offset);
+            last_baseline = last_baseline.map(|baseline| baseline + group_offset);
             for item in items.iter_mut() {
                 if let Some(layout) = item.final_layout.as_mut() {
                     layout.location.y += group_offset;
@@ -694,6 +702,7 @@ fn compute_inner(
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
         first_baselines: Point { x: None, y: first_baseline },
+        last_baselines: Point { x: None, y: last_baseline },
         top_margin: if own_margins_collapse_with_children.start {
             first_child_top_margin_set
         } else {
@@ -831,6 +840,7 @@ fn generate_item_list(
             let is_not_floated = true;
 
             let is_block = child_style.is_block();
+            let uses_block_layout = child_style.uses_block_layout();
             let is_table = child_style.is_table();
             let is_replaced = child_style.is_compressible_replaced();
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
@@ -881,6 +891,7 @@ fn generate_item_list(
                 order: 0,
                 is_table,
                 is_replaced,
+                uses_block_layout,
                 is_in_same_bfc,
                 #[cfg(feature = "float_layout")]
                 float,
@@ -1031,7 +1042,7 @@ fn perform_final_layout_on_in_flow_children(
     direction: Direction,
     own_margins_collapse_with_children: Line<bool>,
     block_ctx: &mut BlockContext<'_>,
-) -> (Size<f32>, f32, CollapsibleMarginSet, CollapsibleMarginSet, Option<f32>) {
+) -> (Size<f32>, f32, CollapsibleMarginSet, CollapsibleMarginSet, Option<f32>, Option<f32>) {
     // Resolve container_inner_width for sizing child nodes using initial content_box_inset
     let container_inner_width = container_outer_width - resolved_content_box_inset.horizontal_axis_sum();
     let container_percentage_resolution_height =
@@ -1074,6 +1085,7 @@ fn perform_final_layout_on_in_flow_children(
     let mut active_collapsible_margin_set = CollapsibleMarginSet::ZERO;
     let mut is_collapsing_with_first_margin_set = true;
     let mut first_baseline: Option<f32> = None;
+    let mut last_baseline: Option<f32> = None;
     // Whether the active margin set contains the margins of a self-collapsing element with
     // clearance. Such margins collapse with the margins of following siblings but the resulting
     // margin does not collapse with the bottom margin of the parent block.
@@ -1525,6 +1537,26 @@ fn perform_final_layout_on_in_flow_children(
                 first_baseline = item_layout.first_baselines.y.map(|baseline| location.y + baseline);
             }
 
+            // CSS inline-block baseline propagation walks normal-flow block
+            // descendants. Block-layout children contribute their last
+            // baseline; other formatting contexts contribute their first.
+            // A scroll-container block instead forces synthesis at its
+            // block-end margin edge (CSS2 10.8 / CSS Inline 3).
+            if !item.is_table {
+                let child_baseline = if item.uses_block_layout && !item.is_replaced {
+                    if item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container() {
+                        Some(item_layout.size.height + resolved_margin.bottom)
+                    } else {
+                        item_layout.last_baselines.y
+                    }
+                } else {
+                    item_layout.first_baselines.y
+                };
+                if let Some(baseline) = child_baseline {
+                    last_baseline = Some(location.y + baseline);
+                }
+            }
+
             // Defer `set_unrounded_layout` to the post-loop pass in `compute_inner` so that
             // `align-content` can shift `location.y` before the layout is committed to the tree.
             item.final_layout = Some(Layout {
@@ -1625,7 +1657,14 @@ fn perform_final_layout_on_in_flow_children(
 
     committed_y_offset += resolved_content_box_inset.bottom + bottom_y_margin_offset;
     let content_height = f32_max(0.0, committed_y_offset);
-    (inflow_content_size, content_height, first_child_top_margin_set, last_child_bottom_margin_set, first_baseline)
+    (
+        inflow_content_size,
+        content_height,
+        first_child_top_margin_set,
+        last_child_bottom_margin_set,
+        first_baseline,
+        last_baseline,
+    )
 }
 
 /// Resolve auto margins in one axis of an absolutely positioned box.
