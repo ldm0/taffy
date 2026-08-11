@@ -4,7 +4,7 @@ use super::{
     LengthPercentage, LengthPercentageAuto, Style,
 };
 use crate::compute::grid::{GridCoordinate, GridLine, OriginZeroLine, MAX_GRID_TRACKS};
-use crate::geometry::{AbsoluteAxis, AbstractAxis, Line, MinMax, Size};
+use crate::geometry::{AbstractAxis, Line, MinMax, Size};
 use crate::style_helpers::*;
 use crate::sys::{DefaultCheapStr, Vec};
 use core::cmp::{max, min};
@@ -248,10 +248,10 @@ pub trait GridContainerStyle: CoreStyle {
 
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
-    fn grid_template_tracks(&self, axis: AbsoluteAxis) -> Option<Self::TemplateTrackList<'_>> {
+    fn grid_template_tracks(&self, axis: AbstractAxis) -> Option<Self::TemplateTrackList<'_>> {
         match axis {
-            AbsoluteAxis::Horizontal => self.grid_template_columns(),
-            AbsoluteAxis::Vertical => self.grid_template_rows(),
+            AbstractAxis::Inline => self.grid_template_columns(),
+            AbstractAxis::Block => self.grid_template_rows(),
         }
     }
 
@@ -293,10 +293,10 @@ pub trait GridItemStyle: CoreStyle {
 
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
-    fn grid_placement(&self, axis: AbsoluteAxis) -> Line<GridPlacement<Self::CustomIdent>> {
+    fn grid_placement(&self, axis: AbstractAxis) -> Line<GridPlacement<Self::CustomIdent>> {
         match axis {
-            AbsoluteAxis::Horizontal => self.grid_column(),
-            AbsoluteAxis::Vertical => self.grid_row(),
+            AbstractAxis::Inline => self.grid_column(),
+            AbstractAxis::Block => self.grid_row(),
         }
     }
 }
@@ -375,10 +375,10 @@ impl GridAutoFlow {
 
     /// Whether grid auto placement fills areas row-wise or column-wise
     /// See: <https://developer.mozilla.org/en-US/docs/Web/CSS/grid-auto-flow#values>
-    pub const fn primary_axis(&self) -> AbsoluteAxis {
+    pub const fn primary_axis(&self) -> AbstractAxis {
         match self {
-            Self::Row | Self::RowDense => AbsoluteAxis::Horizontal,
-            Self::Column | Self::ColumnDense => AbsoluteAxis::Vertical,
+            Self::Row | Self::RowDense => AbstractAxis::Inline,
+            Self::Column | Self::ColumnDense => AbstractAxis::Block,
         }
     }
 }

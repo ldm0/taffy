@@ -75,6 +75,15 @@ impl WritingDirection {
         self.mode.is_block_flow_reversed()
     }
 
+    /// Whether logical start lies at the high physical coordinate for `axis`.
+    #[inline(always)]
+    pub const fn is_logical_axis_reversed(self, axis: AbstractAxis) -> bool {
+        match axis {
+            AbstractAxis::Inline => self.is_inline_flow_reversed(),
+            AbstractAxis::Block => self.is_block_flow_reversed(),
+        }
+    }
+
     /// Create a converter whose offsets are relative to `outer_size`.
     #[inline(always)]
     pub const fn converter<T>(self, outer_size: Size<T>) -> WritingModeConverter<T> {
@@ -254,16 +263,32 @@ impl AbstractAxis {
         }
     }
 
-    /// Convert an `AbstractAxis` into an `AbsoluteAxis` using grid's current
-    /// horizontal track-storage convention.
-    ///
-    /// Callers implementing writing-mode-aware grid flow must project through
-    /// [`WritingMode`] instead of using this helper.
+    /// Project this logical axis into the physical axis selected by
+    /// `writing_mode`.
     #[inline]
-    pub const fn as_abs_naive(&self) -> AbsoluteAxis {
-        match self {
-            AbstractAxis::Inline => AbsoluteAxis::Horizontal,
-            AbstractAxis::Block => AbsoluteAxis::Vertical,
+    pub const fn to_absolute(self, writing_mode: WritingMode) -> AbsoluteAxis {
+        match (self, writing_mode.is_horizontal()) {
+            (AbstractAxis::Inline, true) | (AbstractAxis::Block, false) => AbsoluteAxis::Horizontal,
+            (AbstractAxis::Block, true) | (AbstractAxis::Inline, false) => AbsoluteAxis::Vertical,
+        }
+    }
+}
+
+/// Container that holds one value for each CSS logical axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InBothAbstractAxis<T> {
+    /// Value for the inline/column axis.
+    pub inline: T,
+    /// Value for the block/row axis.
+    pub block: T,
+}
+
+impl<T: Copy> InBothAbstractAxis<T> {
+    /// Get the value for `axis`.
+    pub const fn get(&self, axis: AbstractAxis) -> T {
+        match axis {
+            AbstractAxis::Inline => self.inline,
+            AbstractAxis::Block => self.block,
         }
     }
 }
@@ -276,17 +301,6 @@ pub(crate) struct InBothAbsAxis<T> {
     pub horizontal: T,
     /// The item in the vertical axis
     pub vertical: T,
-}
-
-impl<T: Copy> InBothAbsAxis<T> {
-    #[cfg(feature = "grid")]
-    /// Get the contained item based on the AbsoluteAxis passed
-    pub const fn get(&self, axis: AbsoluteAxis) -> T {
-        match axis {
-            AbsoluteAxis::Horizontal => self.horizontal,
-            AbsoluteAxis::Vertical => self.vertical,
-        }
-    }
 }
 
 /// An axis-aligned UI rectangle
@@ -621,6 +635,28 @@ impl<T> LogicalSize<T> {
     {
         LogicalSize { inline_size: f(self.inline_size), block_size: f(self.block_size) }
     }
+
+    /// Get the component for `axis`.
+    pub fn get(self, axis: AbstractAxis) -> T {
+        match axis {
+            AbstractAxis::Inline => self.inline_size,
+            AbstractAxis::Block => self.block_size,
+        }
+    }
+
+    /// Replace the component for `axis`.
+    pub fn set(&mut self, axis: AbstractAxis, value: T) {
+        match axis {
+            AbstractAxis::Inline => self.inline_size = value,
+            AbstractAxis::Block => self.block_size = value,
+        }
+    }
+
+    /// Return a copy with the component for `axis` replaced by `value`.
+    pub fn with(mut self, axis: AbstractAxis, value: T) -> Self {
+        self.set(axis, value);
+        self
+    }
 }
 
 impl LogicalSize<f32> {
@@ -811,37 +847,6 @@ impl<T> Size<T> {
         } else {
             self.width
         }
-    }
-
-    /// Gets the extent of the specified layout axis
-    /// Whether this is the width or height depends on the `GridAxis` provided
-    #[cfg(feature = "grid")]
-    pub(crate) fn get(self, axis: AbstractAxis) -> T {
-        match axis {
-            AbstractAxis::Inline => self.width,
-            AbstractAxis::Block => self.height,
-        }
-    }
-
-    /// Sets the extent of the specified layout axis
-    /// Whether this is the width or height depends on the `GridAxis` provided
-    #[cfg(feature = "grid")]
-    pub(crate) fn set(&mut self, axis: AbstractAxis, value: T) {
-        match axis {
-            AbstractAxis::Inline => self.width = value,
-            AbstractAxis::Block => self.height = value,
-        }
-    }
-
-    /// Sets the extent of the specified layout axis
-    /// Whether this is the width or height depends on the `GridAxis` provided
-    #[cfg(feature = "grid")]
-    pub(crate) fn with(mut self, axis: AbstractAxis, value: T) -> Self {
-        match axis {
-            AbstractAxis::Inline => self.width = value,
-            AbstractAxis::Block => self.height = value,
-        }
-        self
     }
 }
 
