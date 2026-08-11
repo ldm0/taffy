@@ -54,6 +54,7 @@ use crate::geometry::{Line, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
 use crate::tree::{
     Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree, RunMode, SizingMode,
+    SizingPurpose,
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
@@ -73,6 +74,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         LayoutInput {
             run_mode: RunMode::PerformLayout,
             sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,

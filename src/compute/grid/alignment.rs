@@ -9,7 +9,7 @@ use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
     Position,
 };
-use crate::tree::{Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode};
+use crate::tree::{Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode, SizingPurpose};
 use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
@@ -167,6 +167,7 @@ pub(super) fn align_and_position_item(
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
         sizing_mode: SizingMode::InherentSize,
+        sizing_purpose: SizingPurpose::IntrinsicContribution,
         axis: RequestedAxis::Horizontal,
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
