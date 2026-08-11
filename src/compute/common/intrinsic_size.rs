@@ -8,7 +8,9 @@
 
 use crate::geometry::Size;
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
-use crate::tree::{LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis, SizingMode};
+use crate::tree::{
+    IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis, SizingMode,
+};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::BoxSizing;
 
@@ -18,7 +20,7 @@ fn measure_intrinsic_width(
     node_id: crate::NodeId,
     inputs: LayoutInput,
     constraint: AvailableSpace,
-) -> LayoutOutput {
+) -> IntrinsicSizeResult {
     tree.measure_child_size_with_metadata(
         node_id,
         Size { width: None, height: inputs.known_dimensions.height },

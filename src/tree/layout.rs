@@ -178,6 +178,36 @@ impl LayoutInput {
     };
 }
 
+/// The result of an intrinsic size probe.
+///
+/// Unlike [`LayoutOutput`], this type only carries state that is meaningful
+/// while a parent formatting context is measuring a child. Keeping the
+/// dependency metadata on the measurement protocol prevents block, flex, and
+/// grid algorithms from treating a full layout result as an intrinsic sizing
+/// result.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct IntrinsicSizeResult {
+    /// The measured outer size of the node.
+    pub size: Size<f32>,
+    /// Whether the measured inline contribution can change when the containing
+    /// block's block-size changes.
+    pub depends_on_block_constraints: bool,
+    /// Whether this probe obtained its inline contribution by applying the
+    /// node's preferred aspect ratio.
+    ///
+    /// This is operation-local provenance. A parent contribution resolver may
+    /// consume it, but it must not propagate it to the parent's result.
+    pub applied_aspect_ratio: bool,
+}
+
+impl IntrinsicSizeResult {
+    /// Construct an independent intrinsic size result.
+    pub const fn from_size(size: Size<f32>) -> Self {
+        Self { size, depends_on_block_constraints: false, applied_aspect_ratio: false }
+    }
+}
+
 /// A struct containing the result of laying a single node, which is returned up to the parent node
 ///
 /// A baseline is the line on which text sits. Your node likely has a baseline if it is a text node, or contains
@@ -189,13 +219,10 @@ impl LayoutInput {
 pub struct LayoutOutput {
     /// The size of the node
     pub size: Size<f32>,
-    /// Whether this measured result can change when the containing block's
-    /// block-size changes.
-    ///
-    /// This metadata is meaningful for [`RunMode::ComputeSize`] results. It is
-    /// propagated through intrinsic-size calculations so the measurement cache
-    /// can ignore parent block-size only when doing so is safe.
-    pub depends_on_block_constraints: bool,
+    /// Transitional transport for the combined low-level dispatcher. Public
+    /// layout consumers exchange this state through [`IntrinsicSizeResult`],
+    /// not through `LayoutOutput`.
+    depends_on_block_constraints: bool,
     #[cfg(feature = "content_size")]
     /// The size of the content within the node
     pub content_size: Size<f32>,
@@ -275,6 +302,35 @@ impl LayoutOutput {
     pub(crate) fn with_block_constraint_dependency(mut self, depends: bool) -> Self {
         self.depends_on_block_constraints |= depends;
         self
+    }
+
+    /// Return whether this combined dispatcher result depends on the parent
+    /// block constraint.
+    #[inline(always)]
+    pub(crate) fn block_constraint_dependency(&self) -> bool {
+        self.depends_on_block_constraints
+    }
+
+    /// Replace the dependency state at the node sizing boundary.
+    #[inline(always)]
+    pub(crate) fn set_block_constraint_dependency(&mut self, depends: bool) {
+        self.depends_on_block_constraints = depends;
+    }
+
+    /// Project the measurement portion of this transitional combined result.
+    ///
+    /// Layout algorithms should exchange [`IntrinsicSizeResult`] through
+    /// [`LayoutPartialTree::compute_child_size`](super::LayoutPartialTree::compute_child_size)
+    /// instead of consuming this projection directly. It exists while the
+    /// low-level cached layout dispatcher still transports both operation
+    /// results through `LayoutOutput`.
+    #[inline(always)]
+    pub(crate) fn intrinsic_size_result(self) -> IntrinsicSizeResult {
+        IntrinsicSizeResult {
+            size: self.size,
+            depends_on_block_constraints: self.depends_on_block_constraints,
+            applied_aspect_ratio: false,
+        }
     }
 }
 
