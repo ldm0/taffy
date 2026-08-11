@@ -16,6 +16,20 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::compute::common::content_size::compute_content_size_contribution;
 use crate::{BoxSizing, Direction, LayoutGridContainer};
 
+/// Final block-axis geometry and baseline data for a positioned grid item.
+///
+/// Baselines belong to the final child layout, not to the temporary intrinsic
+/// measurement used to calculate baseline shims. Keeping both sets here lets
+/// the grid container propagate distinct first and last baselines to its own
+/// parent formatting context.
+pub(super) struct GridItemPlacement {
+    pub(super) content_size_contribution: Size<f32>,
+    pub(super) block_start: f32,
+    pub(super) block_size: f32,
+    pub(super) first_baseline: Option<f32>,
+    pub(super) last_baseline: Option<f32>,
+}
+
 /// Align the grid tracks within the grid according to the align-content (rows) or
 /// justify-content (columns) property. This only does anything if the size of the
 /// grid is not equal to the size of the grid container in the axis being aligned.
@@ -87,7 +101,7 @@ pub(super) fn align_and_position_item(
     direction: Direction,
     container_border_box_width: f32,
     container_border: Rect<f32>,
-) -> (Size<f32>, f32, f32) {
+) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
 
     let style = tree.get_grid_child_style(node);
@@ -324,7 +338,13 @@ pub(super) fn align_and_position_item(
     #[cfg(not(feature = "content_size"))]
     let contribution = Size::ZERO;
 
-    (contribution, y, height)
+    GridItemPlacement {
+        content_size_contribution: contribution,
+        block_start: y,
+        block_size: height,
+        first_baseline: layout_output.first_baselines.y,
+        last_baseline: layout_output.last_baselines.y,
+    }
 }
 
 /// Align and size a grid item along a single axis

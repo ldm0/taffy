@@ -19,10 +19,10 @@ use placement::place_grid_items;
 use track_sizing::{
     determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes, track_sizing_algorithm,
 };
-use types::{CellOccupancyMatrix, GridTrack, NamedLineResolver, TrackCounts};
+use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
 #[cfg(feature = "detailed_layout_info")]
-use types::{GridItem, GridTrackKind};
+use types::GridTrackKind;
 
 pub(crate) use types::{GridCoordinate, GridLine, OriginZeroLine, MAX_GRID_TRACKS, MAX_OZ_LINE, MIN_OZ_LINE};
 
@@ -609,7 +609,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             right: columns[item.column_indexes.end as usize].offset,
         };
         #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-        let (content_size_contribution, y_position, height) = align_and_position_item(
+        let placement = align_and_position_item(
             tree,
             item.node,
             index as u32,
@@ -620,12 +620,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             container_border_box.width,
             border,
         );
-        item.y_position = y_position;
-        item.height = height;
+        item.y_position = placement.block_start;
+        item.height = placement.block_size;
+        item.first_baseline = placement.first_baseline;
+        item.last_baseline = placement.last_baseline;
 
         #[cfg(feature = "content_size")]
         {
-            item_content_size_contribution = item_content_size_contribution.f32_max(content_size_contribution);
+            item_content_size_contribution =
+                item_content_size_contribution.f32_max(placement.content_size_contribution);
         }
     }
 
@@ -728,7 +731,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-            let (content_size_contribution, _, _) = align_and_position_item(
+            let placement = align_and_position_item(
                 tree,
                 child,
                 order,
@@ -741,7 +744,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             );
             #[cfg(feature = "content_size")]
             {
-                absolute_content_size = absolute_content_size.f32_max(content_size_contribution);
+                absolute_content_size = absolute_content_size.f32_max(placement.content_size_contribution);
             }
 
             order += 1;
@@ -764,28 +767,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         return LayoutOutput::from_outer_size(container_border_box);
     }
 
-    // Determine the grid container baseline(s) (currently we only compute the first baseline)
-    let grid_container_baseline: f32 = {
-        // Sort items by row start position so that we can iterate items in groups which are in the same row
-        items.sort_by_key(|item| item.row_indexes.start);
-
-        // Get the row index of the first row containing items
-        let first_row = items[0].row_indexes.start;
-
-        // Create a slice of all of the items start in this row (taking advantage of the fact that we have just sorted the array)
-        let first_row_items = &items[0..].split(|item| item.row_indexes.start != first_row).next().unwrap();
-
-        // Check if any items in *this row* are baseline aligned
-        let row_has_baseline_item = first_row_items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
-
-        let item = if row_has_baseline_item {
-            first_row_items.iter().find(|item| item.align_self == AlignSelf::BASELINE).unwrap()
-        } else {
-            &first_row_items[0]
-        };
-
-        item.y_position + item.baseline.unwrap_or(item.height)
-    };
+    let (first_baseline, last_baseline) = grid_container_baselines(&items);
 
     // The container's own padding at the end of the content is part of its scrollable
     // overflow region, so it is included in the in-flow content size.
@@ -799,11 +781,60 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     #[cfg(not(feature = "content_size"))]
     let content_size = item_content_size_contribution;
 
-    LayoutOutput::from_sizes_and_baselines(
+    LayoutOutput::from_sizes_and_baseline_sets(
         container_border_box,
         content_size,
-        Point { x: None, y: Some(grid_container_baseline) },
+        Point { x: None, y: Some(first_baseline) },
+        Point { x: None, y: Some(last_baseline) },
     )
+}
+
+/// Select the grid container's baselines from final item fragments.
+///
+/// This is the horizontal-writing-mode subset of Blink's
+/// `GridBaselineAccumulator`: a baseline-sharing group in the first/last
+/// occupied row wins, otherwise selection falls back to the first/last item in
+/// grid order. Fallback selection uses the child's corresponding baseline and
+/// synthesizes one at its block-end border edge only when that baseline is
+/// absent.
+fn grid_container_baselines(items: &[GridItem]) -> (f32, f32) {
+    debug_assert!(!items.is_empty());
+
+    let first_occupied_row = items.iter().map(|item| item.row_indexes.start).min().unwrap();
+    let first_item = items
+        .iter()
+        .filter(|item| item.row_indexes.start == first_occupied_row && item.align_self == AlignSelf::BASELINE)
+        .min_by_key(|item| (item.column_indexes.start, item.source_order))
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| item.row_indexes.start == first_occupied_row)
+                .min_by_key(|item| (item.column_indexes.start, item.source_order))
+        })
+        .unwrap();
+    let first_baseline = first_item.y_position + first_item.first_baseline.unwrap_or(first_item.height);
+
+    // GridTrackVec stores one line/gutter slot on each side of a row track, so
+    // the start index of an item's last occupied row is two slots before its
+    // end index.
+    let last_occupied_row = items.iter().map(|item| item.row_indexes.end.saturating_sub(2)).max().unwrap();
+    let last_item = items
+        .iter()
+        .filter(|item| item.row_indexes.start == last_occupied_row && item.align_self == AlignSelf::BASELINE)
+        .max_by_key(|item| (item.column_indexes.end, item.source_order))
+        .or_else(|| items.iter().max_by_key(|item| (item.row_indexes.end, item.column_indexes.end, item.source_order)))
+        .unwrap();
+    let last_baseline =
+        if last_item.align_self == AlignSelf::BASELINE && last_item.row_indexes.start == last_occupied_row {
+            // Taffy currently supports first-baseline sharing groups. When such a
+            // group exists in the last occupied row, its shared major baseline is
+            // also the grid container's last baseline.
+            last_item.first_baseline.unwrap_or(last_item.height)
+        } else {
+            last_item.last_baseline.unwrap_or(last_item.height)
+        };
+
+    (first_baseline, last_item.y_position + last_baseline)
 }
 
 /// Reverses only non-gutter column tracks in-place while preserving line/gutter slots.
@@ -954,5 +985,118 @@ impl DetailedGridItemsInfo {
             column_start: to_one_indexed_grid_line(grid_item.column_indexes.start),
             column_end: to_one_indexed_grid_line(grid_item.column_indexes.end),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Style;
+
+    #[allow(clippy::too_many_arguments)]
+    fn baseline_item(
+        source_order: u16,
+        row_indexes: Line<u16>,
+        column_indexes: Line<u16>,
+        participates_in_baseline_alignment: bool,
+        y_position: f32,
+        height: f32,
+        first_baseline: Option<f32>,
+        last_baseline: Option<f32>,
+    ) -> GridItem {
+        let style: Style =
+            Style { align_self: participates_in_baseline_alignment.then_some(AlignSelf::BASELINE), ..Style::default() };
+        let mut item = GridItem::new_with_placement_style_and_order(
+            NodeId::new(u64::from(source_order)),
+            Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+            Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+            style,
+            AlignItems::STRETCH,
+            AlignItems::STRETCH,
+            source_order,
+        );
+        item.row_indexes = row_indexes;
+        item.column_indexes = column_indexes;
+        item.y_position = y_position;
+        item.height = height;
+        item.first_baseline = first_baseline;
+        item.last_baseline = last_baseline;
+        item
+    }
+
+    #[test]
+    fn grid_propagates_distinct_final_child_baseline_sets() {
+        let items = vec![
+            baseline_item(
+                0,
+                Line { start: 0, end: 2 },
+                Line { start: 0, end: 2 },
+                false,
+                10.0,
+                30.0,
+                Some(8.0),
+                Some(24.0),
+            ),
+            baseline_item(
+                1,
+                Line { start: 2, end: 4 },
+                Line { start: 0, end: 2 },
+                false,
+                50.0,
+                40.0,
+                Some(10.0),
+                Some(32.0),
+            ),
+        ];
+
+        assert_eq!(grid_container_baselines(&items), (18.0, 82.0));
+    }
+
+    #[test]
+    fn grid_baseline_sharing_groups_take_priority_in_edge_rows() {
+        let items = vec![
+            baseline_item(
+                0,
+                Line { start: 0, end: 2 },
+                Line { start: 0, end: 2 },
+                false,
+                0.0,
+                20.0,
+                Some(5.0),
+                Some(15.0),
+            ),
+            baseline_item(
+                1,
+                Line { start: 0, end: 2 },
+                Line { start: 2, end: 4 },
+                true,
+                0.0,
+                24.0,
+                Some(12.0),
+                Some(18.0),
+            ),
+            baseline_item(
+                2,
+                Line { start: 2, end: 4 },
+                Line { start: 0, end: 2 },
+                false,
+                40.0,
+                34.0,
+                Some(6.0),
+                Some(28.0),
+            ),
+            baseline_item(
+                3,
+                Line { start: 2, end: 4 },
+                Line { start: 2, end: 4 },
+                true,
+                44.0,
+                30.0,
+                Some(14.0),
+                Some(20.0),
+            ),
+        ];
+
+        assert_eq!(grid_container_baselines(&items), (12.0, 58.0));
     }
 }
