@@ -4,7 +4,7 @@
 
 use crate::geometry::Size;
 use crate::style::AvailableSpace;
-use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode};
+use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
 use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
@@ -94,6 +94,8 @@ struct CacheKey {
     known_dimensions_are_definite: Size<bool>,
     /// Whether inherent size styles participate in this computation.
     sizing_mode: SizingMode,
+    /// Whether this result is final layout or an intrinsic contribution.
+    sizing_purpose: SizingPurpose,
 }
 
 impl CacheKey {
@@ -127,6 +129,7 @@ impl From<&LayoutInput> for CacheKey {
                 .known_dimensions_are_definite
                 .zip_map(input.known_dimensions, |is_definite, kd| is_definite || kd.is_none()),
             sizing_mode: input.sizing_mode,
+            sizing_purpose: input.sizing_purpose,
         }
     }
 }
@@ -240,6 +243,7 @@ impl Cache {
                     if entry.key.kd_available_space == key.kd_available_space
                         && entry.key.known_dimensions_are_definite == key.known_dimensions_are_definite
                         && (entry.key.x_axis_parent_size() == key.x_axis_parent_size())
+                        && entry.key.sizing_purpose == key.sizing_purpose
                     {
                         return Some(LayoutOutput::from_outer_size(entry.content));
                     }
@@ -291,4 +295,37 @@ pub enum ClearState {
     Cleared,
     /// Everything was already cleared
     AlreadyEmpty,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cache;
+    use crate::geometry::{Line, Size};
+    use crate::style::AvailableSpace;
+    use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose};
+
+    fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
+        LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose,
+            axis: RequestedAxis::Horizontal,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: Size::NONE,
+            available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
+            vertical_margins_are_collapsible: Line::FALSE,
+        }
+    }
+
+    #[test]
+    fn intrinsic_contributions_do_not_alias_layout_measurements() {
+        let mut cache = Cache::new();
+        let contribution = input(SizingPurpose::IntrinsicContribution);
+        let layout = input(SizingPurpose::Layout);
+        cache.store(&contribution, LayoutOutput::from_outer_size(Size { width: 60.0, height: 20.0 }));
+
+        assert!(cache.get(&layout).is_none());
+        assert_eq!(cache.get(&contribution).unwrap().size.width, 60.0);
+    }
 }

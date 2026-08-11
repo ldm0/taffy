@@ -126,7 +126,7 @@
 //! }
 //! ```
 //!
-use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode};
+use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode, SizingPurpose};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Line, Size};
@@ -340,6 +340,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 parent_size,
                 available_space,
                 sizing_mode,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
                 axis: axis.into(),
                 run_mode: RunMode::ComputeSize,
                 vertical_margins_are_collapsible,
@@ -369,6 +370,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 parent_size,
                 available_space,
                 sizing_mode,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
                 axis: RequestedAxis::Both,
                 run_mode: RunMode::ComputeSize,
                 vertical_margins_are_collapsible,
@@ -396,6 +398,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 parent_size,
                 available_space,
                 sizing_mode,
+                sizing_purpose: SizingPurpose::Layout,
                 axis: RequestedAxis::Both,
                 run_mode: RunMode::PerformLayout,
                 vertical_margins_are_collapsible,

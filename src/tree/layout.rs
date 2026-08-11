@@ -27,6 +27,21 @@ pub enum SizingMode {
     InherentSize,
 }
 
+/// The purpose for which a node's size is being computed.
+///
+/// This is independent from [`RunMode`]: both normal layout and an intrinsic
+/// contribution may only need a size, but percentage-dependent sizing rules
+/// need to distinguish the two cases.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub enum SizingPurpose {
+    /// Resolve the node's final used size and lay out its contents normally.
+    Layout,
+    /// Compute a min/max-content contribution for an ancestor whose size may
+    /// depend on this node.
+    IntrinsicContribution,
+}
+
 /// A set of margins that are available for collapsing with for block layout's margin collapsing
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -113,6 +128,9 @@ pub struct LayoutInput {
     pub run_mode: RunMode,
     /// Whether a Node's style sizes should be taken into account or ignored
     pub sizing_mode: SizingMode,
+    /// Whether this invocation computes final layout or an intrinsic size
+    /// contribution.
+    pub sizing_purpose: SizingPurpose,
     /// Which axis we need the size of
     pub axis: RequestedAxis,
 
@@ -154,6 +172,7 @@ impl LayoutInput {
         parent_size: Size::NONE,
         available_space: Size::MAX_CONTENT,
         sizing_mode: SizingMode::InherentSize,
+        sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
         vertical_margins_are_collapsible: Line::FALSE,
     };
