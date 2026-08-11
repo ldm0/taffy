@@ -400,7 +400,7 @@ mod tests {
             parent_size: Size::NONE,
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         }
     }
 

@@ -90,7 +90,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             parent_size: available_space.into_options(),
             parent_writing_mode: root_writing_mode,
             available_space,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         },
     );
     let mut known_dimensions = root_inputs.known_dimensions;

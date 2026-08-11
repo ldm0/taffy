@@ -218,7 +218,7 @@ pub(super) fn align_and_position_item(
             width: intrinsic_available_space,
             height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
         },
-        vertical_margins_are_collapsible: Line::FALSE,
+        block_margins_are_collapsible: Line::FALSE,
     };
     let intrinsic = resolve_intrinsic_width_constraints(
         tree,

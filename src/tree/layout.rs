@@ -175,8 +175,9 @@ pub struct LayoutInput {
     /// Available space represents an amount of space to layout into, and is used as a soft constraint
     /// for the purpose of wrapping.
     pub available_space: Size<AvailableSpace>,
-    /// Specific to CSS Block layout. Used for correctly computing margin collapsing. You probably want to set this to `Line::FALSE`.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    /// Whether this box's block-start/end margins may collapse through the
+    /// parent-child boundary. Non-block formatting contexts use `Line::FALSE`.
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl LayoutInput {
@@ -193,7 +194,7 @@ impl LayoutInput {
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
-        vertical_margins_are_collapsible: Line::FALSE,
+        block_margins_are_collapsible: Line::FALSE,
     };
 
     /// Project the physical tree-boundary inputs into `writing_mode`'s logical
@@ -211,7 +212,7 @@ impl LayoutInput {
             percentage_resolution_size: writing_mode.to_logical(self.parent_size),
             available_size: writing_mode.to_logical(self.available_space),
             requested_axis: self.axis,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 }
@@ -234,8 +235,8 @@ pub(crate) struct ChildLayoutInput {
     pub available_space: Size<AvailableSpace>,
     /// Whether authored size constraints participate in child sizing.
     pub sizing_mode: SizingMode,
-    /// Whether the child's physical vertical margins may collapse through the boundary.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    /// Whether the child's block-start/end margins may collapse through the boundary.
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl ChildLayoutInput {
@@ -247,7 +248,7 @@ impl ChildLayoutInput {
         parent_writing_mode: WritingMode,
         available_space: Size<AvailableSpace>,
         sizing_mode: SizingMode,
-        vertical_margins_are_collapsible: Line<bool>,
+        block_margins_are_collapsible: Line<bool>,
     ) -> Self {
         Self {
             known_dimensions,
@@ -255,7 +256,7 @@ impl ChildLayoutInput {
             parent_writing_mode,
             available_space,
             sizing_mode,
-            vertical_margins_are_collapsible,
+            block_margins_are_collapsible,
         }
     }
 
@@ -272,7 +273,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 
@@ -289,7 +290,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 }
@@ -324,7 +325,7 @@ pub struct ConstraintSpace {
     /// Physical-axis request retained for compatibility with current callers.
     requested_axis: RequestedAxis,
     /// Block-start/end margin-collapse permissions for block layout.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl ConstraintSpace {
@@ -342,7 +343,7 @@ impl ConstraintSpace {
             parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.writing_mode.to_physical(self.available_size),
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 
@@ -393,7 +394,7 @@ mod constraint_space_tests {
             parent_size: Size { width: Some(100.0), height: Some(200.0) },
             parent_writing_mode: WritingMode::VerticalRl,
             available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
-            vertical_margins_are_collapsible: Line { start: true, end: false },
+            block_margins_are_collapsible: Line { start: true, end: false },
         };
 
         let space = input.constraint_space(WritingMode::HorizontalTb);

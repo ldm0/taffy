@@ -1231,7 +1231,7 @@ mod tests {
             parent_size: Size { width: Some(200.0), height: Some(100.0) },
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
 
         let mut layout_tree = taffy.as_layout_tree();
@@ -1266,7 +1266,7 @@ mod tests {
             parent_size: Size::NONE,
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
 
         let mut layout_tree = taffy.as_layout_tree();
