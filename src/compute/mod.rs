@@ -62,6 +62,7 @@ use crate::util::sys::round;
 use crate::util::ResolveOrZero;
 use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
+use self::common::aspect_ratio::resolve_size_constraints;
 pub use self::common::intrinsic_size::resolve_intrinsic_width_inputs;
 
 /// Compute layout for the root node in the tree
@@ -104,22 +105,26 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             let box_sizing_adjustment =
                 if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-            let min_size = style
-                .min_size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-                .maybe_add(box_sizing_adjustment);
-            let max_size = style
-                .max_size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-                .maybe_add(box_sizing_adjustment);
-            let clamped_style_size = style
-                .size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-                .maybe_add(box_sizing_adjustment)
-                .maybe_clamp(min_size, max_size);
+            let raw_size = style.size();
+            let resolved = resolve_size_constraints(
+                raw_size
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                style
+                    .min_size()
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                style
+                    .max_size()
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                raw_size.map(|dimension| dimension.is_auto()),
+                aspect_ratio,
+                padding_border_size,
+            );
+            let min_size = resolved.min_size;
+            let max_size = resolved.max_size;
+            let clamped_style_size = resolved.size.maybe_clamp(min_size, max_size);
 
             // If both min and max in a given axis are set and max <= min then this determines the size in that axis
             let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {

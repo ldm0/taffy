@@ -11,6 +11,8 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
 use core::unreachable;
 
+use super::common::aspect_ratio::resolve_size_constraints;
+
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
     inputs: LayoutInput,
@@ -66,18 +68,18 @@ where
             (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled())
         }
         SizingMode::InherentSize => {
-            let style_size = style
-                .size()
-                .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio_with_box_sizing(resolved_aspect_ratio, style.box_sizing(), pb_sum)
-                .maybe_add(box_sizing_adjustment);
-            let style_min_size = style
-                .min_size()
-                .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio_with_box_sizing(resolved_aspect_ratio, style.box_sizing(), pb_sum)
-                .maybe_add(box_sizing_adjustment);
-            let style_max_size =
-                style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
+            let raw_size = style.size();
+            let resolved = resolve_size_constraints(
+                raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                style.min_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                raw_size.map(|dimension| dimension.is_auto()),
+                resolved_aspect_ratio,
+                pb_sum,
+            );
+            let style_size = resolved.size;
+            let style_min_size = resolved.min_size;
+            let style_max_size = resolved.max_size;
 
             let node_size = known_dimensions.or(style_size);
             (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
