@@ -304,6 +304,38 @@ fn vertical_rtl_cross_axis_alignment_uses_logical_start_and_end() {
 }
 
 #[test]
+fn vertical_row_aligns_synthesized_baselines_on_the_logical_block_axis() {
+    let mut tree = TaffyTree::<()>::new();
+    let narrow = new_leaf(
+        &mut tree,
+        Style { size: Size { width: length(10.0), height: length(10.0) }, flex_shrink: 0.0, ..Style::default() },
+        WritingMode::VerticalRl,
+    );
+    let wide = new_leaf(
+        &mut tree,
+        Style { size: Size { width: length(20.0), height: length(10.0) }, flex_shrink: 0.0, ..Style::default() },
+        WritingMode::VerticalRl,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            align_items: Some(AlignItems::BASELINE),
+            flex_direction: FlexDirection::Row,
+            size: Size { width: length(30.0), height: length(20.0) },
+            ..Style::default()
+        },
+        &[narrow, wide],
+        WritingMode::VerticalRl,
+    );
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(narrow).unwrap().location.x, 10.0);
+    assert_eq!(tree.layout(wide).unwrap().location.x, 10.0);
+}
+
+#[test]
 fn absolute_start_remains_logical_when_wrap_reverse_moves_flex_start() {
     let mut tree = TaffyTree::<()>::new();
     let start = tree

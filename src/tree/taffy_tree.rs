@@ -1619,6 +1619,45 @@ mod tests {
         assert_eq!(output.last_baselines.y, Some(30.0));
     }
 
+    #[cfg(all(feature = "grid", feature = "flexbox"))]
+    #[test]
+    fn vertical_column_flex_propagates_baselines_on_its_logical_block_axis() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let first_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let first_grid = taffy
+            .new_with_children(
+                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
+                &[first_leaf],
+            )
+            .unwrap();
+        let second_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let third_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let second_grid = taffy
+            .new_with_children(
+                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
+                &[second_leaf, third_leaf],
+            )
+            .unwrap();
+        let root = taffy
+            .new_with_children(
+                Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Style::default() },
+                &[first_grid, second_grid],
+            )
+            .unwrap();
+
+        for node in [first_leaf, first_grid, second_leaf, third_leaf, second_grid, root] {
+            taffy.set_writing_mode(node, WritingMode::VerticalRl).unwrap();
+        }
+
+        let mut tree = taffy.as_layout_tree();
+        let output =
+            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
+
+        assert_eq!(output.size, Size { width: 30.0, height: 10.0 });
+        assert_eq!(output.first_baselines, Point { x: Some(20.0), y: None });
+        assert_eq!(output.last_baselines, Point { x: Some(0.0), y: None });
+    }
+
     #[test]
     fn make_sure_layout_location_is_top_left() {
         use crate::prelude::*;
