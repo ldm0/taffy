@@ -43,6 +43,9 @@ pub use leaf::{
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};
 
+#[cfg(all(feature = "block_layout", feature = "float_layout"))]
+pub use self::block::BfcOffset;
+
 #[cfg(feature = "flexbox")]
 pub use self::flexbox::compute_flexbox_layout;
 

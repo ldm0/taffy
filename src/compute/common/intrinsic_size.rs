@@ -6,7 +6,7 @@
 //! seam so every formatting context uses the same pass-local cache and no
 //! retained intrinsic-size state is required.
 
-use crate::geometry::Size;
+use crate::geometry::{AbsoluteAxis, Size};
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis,
@@ -15,99 +15,126 @@ use crate::tree::{
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::BoxSizing;
 
-/// Measure one intrinsic inline-size contribution for a node.
-fn measure_intrinsic_width(
+/// Measure one intrinsic contribution along a physical axis.
+fn measure_intrinsic_axis(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
     constraint: AvailableSpace,
+    axis: AbsoluteAxis,
 ) -> IntrinsicSizeResult {
+    let known_dimensions = match axis {
+        AbsoluteAxis::Horizontal => Size { width: None, height: inputs.known_dimensions.height },
+        AbsoluteAxis::Vertical => Size { width: inputs.known_dimensions.width, height: None },
+    };
+    let available_space = match axis {
+        AbsoluteAxis::Horizontal => Size { width: constraint, height: inputs.available_space.height },
+        AbsoluteAxis::Vertical => Size { width: inputs.available_space.width, height: constraint },
+    };
     tree.measure_child_size_with_metadata(
         node_id,
         ChildLayoutInput::new(
-            Size { width: None, height: inputs.known_dimensions.height },
+            known_dimensions,
             inputs.parent_size,
             inputs.parent_writing_mode,
-            Size { width: constraint, height: inputs.available_space.height },
+            available_space,
             SizingMode::ContentSize,
             inputs.vertical_margins_are_collapsible,
         ),
-        RequestedAxis::Horizontal,
+        RequestedAxis::from(axis),
     )
 }
 
-/// One resolved intrinsic width together with cache dependency metadata.
+/// One resolved intrinsic axis value together with cache dependency metadata.
 #[derive(Clone, Copy, Debug, Default)]
-struct IntrinsicWidthValue {
-    /// Resolved border-box width, or `None` when the value is not intrinsic.
+struct IntrinsicAxisValue {
+    /// Resolved border-box size, or `None` when the value is not intrinsic.
     value: Option<f32>,
     /// Whether measuring the value observed a block-constraint dependency.
     depends_on_block_constraints: bool,
 }
 
-/// Resolve a horizontal sizing value that may depend on the box's intrinsic
-/// content contributions.
+/// Resolve one sizing value that may depend on the box's intrinsic content
+/// contributions.
 ///
-/// `available_width` is the border-box space left after horizontal margins.
+/// `available_size` is the border-box space left after margins in `axis`.
 /// Returned values are border-box sizes, matching `LayoutInput::known_dimensions`.
-fn resolve_intrinsic_width_value(
+fn resolve_intrinsic_axis_value(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
     value: Dimension,
-    available_width: AvailableSpace,
-) -> IntrinsicWidthValue {
+    available_size: AvailableSpace,
+    axis: AbsoluteAxis,
+) -> IntrinsicAxisValue {
     if value.is_stretch() {
-        return IntrinsicWidthValue { value: available_width.into_option(), depends_on_block_constraints: false };
+        return IntrinsicAxisValue { value: available_size.into_option(), depends_on_block_constraints: false };
     }
     if !value.is_intrinsic() {
-        return IntrinsicWidthValue::default();
+        return IntrinsicAxisValue::default();
     }
 
     if value.is_min_content() {
-        let measured = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MinContent);
-        return IntrinsicWidthValue {
-            value: Some(measured.size.width),
+        let measured = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+        return IntrinsicAxisValue {
+            value: Some(measured.size.get_abs(axis)),
             depends_on_block_constraints: measured.depends_on_block_constraints,
         };
     }
 
-    let max_content = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MaxContent);
+    let max_content = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MaxContent, axis);
     if value.is_max_content() {
-        return IntrinsicWidthValue {
-            value: Some(max_content.size.width),
+        return IntrinsicAxisValue {
+            value: Some(max_content.size.get_abs(axis)),
             depends_on_block_constraints: max_content.depends_on_block_constraints,
         };
     }
 
-    let min_content = measure_intrinsic_width(tree, node_id, inputs, AvailableSpace::MinContent);
-    IntrinsicWidthValue {
-        value: Some(match available_width {
-            AvailableSpace::MinContent => min_content.size.width,
-            AvailableSpace::MaxContent => max_content.size.width,
-            AvailableSpace::Definite(limit) => limit.clamp(min_content.size.width, max_content.size.width),
+    let min_content = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+    IntrinsicAxisValue {
+        value: Some(match available_size {
+            AvailableSpace::MinContent => min_content.size.get_abs(axis),
+            AvailableSpace::MaxContent => max_content.size.get_abs(axis),
+            AvailableSpace::Definite(limit) => {
+                limit.clamp(min_content.size.get_abs(axis), max_content.size.get_abs(axis))
+            }
         }),
         depends_on_block_constraints: min_content.depends_on_block_constraints
             || max_content.depends_on_block_constraints,
     }
 }
 
-/// Intrinsic components of the preferred, minimum, and maximum inline sizes.
+/// Intrinsic components of preferred, minimum and maximum sizes in one axis.
 ///
 /// Numeric and percentage components are resolved by the formatting-context
 /// algorithm that owns their containing block. These fields contain only the
 /// values that required intrinsic content measurement (or `stretch`).
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct IntrinsicWidthConstraints {
-    /// Intrinsic component of `width`.
+pub(crate) struct IntrinsicSizeConstraints {
+    /// Intrinsic component of the preferred size.
     pub preferred: Option<f32>,
-    /// Intrinsic component of `min-width`.
+    /// Intrinsic component of the minimum size.
     pub min: Option<f32>,
-    /// Intrinsic component of `max-width`.
+    /// Intrinsic component of the maximum size.
     pub max: Option<f32>,
     /// Whether any measured contribution changes with the containing block's
     /// block-size.
     pub depends_on_block_constraints: bool,
+}
+
+/// Authored constraints and available space for one intrinsic sizing axis.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IntrinsicAxisInput {
+    /// Preferred size property in the selected axis.
+    pub preferred: Dimension,
+    /// Minimum size property in the selected axis.
+    pub min: Dimension,
+    /// Maximum size property in the selected axis.
+    pub max: Dimension,
+    /// Available border-box space after margins in the selected axis.
+    pub available_space: AvailableSpace,
+    /// Physical axis corresponding to the formatting context's logical axis.
+    pub axis: AbsoluteAxis,
 }
 
 /// Resolve all three horizontal intrinsic sizing properties at one ownership
@@ -124,11 +151,29 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     min: Dimension,
     max: Dimension,
     available_width: AvailableSpace,
-) -> IntrinsicWidthConstraints {
-    let preferred = resolve_intrinsic_width_value(tree, node_id, inputs, preferred, available_width);
-    let min = resolve_intrinsic_width_value(tree, node_id, inputs, min, available_width);
-    let max = resolve_intrinsic_width_value(tree, node_id, inputs, max, available_width);
-    IntrinsicWidthConstraints {
+) -> IntrinsicSizeConstraints {
+    resolve_intrinsic_axis_constraints(
+        tree,
+        node_id,
+        inputs,
+        IntrinsicAxisInput { preferred, min, max, available_space: available_width, axis: AbsoluteAxis::Horizontal },
+    )
+}
+
+/// Resolve preferred/minimum/maximum intrinsic sizing values along one
+/// physical axis. Formatting contexts select the axis by projecting their
+/// logical inline axis through their writing mode.
+pub(crate) fn resolve_intrinsic_axis_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+    axis_input: IntrinsicAxisInput,
+) -> IntrinsicSizeConstraints {
+    let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
+    let preferred = resolve_intrinsic_axis_value(tree, node_id, inputs, preferred, available_space, axis);
+    let min = resolve_intrinsic_axis_value(tree, node_id, inputs, min, available_space, axis);
+    let max = resolve_intrinsic_axis_value(tree, node_id, inputs, max, available_space, axis);
+    IntrinsicSizeConstraints {
         preferred: preferred.value,
         min: min.value,
         max: max.value,
