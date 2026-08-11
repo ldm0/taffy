@@ -111,6 +111,7 @@ pub(super) fn align_and_position_item(
     container_alignment_styles: InBothAbstractAxis<Option<AlignItems>>,
     baseline_shim: InBothAbstractAxis<f32>,
     baseline_group: InBothAbstractAxis<BaselineGroup>,
+    baseline_fallback: InBothAbstractAxis<Option<AlignSelf>>,
     direction: Direction,
     parent_writing_mode: WritingMode,
     container_border_box_size: Size<f32>,
@@ -274,7 +275,7 @@ pub(super) fn align_and_position_item(
     // and the then height is calculated from the width according the aspect ratio
     // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
     let logical_inherent_size = flow.to_logical_size(inherent_size);
-    let alignment_styles = InBothAbstractAxis {
+    let mut alignment_styles = InBothAbstractAxis {
         inline: inline_self.or(logical_container_alignment.inline).unwrap_or_else(|| {
             if logical_inherent_size.inline_size.is_some() {
                 AlignSelf::START
@@ -290,6 +291,12 @@ pub(super) fn align_and_position_item(
             }
         }),
     };
+    if let Some(fallback) = baseline_fallback.inline {
+        alignment_styles.inline = fallback;
+    }
+    if let Some(fallback) = baseline_fallback.block {
+        alignment_styles.block = fallback;
+    }
     let physical_alignment_styles = flow.to_physical_axes(alignment_styles);
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it

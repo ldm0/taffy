@@ -91,6 +91,9 @@ pub(in super::super) struct GridItem {
     pub alignment_baseline: InBothAbstractAxis<Option<f32>>,
     /// Baseline shims applied as extra margin toward each sharing-group edge.
     pub baseline_shim: InBothAbstractAxis<f32>,
+    /// Used alignment when a synthesized baseline would make intrinsic track
+    /// sizing cyclic. `None` preserves the authored baseline alignment.
+    pub baseline_fallback: InBothAbstractAxis<Option<AlignSelf>>,
 
     /// The item's definite row-start and row-end (same as `row` field, except in a different coordinate system)
     /// (as indexes into the Vec<GridTrack> stored in a grid's AbstractAxisTracks)
@@ -168,6 +171,7 @@ impl GridItem {
             },
             alignment_baseline: InBothAbstractAxis { inline: None, block: None },
             baseline_shim: InBothAbstractAxis { inline: 0.0, block: 0.0 },
+            baseline_fallback: InBothAbstractAxis { inline: None, block: None },
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             column_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             crosses_flexible_row: false,            // Properly initialised later
@@ -208,6 +212,54 @@ impl GridItem {
         } else {
             span.end - 1
         }
+    }
+
+    /// Return the authored self-alignment in one logical grid axis.
+    pub fn alignment(&self, axis: AbstractAxis) -> AlignSelf {
+        match axis {
+            AbstractAxis::Inline => self.justify_self,
+            AbstractAxis::Block => self.align_self,
+        }
+    }
+
+    /// Return the alignment after applying Grid's cyclic baseline fallback.
+    pub fn used_alignment(&self, axis: AbstractAxis) -> AlignSelf {
+        self.baseline_fallback.get(axis).unwrap_or_else(|| self.alignment(axis))
+    }
+
+    /// Update Grid's cyclic baseline fallback after measuring the fragment.
+    ///
+    /// A synthesized baseline cannot participate when the item's size in the
+    /// alignment axis is percentage/stretch-dependent on an intrinsic or flex
+    /// track. The fallback edge follows the item's baseline-sharing group.
+    pub fn resolve_baseline_fallback(
+        &mut self,
+        axis: AbstractAxis,
+        child_writing_mode: WritingMode,
+        has_synthesized_baseline: bool,
+    ) {
+        let spans_content_sized_track = self.crosses_intrinsic_track(axis) || self.crosses_flexible_track(axis);
+        let child_is_parallel = !self.parent_writing_direction.mode.is_orthogonal_to(child_writing_mode);
+        let size_axis_is_child_block = child_is_parallel == (axis == AbstractAxis::Block);
+        let logical_size = child_writing_mode.to_logical(self.size);
+        let logical_min_size = child_writing_mode.to_logical(self.min_size);
+        let logical_max_size = child_writing_mode.to_logical(self.max_size);
+        let sizes = if size_axis_is_child_block {
+            [logical_size.block_size, logical_min_size.block_size, logical_max_size.block_size]
+        } else {
+            [logical_size.inline_size, logical_min_size.inline_size, logical_max_size.inline_size]
+        };
+        let size_depends_on_track =
+            sizes.into_iter().any(|size| size.may_have_percentage_dependence() || size.is_stretch());
+        let fallback = if has_synthesized_baseline && spans_content_sized_track && size_depends_on_track {
+            Some(match self.baseline_context.get(axis).group {
+                BaselineGroup::Major => AlignSelf::START,
+                BaselineGroup::Minor => AlignSelf::END,
+            })
+        } else {
+            None
+        };
+        *self.baseline_fallback.get_mut(axis) = fallback;
     }
 
     /// This item's placement in the specified axis in OriginZero coordinates
@@ -731,6 +783,7 @@ impl GridItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style_helpers::{auto, percent};
     use crate::{Direction, Point, Style, WritingMode};
 
     #[test]
@@ -749,5 +802,32 @@ mod tests {
         );
 
         assert_eq!(item.overflow, LogicalSize { inline_size: Overflow::Scroll, block_size: Overflow::Hidden });
+    }
+
+    #[test]
+    fn supplied_baseline_avoids_the_intrinsic_track_cycle_fallback() {
+        let style: Style = Style {
+            size: Size { width: auto(), height: percent(0.5) },
+            align_self: Some(AlignSelf::BASELINE),
+            ..Style::default()
+        };
+        let mut item = GridItem::new_with_placement_style_and_order(
+            NodeId::new(0),
+            WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+            InBothAbstractAxis {
+                inline: Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+                block: Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+            },
+            style,
+            InBothAbstractAxis { inline: AlignItems::STRETCH, block: AlignItems::STRETCH },
+            0,
+        );
+        item.crosses_intrinsic_row = true;
+
+        item.resolve_baseline_fallback(AbstractAxis::Block, WritingMode::HorizontalTb, false);
+        assert_eq!(item.used_alignment(AbstractAxis::Block), AlignSelf::BASELINE);
+
+        item.resolve_baseline_fallback(AbstractAxis::Block, WritingMode::HorizontalTb, true);
+        assert_eq!(item.used_alignment(AbstractAxis::Block), AlignSelf::START);
     }
 }

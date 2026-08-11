@@ -466,11 +466,7 @@ fn resolve_item_baselines(
         *item.alignment_baseline.get_mut(alignment_axis) = None;
         *item.baseline_shim.get_mut(alignment_axis) = 0.0;
 
-        let alignment = match alignment_axis {
-            AbstractAxis::Inline => item.justify_self,
-            AbstractAxis::Block => item.align_self,
-        };
-        if alignment != AlignSelf::BASELINE {
+        if item.alignment(alignment_axis) != AlignSelf::BASELINE {
             continue;
         }
 
@@ -491,23 +487,22 @@ fn resolve_item_baselines(
 
         let child_writing_mode = tree.get_writing_mode(item.node);
         let baseline_block_size = baseline_context.writing_mode.to_logical(measured.size).block_size;
-        let baseline = if child_writing_mode == baseline_context.writing_mode {
-            logical_block_baseline(measured.first_baselines, measured.size, baseline_writing_direction).unwrap_or_else(
-                || {
-                    synthesized_logical_baseline(
-                        baseline_block_size,
-                        baseline_writing_direction,
-                        FontBaseline::for_writing_mode(parent_writing_direction.mode),
-                    )
-                },
-            )
+        let fragment_baseline = if child_writing_mode == baseline_context.writing_mode {
+            logical_block_baseline(measured.first_baselines, measured.size, baseline_writing_direction)
         } else {
+            None
+        };
+        item.resolve_baseline_fallback(alignment_axis, child_writing_mode, fragment_baseline.is_none());
+        if item.used_alignment(alignment_axis) != AlignSelf::BASELINE {
+            continue;
+        }
+        let baseline = fragment_baseline.unwrap_or_else(|| {
             synthesized_logical_baseline(
                 baseline_block_size,
                 baseline_writing_direction,
                 FontBaseline::for_writing_mode(parent_writing_direction.mode),
             )
-        };
+        });
 
         let percentage_basis = inner_node_size.inline_size;
         let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));

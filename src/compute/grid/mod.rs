@@ -677,6 +677,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             container_alignment_styles,
             item.baseline_shim,
             InBothAbstractAxis { inline: item.baseline_context.inline.group, block: item.baseline_context.block.group },
+            item.baseline_fallback,
             direction,
             writing_mode,
             physical_container_border_box,
@@ -832,6 +833,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 container_alignment_styles,
                 InBothAbstractAxis { inline: 0.0, block: 0.0 },
                 InBothAbstractAxis { inline: BaselineGroup::Major, block: BaselineGroup::Major },
+                InBothAbstractAxis { inline: None, block: None },
                 direction,
                 writing_mode,
                 physical_container_border_box,
@@ -944,7 +946,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         items
             .iter()
             .filter(|item| {
-                item.align_self == AlignSelf::BASELINE
+                item.used_alignment(AbstractAxis::Block) == AlignSelf::BASELINE
                     && item.baseline_context.block.group == group
                     && match group {
                         BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == first_occupied_row,
@@ -982,7 +984,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         items
             .iter()
             .filter(|item| {
-                item.align_self == AlignSelf::BASELINE
+                item.used_alignment(AbstractAxis::Block) == AlignSelf::BASELINE
                     && item.baseline_context.block.group == group
                     && match group {
                         BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == last_occupied_row,
