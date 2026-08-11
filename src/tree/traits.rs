@@ -131,7 +131,7 @@ use super::{
 };
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
+use crate::geometry::{AbsoluteAxis, Line, Rect, Size, WritingMode};
 use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
@@ -198,6 +198,15 @@ pub trait LayoutPartialTree: TraversePartialTree {
     #[inline]
     fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
         resolve_scrollbar_insets(&self.get_core_container_style(node_id))
+    }
+
+    /// Returns the writing mode that defines this node's logical axes.
+    ///
+    /// The tree-level seam lets browser adapters retain inherited writing-mode
+    /// beside a converted core style without requiring that converted style to
+    /// own every browser property.
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.get_core_container_style(node_id).writing_mode()
     }
 
     /// Returns the node's used aspect ratio and the sizing box whose dimensions

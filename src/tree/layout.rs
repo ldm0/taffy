@@ -1,5 +1,5 @@
 //! Final data structures that represent the high-level UI layout
-use crate::geometry::{AbsoluteAxis, Line, Point, Rect, Size};
+use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::style_helpers::TaffyMaxContent;
 use crate::util::sys::{f32_max, f32_min};
@@ -101,6 +101,18 @@ pub enum RequestedAxis {
     Both,
 }
 
+impl RequestedAxis {
+    /// Whether this request includes the supplied physical axis.
+    #[inline(always)]
+    pub const fn contains(self, axis: AbsoluteAxis) -> bool {
+        matches!(self, Self::Both)
+            || matches!(
+                (self, axis),
+                (Self::Horizontal, AbsoluteAxis::Horizontal) | (Self::Vertical, AbsoluteAxis::Vertical)
+            )
+    }
+}
+
 impl From<AbsoluteAxis> for RequestedAxis {
     fn from(value: AbsoluteAxis) -> Self {
         match value {
@@ -176,6 +188,67 @@ impl LayoutInput {
         axis: RequestedAxis::Both,
         vertical_margins_are_collapsible: Line::FALSE,
     };
+
+    /// Project physical inputs into the logical axes used by `writing_mode`.
+    ///
+    /// Parents retain physical storage at the tree boundary; formatting
+    /// algorithms consume this view so orthogonal children do not reinterpret
+    /// width as inline-size. This is the incremental constraint-space seam for
+    /// migrating algorithms from physical to flow-relative geometry.
+    #[inline(always)]
+    pub fn logical_constraints(self, writing_mode: WritingMode, parent_writing_mode: WritingMode) -> ConstraintSpace {
+        ConstraintSpace {
+            writing_mode,
+            parent_writing_mode,
+            is_orthogonal: writing_mode.is_orthogonal_to(parent_writing_mode),
+            known_size: writing_mode.to_logical(self.known_dimensions),
+            definite_size: writing_mode.to_logical(self.definite_dimensions),
+            percentage_resolution_size: writing_mode.to_logical(self.parent_size),
+            available_size: writing_mode.to_logical(self.available_space),
+            requested_axis: self.axis,
+        }
+    }
+}
+
+/// A flow-relative view of the constraints passed to one layout algorithm.
+///
+/// Like Blink's constraint space, this records both the child's writing mode
+/// and whether its axes are orthogonal to its containing block. It deliberately
+/// remains a view over [`LayoutInput`] while Taffy's formatting algorithms are
+/// migrated incrementally.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ConstraintSpace {
+    /// Writing mode whose logical axes own these sizes.
+    pub writing_mode: WritingMode,
+    /// Writing mode of the containing block that produced this space.
+    pub parent_writing_mode: WritingMode,
+    /// Whether the child's inline axis is parallel to the parent's block axis.
+    pub is_orthogonal: bool,
+    /// Fixed dimensions supplied by the parent, in child logical axes.
+    pub known_size: LogicalSize<Option<f32>>,
+    /// Definite dimensions usable as descendant percentage bases.
+    pub definite_size: LogicalSize<Option<f32>>,
+    /// Containing-block percentage basis, in child logical axes.
+    pub percentage_resolution_size: LogicalSize<Option<f32>>,
+    /// Soft available-space constraint, in child logical axes.
+    pub available_size: LogicalSize<AvailableSpace>,
+    /// Physical-axis request retained for compatibility with current callers.
+    requested_axis: RequestedAxis,
+}
+
+impl ConstraintSpace {
+    /// Whether the caller requested this node's logical inline size.
+    #[inline(always)]
+    pub const fn requests_inline_size(self) -> bool {
+        self.requested_axis.contains(self.writing_mode.inline_axis())
+    }
+
+    /// Whether the caller requested this node's logical block size.
+    #[inline(always)]
+    pub const fn requests_block_size(self) -> bool {
+        self.requested_axis.contains(self.writing_mode.block_axis())
+    }
 }
 
 /// The result of an intrinsic size probe.
