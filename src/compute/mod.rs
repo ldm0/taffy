@@ -240,10 +240,14 @@ where
                 .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
         };
         let requested_block_size = inputs.axis != RequestedAxis::Horizontal;
-        computed_size_and_baselines.depends_on_block_constraints = style_depends_on_parent_block_size
-            && (requested_block_size || has_aspect_ratio || computed_size_and_baselines.depends_on_block_constraints);
+        computed_size_and_baselines.set_block_constraint_dependency(
+            style_depends_on_parent_block_size
+                && (requested_block_size
+                    || has_aspect_ratio
+                    || computed_size_and_baselines.block_constraint_dependency()),
+        );
     } else if inputs.run_mode != RunMode::ComputeSize {
-        computed_size_and_baselines.depends_on_block_constraints = false;
+        computed_size_and_baselines.set_block_constraint_dependency(false);
     }
 
     // Cache result

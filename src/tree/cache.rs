@@ -295,10 +295,10 @@ impl Cache {
                     key,
                     content: CachedMeasurement {
                         size: layout_output.size,
-                        depends_on_block_constraints: layout_output.depends_on_block_constraints,
+                        depends_on_block_constraints: layout_output.block_constraint_dependency(),
                     },
                 };
-                if layout_output.depends_on_block_constraints {
+                if layout_output.block_constraint_dependency() {
                     if let Some(existing_index) =
                         self.block_constraint_entries.iter().position(|existing| match existing {
                             Some(existing) => existing.key == key,

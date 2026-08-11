@@ -1,8 +1,8 @@
 //! Computes size using styles and measure functions
 
-use crate::geometry::{Point, Size};
+use crate::geometry::Size;
 use crate::style::{AvailableSpace, Overflow, Position};
-use crate::tree::{CollapsibleMarginSet, RunMode};
+use crate::tree::RunMode;
 use crate::tree::{LayoutInput, LayoutOutput, SizingMode};
 use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
@@ -129,17 +129,7 @@ where
             let size = Size { width, height }
                 .maybe_clamp(node_min_size, node_max_size)
                 .maybe_max(padding_border.sum_axes().map(Some));
-            return LayoutOutput {
-                size,
-                depends_on_block_constraints: false,
-                #[cfg(feature = "content_size")]
-                content_size: Size::ZERO,
-                first_baselines: Point::NONE,
-                last_baselines: Point::NONE,
-                top_margin: CollapsibleMarginSet::ZERO,
-                bottom_margin: CollapsibleMarginSet::ZERO,
-                margins_can_collapse_through: false,
-            };
+            return LayoutOutput::from_outer_size(size);
         };
     }
 
@@ -187,17 +177,8 @@ where
     let size = Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) };
     let size = size.maybe_max(padding_border.sum_axes().map(Some));
 
-    LayoutOutput {
-        size,
-        depends_on_block_constraints: false,
-        #[cfg(feature = "content_size")]
-        content_size: measured_size + padding.sum_axes(),
-        first_baselines: Point::NONE,
-        last_baselines: Point::NONE,
-        top_margin: CollapsibleMarginSet::ZERO,
-        bottom_margin: CollapsibleMarginSet::ZERO,
-        margins_can_collapse_through: !has_styles_preventing_being_collapsed_through
-            && size.height == 0.0
-            && measured_size.height == 0.0,
-    }
+    let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
+    output.margins_can_collapse_through =
+        !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
+    output
 }
