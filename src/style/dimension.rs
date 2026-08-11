@@ -393,6 +393,16 @@ impl Dimension {
         self.0.is_stretch()
     }
 
+    /// Returns true when resolving this value may depend on the size of the
+    /// containing block.
+    ///
+    /// `calc()` values are treated conservatively because the compact style
+    /// representation deliberately does not inspect their expression tree.
+    #[inline(always)]
+    pub fn may_have_percentage_dependence(self) -> bool {
+        self.0.uses_percentage()
+    }
+
     /// Returns true for sizing keywords whose used value depends on intrinsic
     /// content contributions or available space.
     #[inline(always)]

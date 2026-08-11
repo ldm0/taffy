@@ -131,6 +131,7 @@ where
                 .maybe_max(padding_border.sum_axes().map(Some));
             return LayoutOutput {
                 size,
+                depends_on_block_constraints: false,
                 #[cfg(feature = "content_size")]
                 content_size: Size::ZERO,
                 first_baselines: Point::NONE,
@@ -188,6 +189,7 @@ where
 
     LayoutOutput {
         size,
+        depends_on_block_constraints: false,
         #[cfg(feature = "content_size")]
         content_size: measured_size + padding.sum_axes(),
         first_baselines: Point::NONE,

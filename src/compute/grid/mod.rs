@@ -385,7 +385,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // If only the container's size has been requested
     if run_mode == RunMode::ComputeSize {
-        return LayoutOutput::from_outer_size(container_border_box);
+        let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
+        return LayoutOutput::from_outer_size(container_border_box)
+            .with_block_constraint_dependency(depends_on_block_constraints);
     }
 
     // 7. Resolve percentage track base sizes
@@ -574,7 +576,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // If only the container's size has been requested
     if run_mode == RunMode::ComputeSize {
-        return LayoutOutput::from_outer_size(container_border_box);
+        let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
+        return LayoutOutput::from_outer_size(container_border_box)
+            .with_block_constraint_dependency(depends_on_block_constraints);
     }
 
     // 8. Track Alignment

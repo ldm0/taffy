@@ -9,6 +9,10 @@ use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
 const CACHE_SIZE: usize = 9;
+/// Number of additional entries retained for measurements whose intrinsic
+/// inline size depends on a definite block constraint. Grid sizing commonly
+/// probes several such constraints in one pass.
+const BLOCK_CONSTRAINT_CACHE_SIZE: usize = 8;
 
 // Manually written-out results of float to u32 bit casts because
 // `f32::to_bits` is not yet const at our MSRV.
@@ -31,9 +35,9 @@ const BOTH_SIGN_BITS_MASK: u64 = SIGN_BIT_1 | SIGN_BIT_2;
 /// Mask of excluding the sign bits (used when setting/getting the size excluding the packed bits)
 const NON_SIGN_BITS_MASK: u64 = !BOTH_SIGN_BITS_MASK;
 
-/// Mask which includes only the bits which encode the x-axis value that we can use to ignore the
-/// y-axis value when comparing a cache key.
-const X_AXIS_VALUE_MASK: u64 = (u32::MAX as u64) << 32;
+/// Bits containing the inline-axis parent size. The requested-axis bits are
+/// retained separately when matching measurement entries.
+const INLINE_PARENT_SIZE_MASK: u64 = (u32::MAX as u64) << 32;
 
 /// Pack `Option<f32>` into `u32`
 #[inline(always)]
@@ -97,16 +101,9 @@ struct CacheKey {
 
 impl CacheKey {
     #[inline(always)]
-    #[allow(dead_code)]
-    /// Return the parent size with the extra bits that encode the requested axis masked out
-    fn parent_size(&self) -> u64 {
-        self.parent_size & NON_SIGN_BITS_MASK
-    }
-
-    /// Return the parent size with the extra bits that encode the requested axis masked out
-    /// And the y-axis value masked out
-    fn x_axis_parent_size(&self) -> u64 {
-        self.parent_size & (X_AXIS_VALUE_MASK & NON_SIGN_BITS_MASK)
+    /// Return the inline parent size together with the requested-axis bits.
+    fn inline_parent_size_and_axis(&self) -> u64 {
+        self.parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
     }
 }
 
@@ -138,6 +135,16 @@ pub(crate) struct CacheEntry<T> {
     content: T,
 }
 
+/// The subset of a measurement result retained by the size cache.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+struct CachedMeasurement {
+    /// Measured outer size.
+    size: Size<f32>,
+    /// Whether the result must be keyed by parent block-size.
+    depends_on_block_constraints: bool,
+}
+
 /// A cache for caching the results of a sizing a Grid Item or Flexbox Item
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -145,7 +152,11 @@ pub struct Cache {
     /// The cache entry for the node's final layout
     final_layout_entry: Option<CacheEntry<LayoutOutput>>,
     /// The cache entries for the node's preliminary size measurements
-    measure_entries: [Option<CacheEntry<Size<f32>>>; CACHE_SIZE],
+    measure_entries: [Option<CacheEntry<CachedMeasurement>>; CACHE_SIZE],
+    /// Bounded cache for measurements that must be keyed by parent block-size.
+    block_constraint_entries: [Option<CacheEntry<CachedMeasurement>>; BLOCK_CONSTRAINT_CACHE_SIZE],
+    /// Next entry replaced when the block-constraint cache is full.
+    next_block_constraint_entry: u8,
     /// Tracks if all cache entries are empty
     is_empty: bool,
 }
@@ -159,7 +170,13 @@ impl Default for Cache {
 impl Cache {
     /// Create a new empty cache
     pub const fn new() -> Self {
-        Self { final_layout_entry: None, measure_entries: [None; CACHE_SIZE], is_empty: true }
+        Self {
+            final_layout_entry: None,
+            measure_entries: [None; CACHE_SIZE],
+            block_constraint_entries: [None; BLOCK_CONSTRAINT_CACHE_SIZE],
+            next_block_constraint_entry: 0,
+            is_empty: true,
+        }
     }
 
     /// Return the cache slot to cache the current computed result in
@@ -189,6 +206,10 @@ impl Cache {
     ///   - Slot 6: x-axis available space is MaxContent or Definite and y-axis available space is MinContent
     ///   - Slot 7: x-axis available space is MinContent and y-axis available space is MaxContent or Definite
     ///   - Slot 8: x-axis available space is MinContent and y-axis available space is MinContent
+    ///
+    /// Results that report a block-constraint dependency bypass these nine
+    /// shape slots and use a separate bounded cache keyed by the full parent
+    /// size. Independent results remain reusable across parent block-sizes.
     #[inline]
     fn compute_cache_slot(known_dimensions: Size<Option<f32>>, available_space: Size<AvailableSpace>) -> usize {
         use AvailableSpace::{Definite, MaxContent, MinContent};
@@ -235,10 +256,22 @@ impl Cache {
             RunMode::ComputeSize => {
                 for entry in self.measure_entries.iter().flatten() {
                     if entry.key.kd_available_space == key.kd_available_space
-                        && (entry.key.x_axis_parent_size() == key.x_axis_parent_size())
+                        && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
+                        && entry.key.sizing_mode == key.sizing_mode
                         && entry.key.sizing_purpose == key.sizing_purpose
                     {
-                        return Some(LayoutOutput::from_outer_size(entry.content));
+                        return Some(
+                            LayoutOutput::from_outer_size(entry.content.size)
+                                .with_block_constraint_dependency(entry.content.depends_on_block_constraints),
+                        );
+                    }
+                }
+
+                for entry in self.block_constraint_entries.iter().flatten() {
+                    if entry.key == key {
+                        return Some(
+                            LayoutOutput::from_outer_size(entry.content.size).with_block_constraint_dependency(true),
+                        );
                     }
                 }
 
@@ -258,8 +291,34 @@ impl Cache {
             }
             RunMode::ComputeSize => {
                 self.is_empty = false;
-                let cache_slot = Self::compute_cache_slot(input.known_dimensions, input.available_space);
-                self.measure_entries[cache_slot] = Some(CacheEntry { key, content: layout_output.size });
+                let entry = CacheEntry {
+                    key,
+                    content: CachedMeasurement {
+                        size: layout_output.size,
+                        depends_on_block_constraints: layout_output.depends_on_block_constraints,
+                    },
+                };
+                if layout_output.depends_on_block_constraints {
+                    if let Some(existing_index) =
+                        self.block_constraint_entries.iter().position(|existing| match existing {
+                            Some(existing) => existing.key == key,
+                            None => false,
+                        })
+                    {
+                        self.block_constraint_entries[existing_index] = Some(entry);
+                        return;
+                    }
+                    let cache_slot = self
+                        .block_constraint_entries
+                        .iter()
+                        .position(Option::is_none)
+                        .unwrap_or(self.next_block_constraint_entry as usize);
+                    self.block_constraint_entries[cache_slot] = Some(entry);
+                    self.next_block_constraint_entry = ((cache_slot + 1) % BLOCK_CONSTRAINT_CACHE_SIZE) as u8;
+                } else {
+                    let cache_slot = Self::compute_cache_slot(input.known_dimensions, input.available_space);
+                    self.measure_entries[cache_slot] = Some(entry);
+                }
             }
             RunMode::PerformHiddenLayout => {}
         }
@@ -273,12 +332,16 @@ impl Cache {
         self.is_empty = true;
         self.final_layout_entry = None;
         self.measure_entries = [None; CACHE_SIZE];
+        self.block_constraint_entries = [None; BLOCK_CONSTRAINT_CACHE_SIZE];
+        self.next_block_constraint_entry = 0;
         ClearState::Cleared
     }
 
     /// Returns true if all cache entries are None, else false
     pub fn is_empty(&self) -> bool {
-        self.final_layout_entry.is_none() && !self.measure_entries.iter().any(|entry| entry.is_some())
+        self.final_layout_entry.is_none()
+            && !self.measure_entries.iter().any(|entry| entry.is_some())
+            && !self.block_constraint_entries.iter().any(|entry| entry.is_some())
     }
 }
 
@@ -320,5 +383,54 @@ mod tests {
 
         assert!(cache.get(&layout).is_none());
         assert_eq!(cache.get(&contribution).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_parent_block_constraints() {
+        let mut cache = Cache::new();
+        let mut initial = input(SizingPurpose::IntrinsicContribution);
+        initial.parent_size = Size { width: Some(200.0), height: Some(100.0) };
+        cache.store(
+            &initial,
+            LayoutOutput::from_outer_size(Size { width: 100.0, height: 100.0 }).with_block_constraint_dependency(true),
+        );
+
+        let mut changed_block_constraint = initial;
+        changed_block_constraint.parent_size.height = Some(50.0);
+
+        assert!(cache.get(&changed_block_constraint).is_none());
+    }
+
+    #[test]
+    fn independent_measurements_ignore_parent_block_constraints() {
+        let mut cache = Cache::new();
+        let mut initial = input(SizingPurpose::IntrinsicContribution);
+        initial.parent_size = Size { width: Some(200.0), height: Some(100.0) };
+        cache.store(&initial, LayoutOutput::from_outer_size(Size { width: 80.0, height: 20.0 }));
+
+        let mut changed_block_constraint = initial;
+        changed_block_constraint.parent_size.height = Some(50.0);
+
+        assert_eq!(cache.get(&changed_block_constraint).unwrap().size.width, 80.0);
+    }
+
+    #[test]
+    fn dependent_measurements_retain_multiple_block_constraints() {
+        let mut cache = Cache::new();
+        let mut input = input(SizingPurpose::IntrinsicContribution);
+        input.parent_size.width = Some(200.0);
+
+        for height in [100.0, 50.0] {
+            input.parent_size.height = Some(height);
+            cache.store(
+                &input,
+                LayoutOutput::from_outer_size(Size { width: height, height }).with_block_constraint_dependency(true),
+            );
+        }
+
+        input.parent_size.height = Some(100.0);
+        assert_eq!(cache.get(&input).unwrap().size.width, 100.0);
+        input.parent_size.height = Some(50.0);
+        assert_eq!(cache.get(&input).unwrap().size.width, 50.0);
     }
 }

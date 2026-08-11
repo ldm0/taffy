@@ -80,6 +80,9 @@ struct FlexItem {
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
+    /// Whether this item's intrinsic contribution depends on the flex
+    /// container's block-size.
+    depends_on_block_constraints: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -473,7 +476,13 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // We have the container size.
     // If our caller does not care about performing layout we are done now.
     if run_mode == RunMode::ComputeSize {
-        return LayoutOutput::from_outer_size(constants.container_size);
+        // A wrapped column flex container can change its intrinsic inline size
+        // when its block constraint changes even if no individual item reports
+        // a dependency (the number of columns itself may change).
+        let depends_on_block_constraints = (constants.is_column && constants.is_wrap)
+            || flex_lines.iter().flat_map(|line| line.items.iter()).any(|item| item.depends_on_block_constraints);
+        return LayoutOutput::from_outer_size(constants.container_size)
+            .with_block_constraint_dependency(depends_on_block_constraints);
     }
 
     // 16. Align all flex lines per align-content.
@@ -670,6 +679,10 @@ fn generate_anonymous_flex_items(
             let raw_size = child_style.size();
             let raw_min_size = child_style.min_size();
             let raw_max_size = child_style.max_size();
+            let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
+                .into_iter()
+                .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
             let flex_basis = child_style.flex_basis();
             let mut untransferred_size =
                 raw_size.maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis));
@@ -749,6 +762,7 @@ fn generate_anonymous_flex_items(
             }
             min_size.width = min_size.width.or(intrinsic.min);
             max_size.width = max_size.width.or(intrinsic.max);
+            depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
             let authored_size = untransferred_size
                 .maybe_add(box_sizing_adjustment)
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
@@ -785,6 +799,7 @@ fn generate_anonymous_flex_items(
                 aspect_ratio,
                 box_sizing,
                 used_flex_basis,
+                depends_on_block_constraints,
 
                 inset,
                 margin,
@@ -1015,15 +1030,17 @@ fn determine_flex_base_size(
                 .with_cross(dir, cross_axis_available_space);
 
             debug_log!("COMPUTE CHILD BASE SIZE:");
-            break 'flex_basis tree.measure_child_size(
+            let measured = tree.measure_child_size_with_metadata(
                 child.node,
                 child_known_dimensions,
                 child_parent_size,
                 child_available_space,
                 SizingMode::ContentSize,
-                dir.main_axis(),
+                dir.main_axis().into(),
                 Line::FALSE,
             );
+            child.depends_on_block_constraints |= measured.depends_on_block_constraints;
+            break 'flex_basis measured.size.get_abs(dir.main_axis());
         };
 
         // Floor flex-basis by the padding_border_sum (floors inner_flex_basis at zero)
@@ -1058,15 +1075,17 @@ fn determine_flex_base_size(
                 let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
 
                 debug_log!("COMPUTE CHILD MIN SIZE:");
-                tree.measure_child_size(
+                let measured = tree.measure_child_size_with_metadata(
                     child.node,
                     child_known_dimensions,
                     child_parent_size,
                     child_available_space,
                     SizingMode::ContentSize,
-                    dir.main_axis(),
+                    dir.main_axis().into(),
                     Line::FALSE,
-                )
+                );
+                child.depends_on_block_constraints |= measured.depends_on_block_constraints;
+                measured.size.get_abs(dir.main_axis())
             };
 
             // 4.5. Automatic Minimum Size of Flex Items
@@ -1321,15 +1340,18 @@ fn determine_container_main_size(
                                 // Either the min- or max- content size depending on which constraint we are sizing under.
                                 // TODO: Optimise by using already computed values where available
                                 debug_log!("COMPUTE CHILD BASE SIZE (for intrinsic main size):");
-                                let content_main_size = tree.measure_child_size(
+                                let measured = tree.measure_child_size_with_metadata(
                                     item.node,
                                     child_known_dimensions,
                                     constants.node_inner_size,
                                     child_available_space,
                                     SizingMode::InherentSize,
-                                    dir.main_axis(),
+                                    dir.main_axis().into(),
                                     Line::FALSE,
-                                ) + item.margin.main_axis_sum(constants.dir);
+                                );
+                                item.depends_on_block_constraints |= measured.depends_on_block_constraints;
+                                let content_main_size =
+                                    measured.size.get_abs(dir.main_axis()) + item.margin.main_axis_sum(constants.dir);
 
                                 // This is somewhat bizarre in that it's asymmetrical depending whether the flex container is a column or a row.
                                 //
@@ -1662,7 +1684,7 @@ fn determine_hypothetical_cross_size(
             .maybe_max(padding_border_sum);
 
         let child_inner_cross = child_cross.unwrap_or_else(|| {
-            tree.measure_child_size(
+            let measured = tree.measure_child_size_with_metadata(
                 child.node,
                 Size {
                     width: if constants.is_row { child.target_size.width.into() } else { child_cross },
@@ -1674,11 +1696,15 @@ fn determine_hypothetical_cross_size(
                     height: if constants.is_row { child_available_cross } else { child_known_main },
                 },
                 SizingMode::ContentSize,
-                constants.dir.cross_axis(),
+                constants.dir.cross_axis().into(),
                 Line::FALSE,
-            )
-            .maybe_clamp(transferred_min_cross, transferred_max_cross)
-            .max(padding_border_sum)
+            );
+            child.depends_on_block_constraints |= measured.depends_on_block_constraints;
+            measured
+                .size
+                .get_abs(constants.dir.cross_axis())
+                .maybe_clamp(transferred_min_cross, transferred_max_cross)
+                .max(padding_border_sum)
         });
         let child_outer_cross = child_inner_cross + child.margin.cross_axis_sum(constants.dir);
 
