@@ -341,3 +341,58 @@ fn absolute_start_remains_logical_when_wrap_reverse_moves_flex_start() {
     assert_eq!(tree.layout(start).unwrap().location.y, 8.0);
     assert_eq!(tree.layout(flex_start).unwrap().location.y, 0.0);
 }
+
+#[test]
+fn flex_auto_position_uses_the_physical_padding_box_across_writing_directions() {
+    for writing_mode in [
+        WritingMode::HorizontalTb,
+        WritingMode::VerticalRl,
+        WritingMode::VerticalLr,
+        WritingMode::SidewaysRl,
+        WritingMode::SidewaysLr,
+    ] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            let mut tree = TaffyTree::<()>::new();
+            let child = new_leaf(
+                &mut tree,
+                Style {
+                    position: Position::Absolute,
+                    size: Size { width: percent(1.0), height: percent(1.0) },
+                    ..Style::default()
+                },
+                writing_mode,
+            );
+            let container = new_container(
+                &mut tree,
+                Style {
+                    display: Display::Flex,
+                    direction,
+                    box_sizing: BoxSizing::ContentBox,
+                    size: Size { width: length(100.0), height: length(100.0) },
+                    border: Rect { left: length(20.0), right: length(10.0), top: length(5.0), bottom: length(15.0) },
+                    ..Style::default()
+                },
+                &[child],
+                writing_mode,
+            );
+
+            tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+            assert_eq!(
+                tree.layout(container).unwrap().size,
+                Size { width: 130.0, height: 120.0 },
+                "container size for {writing_mode:?} {direction:?}"
+            );
+            assert_eq!(
+                tree.layout(child).unwrap().size,
+                Size { width: 100.0, height: 100.0 },
+                "child size for {writing_mode:?} {direction:?}"
+            );
+            assert_eq!(
+                tree.layout(child).unwrap().location,
+                Point { x: 20.0, y: 5.0 },
+                "child location for {writing_mode:?} {direction:?}"
+            );
+        }
+    }
+}
