@@ -297,7 +297,8 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let inputs = crate::compute::resolve_intrinsic_width_inputs(self, node_id, inputs);
+        let (inputs, intrinsic_dependency) =
+            crate::compute::common::intrinsic_size::resolve_intrinsic_width_inputs_with_metadata(self, node_id, inputs);
 
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
@@ -312,7 +313,7 @@ where
             debug_log_node!(inputs);
 
             // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-            match (display_mode, has_children) {
+            let output = match (display_mode, has_children) {
                 (Display::None, _) => compute_hidden_layout(tree, node_id),
                 #[cfg(feature = "block_layout")]
                 (Display::Block, true) => compute_block_layout(tree, node_id, inputs, block_ctx),
@@ -333,7 +334,8 @@ where
                     };
                     compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
                 }
-            }
+            };
+            output.with_block_constraint_dependency(intrinsic_dependency)
         })
     }
 }
@@ -951,10 +953,11 @@ impl<NodeContext> TaffyTree<NodeContext> {
 mod tests {
 
     use super::*;
-    use crate::geometry::{Point, Rect};
+    use crate::geometry::{Line, Point, Rect};
     use crate::style::{Dimension, Display, FlexDirection, Overflow};
     use crate::style_helpers::*;
     use crate::util::sys;
+    use crate::{RequestedAxis, SizingMode, SizingPurpose};
 
     fn size_measure_function(
         known_dimensions: Size<Option<f32>>,
@@ -1088,6 +1091,52 @@ mod tests {
         taffy.set_node_context(node, Some(Size { width: 100.0, height: 100.0 })).unwrap();
         taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
+    }
+
+    #[test]
+    #[cfg(feature = "block_layout")]
+    fn intrinsic_cache_tracks_transitive_block_constraint_dependency() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        let initial = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Horizontal,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: Size { width: Some(200.0), height: Some(100.0) },
+            available_space: Size::MAX_CONTENT,
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+
+        let mut layout_tree = taffy.as_layout_tree();
+        let first = layout_tree.compute_child_layout(parent, initial);
+        let second = layout_tree.compute_child_layout(
+            parent,
+            LayoutInput { parent_size: Size { width: Some(200.0), height: Some(50.0) }, ..initial },
+        );
+
+        assert_eq!(first.size.width, 100.0);
+        assert_eq!(second.size.width, 50.0);
     }
 
     /// Test that adding `add_child()` works

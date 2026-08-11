@@ -200,7 +200,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
 ///
 /// Uses the provided closure to compute the layout (and then stores the result in the cache) if no cached layout is found.
 #[inline(always)]
-pub fn compute_cached_layout<Tree: CacheTree + ?Sized, ComputeFunction>(
+pub fn compute_cached_layout<Tree: CacheTree + LayoutPartialTree + ?Sized, ComputeFunction>(
     tree: &mut Tree,
     node: NodeId,
     inputs: LayoutInput,
@@ -222,7 +222,30 @@ where
 
     debug_log_node!(inputs);
 
-    let computed_size_and_baselines = compute_uncached(tree, node, inputs);
+    let mut computed_size_and_baselines = compute_uncached(tree, node, inputs);
+
+    // A measurement result only depends on the parent's block constraint when
+    // this box consumes that constraint and the requested result can observe
+    // it. This mirrors Blink's BlockNode/MinMaxSizesResult boundary: formatting
+    // algorithms report descendant dependency, while the node boundary gates
+    // propagation using this node's own block-size styles and aspect ratio.
+    if inputs.run_mode == RunMode::ComputeSize && inputs.sizing_mode == SizingMode::InherentSize {
+        let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
+        let style_depends_on_parent_block_size = {
+            let style = tree.get_core_container_style(node);
+            let size = style.size();
+            let min_size = style.min_size();
+            let max_size = style.max_size();
+            [size.height, min_size.height, max_size.height]
+                .into_iter()
+                .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
+        };
+        let requested_block_size = inputs.axis != RequestedAxis::Horizontal;
+        computed_size_and_baselines.depends_on_block_constraints = style_depends_on_parent_block_size
+            && (requested_block_size || has_aspect_ratio || computed_size_and_baselines.depends_on_block_constraints);
+    } else if inputs.run_mode != RunMode::ComputeSize {
+        computed_size_and_baselines.depends_on_block_constraints = false;
+    }
 
     // Cache result
     tree.cache_store(node, &inputs, computed_size_and_baselines);

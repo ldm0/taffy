@@ -331,6 +331,35 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
 /// A private trait which allows us to add extra convenience methods to types which implement
 /// LayoutTree without making those methods public.
 pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
+    /// Measure a child while retaining intrinsic sizing dependency metadata.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn measure_child_size_with_metadata(
+        &mut self,
+        node_id: NodeId,
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        axis: RequestedAxis,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> LayoutOutput {
+        self.compute_child_layout(
+            node_id,
+            LayoutInput {
+                known_dimensions,
+                definite_dimensions: known_dimensions,
+                parent_size,
+                available_space,
+                sizing_mode,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
+                axis,
+                run_mode: RunMode::ComputeSize,
+                vertical_margins_are_collapsible,
+            },
+        )
+    }
+
     /// Compute the size of the node given the specified constraints
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
@@ -344,19 +373,14 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
         axis: AbsoluteAxis,
         vertical_margins_are_collapsible: Line<bool>,
     ) -> f32 {
-        self.compute_child_layout(
+        self.measure_child_size_with_metadata(
             node_id,
-            LayoutInput {
-                known_dimensions,
-                definite_dimensions: known_dimensions,
-                parent_size,
-                available_space,
-                sizing_mode,
-                sizing_purpose: SizingPurpose::IntrinsicContribution,
-                axis: axis.into(),
-                run_mode: RunMode::ComputeSize,
-                vertical_margins_are_collapsible,
-            },
+            known_dimensions,
+            parent_size,
+            available_space,
+            sizing_mode,
+            axis.into(),
+            vertical_margins_are_collapsible,
         )
         .size
         .get_abs(axis)
@@ -374,19 +398,14 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
         sizing_mode: SizingMode,
         vertical_margins_are_collapsible: Line<bool>,
     ) -> Size<f32> {
-        self.compute_child_layout(
+        self.measure_child_size_with_metadata(
             node_id,
-            LayoutInput {
-                known_dimensions,
-                definite_dimensions: known_dimensions,
-                parent_size,
-                available_space,
-                sizing_mode,
-                sizing_purpose: SizingPurpose::IntrinsicContribution,
-                axis: RequestedAxis::Both,
-                run_mode: RunMode::ComputeSize,
-                vertical_margins_are_collapsible,
-            },
+            known_dimensions,
+            parent_size,
+            available_space,
+            sizing_mode,
+            RequestedAxis::Both,
+            vertical_margins_are_collapsible,
         )
         .size
     }

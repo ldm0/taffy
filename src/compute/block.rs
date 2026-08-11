@@ -336,6 +336,10 @@ struct BlockItem {
     /// Whether margins can be collapsed through this item
     can_be_collapsed_through: bool,
 
+    /// Whether this item's intrinsic inline contribution depends on the
+    /// containing block's block-size.
+    depends_on_block_constraints: bool,
+
     /// Pending layout for in-flow non-floated items. Held back from `set_unrounded_layout` so the
     /// post-loop `align-content` pass in `compute_inner` can shift `location.y` before commit.
     final_layout: Option<Layout>,
@@ -570,21 +574,30 @@ fn compute_inner(
     let mut items = generate_item_list(tree, node_id, container_content_box_size, available_space);
 
     // 2. Compute container width
-    let container_outer_width = known_dimensions.width.unwrap_or_else(|| {
-        let available_width = available_space.width.maybe_sub(content_box_inset.horizontal_axis_sum());
-        let intrinsic_width = determine_content_based_container_width(tree, &items, available_width)
-            + content_box_inset.horizontal_axis_sum();
-        intrinsic_width.maybe_clamp(min_size.width, max_size.width).maybe_max(Some(padding_border_size.width))
-    });
+    let (container_outer_width, content_width_depends_on_block_constraints) = match known_dimensions.width {
+        Some(width) => (width, false),
+        None => {
+            let available_width = available_space.width.maybe_sub(content_box_inset.horizontal_axis_sum());
+            let (intrinsic_width, depends) = determine_content_based_container_width(tree, &mut items, available_width);
+            (
+                (intrinsic_width + content_box_inset.horizontal_axis_sum())
+                    .maybe_clamp(min_size.width, max_size.width)
+                    .maybe_max(Some(padding_border_size.width)),
+                depends,
+            )
+        }
+    };
 
     // Short-circuit if computing size and both dimensions known
     if let (RunMode::ComputeSize, Some(container_outer_height)) = (run_mode, known_dimensions.height) {
-        return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: container_outer_height });
+        return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: container_outer_height })
+            .with_block_constraint_dependency(content_width_depends_on_block_constraints);
     }
 
     // We can also short-circuit if the width is known and only the width has been requested.
     if run_mode == RunMode::ComputeSize && inputs.axis == RequestedAxis::Horizontal {
-        return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: 0.0 });
+        return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: 0.0 })
+            .with_block_constraint_dependency(content_width_depends_on_block_constraints);
     }
 
     let container_percentage_resolution_height =
@@ -718,6 +731,8 @@ fn compute_inner(
 
     let mut output = LayoutOutput {
         size: final_outer_size,
+        depends_on_block_constraints: content_width_depends_on_block_constraints
+            || items.iter().any(|item| item.depends_on_block_constraints),
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
         first_baselines: Point { x: None, y: first_baseline },
@@ -830,6 +845,10 @@ fn generate_item_list(
             let raw_size = child_style.size();
             let raw_min_size = child_style.min_size();
             let raw_max_size = child_style.max_size();
+            let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
+                .into_iter()
+                .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
             let mut size = raw_size
                 .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
@@ -900,6 +919,7 @@ fn generate_item_list(
                 size.width = size.width.or(intrinsic.preferred);
                 min_size.width = min_size.width.or(intrinsic.min);
                 max_size.width = max_size.width.or(intrinsic.max);
+                depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
             }
 
             let resolved = resolve_size_constraints(
@@ -942,6 +962,7 @@ fn generate_item_list(
                 computed_size: Size::zero(),
                 static_position: Point::zero(),
                 can_be_collapsed_through: false,
+                depends_on_block_constraints,
                 final_layout: None,
             })
         })
@@ -957,15 +978,16 @@ fn generate_item_list(
 #[inline]
 fn determine_content_based_container_width(
     tree: &mut impl LayoutPartialTree,
-    items: &[BlockItem],
+    items: &mut [BlockItem],
     available_width: AvailableSpace,
-) -> f32 {
+) -> (f32, bool) {
     let available_space = Size { width: available_width, height: AvailableSpace::MinContent };
 
     let mut max_child_width = 0.0;
     #[cfg(feature = "float_layout")]
     let mut float_contribution = FloatIntrinsicWidthCalculator::new(available_width);
-    for item in items.iter().filter(|item| item.position != Position::Absolute) {
+    let mut depends_on_block_constraints = false;
+    for item in items.iter_mut().filter(|item| item.position != Position::Absolute) {
         let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
 
         // The containing block's inline size depends on this contribution, so
@@ -973,20 +995,24 @@ fn determine_content_based_container_width(
         // external available-space constraint.
         let item_x_margin_sum =
             item.margin.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)).horizontal_axis_sum();
-        let width = known_dimensions
-            .width
-            .unwrap_or_else(|| {
-                tree.measure_child_size(
+        let width = match known_dimensions.width {
+            Some(width) => width,
+            None => {
+                let measured = tree.measure_child_size_with_metadata(
                     item.node_id,
                     known_dimensions,
                     Size::NONE,
                     available_space.map_width(|w| w.maybe_sub(item_x_margin_sum)),
                     SizingMode::InherentSize,
-                    crate::AbsoluteAxis::Horizontal,
+                    RequestedAxis::Horizontal,
                     Line::TRUE,
-                )
-            })
-            .maybe_clamp(item.min_size.width, item.max_size.width);
+                );
+                item.depends_on_block_constraints |= measured.depends_on_block_constraints;
+                measured.size.width
+            }
+        }
+        .maybe_clamp(item.min_size.width, item.max_size.width);
+        depends_on_block_constraints |= item.depends_on_block_constraints;
 
         let width = f32_max(width, item.padding_border_sum.width) + item_x_margin_sum;
 
@@ -1004,7 +1030,7 @@ fn determine_content_based_container_width(
         max_child_width = max_child_width.max(float_contribution.result());
     }
 
-    max_child_width
+    (max_child_width, depends_on_block_constraints)
 }
 
 /// Resolve an item's preferred/min/max sizes against the containing block's
@@ -1393,6 +1419,7 @@ fn perform_final_layout_on_in_flow_children(
             } else {
                 tree.compute_child_layout(item.node_id, inputs)
             };
+            item.depends_on_block_constraints |= item_layout.depends_on_block_constraints;
             let final_size = item_layout.size;
 
             let top_margin_set = item_layout.top_margin.collapse_with_margin(item_margin.top.unwrap_or(0.0));
