@@ -53,8 +53,9 @@ pub(in super::super) struct GridItem {
     pub align_self: AlignSelf,
     /// The item's justify_self property, or the parent's justify_items property is not set
     pub justify_self: AlignSelf,
-    /// The items first baseline (horizontal)
-    pub baseline: Option<f32>,
+    /// The item's first baseline measured for baseline-sharing-group shims.
+    /// This is separate from the baselines retained from final item layout.
+    pub alignment_baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
     /// TODO: Support last baseline and vertical text baselines
     pub baseline_shim: f32,
@@ -89,6 +90,10 @@ pub(in super::super) struct GridItem {
     pub y_position: f32,
     /// Final height. Used to compute baseline alignment for the container.
     pub height: f32,
+    /// First baseline from the item's final layout, relative to its border box.
+    pub first_baseline: Option<f32>,
+    /// Last baseline from the item's final layout, relative to its border box.
+    pub last_baseline: Option<f32>,
 }
 
 impl GridItem {
@@ -119,7 +124,7 @@ impl GridItem {
             margin: style.margin(),
             align_self: style.align_self().unwrap_or(parent_align_items),
             justify_self: style.justify_self().unwrap_or(parent_justify_items),
-            baseline: None,
+            alignment_baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             column_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -133,6 +138,8 @@ impl GridItem {
             minimum_contribution_cache: Size::NONE,
             y_position: 0.0,
             height: 0.0,
+            first_baseline: None,
+            last_baseline: None,
         }
     }
 
