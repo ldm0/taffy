@@ -3,6 +3,7 @@ use super::types::GridTrack;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
+use crate::compute::common::aspect_ratio::resolve_size_constraints;
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
@@ -146,18 +147,12 @@ pub(super) fn align_and_position_item(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
-    let mut inherent_size = raw_size
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let mut min_size = raw_min_size
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let mut max_size = raw_max_size
-        .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
-        .maybe_add(box_sizing_adjustment);
+    let mut inherent_size =
+        raw_size.maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
+    let mut min_size =
+        raw_min_size.maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
+    let mut max_size =
+        raw_max_size.maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
 
     // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
     // resolve against the WIDTH of the grid area.
@@ -204,14 +199,17 @@ pub(super) fn align_and_position_item(
     inherent_size.width = inherent_size.width.or(intrinsic.preferred);
     min_size.width = min_size.width.or(intrinsic.min);
     max_size.width = max_size.width.or(intrinsic.max);
-    inherent_size =
-        inherent_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
-    min_size = min_size
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size)
-        .or(padding_border_size.map(Some))
-        .maybe_max(padding_border_size);
-    max_size =
-        max_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
+    let resolved = resolve_size_constraints(
+        inherent_size,
+        min_size,
+        max_size,
+        raw_size.map(|dimension| dimension.is_auto()),
+        aspect_ratio,
+        padding_border_size,
+    );
+    inherent_size = resolved.size;
+    min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
+    max_size = resolved.max_size;
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
