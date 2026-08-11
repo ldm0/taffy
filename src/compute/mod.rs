@@ -20,6 +20,8 @@
 //! | ---                               | ---                                                                                                                                                                                                | ---                                                                  |
 //! | [`round_layout`]                  | [`RoundTree`]                                                                                                                                                                                      | Round a tree of float-valued layouts to integer pixels               |
 //! | [`round_layout_with_scale_factor`]| [`RoundTree`]                                                                                                                                                                                      | Round a tree to a caller-selected subpixel grid                      |
+//! | [`resolve_content_alignment_fallback`] | none                                                                                                                                                                                         | Resolve content-distribution and baseline fallbacks to a position    |
+//! | [`compute_content_alignment_offset`] | none                                                                                                                                                                                            | Compute the offset for an already-resolved content alignment         |
 //! | [`print_tree`](crate::print_tree) | [`PrintTree`](crate::PrintTree)                                                                                                                                                                    | Print a debug representation of a node tree and it's computed layout |
 //!
 pub(crate) mod common;
@@ -39,6 +41,11 @@ pub(crate) mod grid;
 
 pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
+};
+
+pub use self::common::alignment::{
+    apply_alignment_fallback as resolve_content_alignment_fallback,
+    compute_alignment_offset as compute_content_alignment_offset, ResolvedAlignContentKeyword,
 };
 
 #[cfg(feature = "block_layout")]
