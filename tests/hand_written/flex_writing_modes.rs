@@ -1,6 +1,18 @@
 use taffy::prelude::*;
 use taffy::{Direction, Point, WritingMode};
 
+fn new_leaf(tree: &mut TaffyTree<()>, style: Style, writing_mode: WritingMode) -> NodeId {
+    let node = tree.new_leaf(style).unwrap();
+    tree.set_writing_mode(node, writing_mode).unwrap();
+    node
+}
+
+fn new_container(tree: &mut TaffyTree<()>, style: Style, children: &[NodeId], writing_mode: WritingMode) -> NodeId {
+    let node = tree.new_with_children(style, children).unwrap();
+    tree.set_writing_mode(node, writing_mode).unwrap();
+    node
+}
+
 fn layout_four_items(
     writing_mode: WritingMode,
     direction: Direction,
@@ -8,32 +20,27 @@ fn layout_four_items(
     flex_wrap: FlexWrap,
 ) -> [Point<f32>; 4] {
     let mut tree = TaffyTree::<()>::new();
-    let item_style = Style {
-        writing_mode,
-        size: Size { width: length(20.0), height: length(15.0) },
-        flex_shrink: 0.0,
-        ..Style::default()
-    };
+    let item_style =
+        Style { size: Size { width: length(20.0), height: length(15.0) }, flex_shrink: 0.0, ..Style::default() };
     let items = [
-        tree.new_leaf(item_style.clone()).unwrap(),
-        tree.new_leaf(item_style.clone()).unwrap(),
-        tree.new_leaf(item_style.clone()).unwrap(),
-        tree.new_leaf(item_style).unwrap(),
+        new_leaf(&mut tree, item_style.clone(), writing_mode),
+        new_leaf(&mut tree, item_style.clone(), writing_mode),
+        new_leaf(&mut tree, item_style.clone(), writing_mode),
+        new_leaf(&mut tree, item_style, writing_mode),
     ];
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode,
-                direction,
-                flex_direction,
-                flex_wrap,
-                size: Size { width: length(40.0), height: length(30.0) },
-                ..Style::default()
-            },
-            &items,
-        )
-        .unwrap();
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            direction,
+            flex_direction,
+            flex_wrap,
+            size: Size { width: length(40.0), height: length(30.0) },
+            ..Style::default()
+        },
+        &items,
+        writing_mode,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
     items.map(|item| tree.layout(item).unwrap().location)
@@ -97,27 +104,22 @@ fn vertical_rl_flex_flow_matrix_matches_css_logical_start_edges() {
 #[test]
 fn vertical_row_uses_column_gap_on_its_inline_main_axis() {
     let mut tree = TaffyTree::<()>::new();
-    let item_style = Style {
-        writing_mode: WritingMode::VerticalLr,
-        size: Size { width: length(10.0), height: length(10.0) },
-        flex_shrink: 0.0,
-        ..Style::default()
-    };
-    let first = tree.new_leaf(item_style.clone()).unwrap();
-    let second = tree.new_leaf(item_style).unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalLr,
-                flex_direction: FlexDirection::Row,
-                gap: Size { width: length(5.0), height: length(17.0) },
-                size: Size { width: length(30.0), height: length(40.0) },
-                ..Style::default()
-            },
-            &[first, second],
-        )
-        .unwrap();
+    let item_style =
+        Style { size: Size { width: length(10.0), height: length(10.0) }, flex_shrink: 0.0, ..Style::default() };
+    let first = new_leaf(&mut tree, item_style.clone(), WritingMode::VerticalLr);
+    let second = new_leaf(&mut tree, item_style, WritingMode::VerticalLr);
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            gap: Size { width: length(5.0), height: length(17.0) },
+            size: Size { width: length(30.0), height: length(40.0) },
+            ..Style::default()
+        },
+        &[first, second],
+        WritingMode::VerticalLr,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -128,25 +130,25 @@ fn vertical_row_uses_column_gap_on_its_inline_main_axis() {
 #[test]
 fn vertical_child_box_percentages_use_containing_inline_size() {
     let mut tree = TaffyTree::<()>::new();
-    let child = tree
-        .new_leaf(Style {
-            writing_mode: WritingMode::VerticalLr,
+    let child = new_leaf(
+        &mut tree,
+        Style {
             size: Size { width: length(40.0), height: length(40.0) },
             padding: Rect { left: percent(0.1), ..Rect::zero() },
             ..Style::default()
-        })
-        .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalLr,
-                size: Size { width: length(100.0), height: length(200.0) },
-                ..Style::default()
-            },
-            &[child],
-        )
-        .unwrap();
+        },
+        WritingMode::VerticalLr,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            size: Size { width: length(100.0), height: length(200.0) },
+            ..Style::default()
+        },
+        &[child],
+        WritingMode::VerticalLr,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -163,29 +165,27 @@ fn orthogonal_nested_flex_uses_parent_inline_size_for_its_own_percentages() {
             ..Style::default()
         })
         .unwrap();
-    let child = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::HorizontalTb,
-                size: Size { width: length(80.0), height: length(40.0) },
-                padding: Rect { left: percent(0.1), ..Rect::zero() },
-                ..Style::default()
-            },
-            &[grandchild],
-        )
-        .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalLr,
-                size: Size { width: length(100.0), height: length(200.0) },
-                ..Style::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    let child = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            size: Size { width: length(80.0), height: length(40.0) },
+            padding: Rect { left: percent(0.1), ..Rect::zero() },
+            ..Style::default()
+        },
+        &[grandchild],
+        WritingMode::HorizontalTb,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            size: Size { width: length(100.0), height: length(200.0) },
+            ..Style::default()
+        },
+        &[child],
+        WritingMode::VerticalLr,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -204,17 +204,16 @@ fn vertical_flex_absolute_child_uses_container_inline_percentage_basis() {
             ..Style::default()
         })
         .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalLr,
-                size: Size { width: length(100.0), height: length(200.0) },
-                ..Style::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            size: Size { width: length(100.0), height: length(200.0) },
+            ..Style::default()
+        },
+        &[child],
+        WritingMode::VerticalLr,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -224,36 +223,37 @@ fn vertical_flex_absolute_child_uses_container_inline_percentage_basis() {
 #[test]
 fn orthogonal_self_start_uses_the_items_physical_start_side() {
     let mut tree = TaffyTree::<()>::new();
-    let start = tree
-        .new_leaf(Style {
-            writing_mode: WritingMode::VerticalRl,
+    let start = new_leaf(
+        &mut tree,
+        Style {
             align_self: Some(AlignSelf::START),
             size: Size { width: length(8.0), height: length(6.0) },
             flex_shrink: 0.0,
             ..Style::default()
-        })
-        .unwrap();
-    let self_start = tree
-        .new_leaf(Style {
-            writing_mode: WritingMode::HorizontalTb,
+        },
+        WritingMode::VerticalRl,
+    );
+    let self_start = new_leaf(
+        &mut tree,
+        Style {
             align_self: Some(AlignSelf::SELF_START),
             size: Size { width: length(8.0), height: length(6.0) },
             flex_shrink: 0.0,
             ..Style::default()
-        })
-        .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalRl,
-                flex_direction: FlexDirection::Row,
-                size: Size { width: length(16.0), height: length(20.0) },
-                ..Style::default()
-            },
-            &[start, self_start],
-        )
-        .unwrap();
+        },
+        WritingMode::HorizontalTb,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            size: Size { width: length(16.0), height: length(20.0) },
+            ..Style::default()
+        },
+        &[start, self_start],
+        WritingMode::VerticalRl,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -264,37 +264,38 @@ fn orthogonal_self_start_uses_the_items_physical_start_side() {
 #[test]
 fn vertical_rtl_cross_axis_alignment_uses_logical_start_and_end() {
     let mut tree = TaffyTree::<()>::new();
-    let start = tree
-        .new_leaf(Style {
-            writing_mode: WritingMode::VerticalRl,
+    let start = new_leaf(
+        &mut tree,
+        Style {
             align_self: Some(AlignSelf::START),
             size: Size { width: length(6.0), height: length(8.0) },
             flex_shrink: 0.0,
             ..Style::default()
-        })
-        .unwrap();
-    let end = tree
-        .new_leaf(Style {
-            writing_mode: WritingMode::VerticalRl,
+        },
+        WritingMode::VerticalRl,
+    );
+    let end = new_leaf(
+        &mut tree,
+        Style {
             align_self: Some(AlignSelf::END),
             size: Size { width: length(6.0), height: length(8.0) },
             flex_shrink: 0.0,
             ..Style::default()
-        })
-        .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalRl,
-                direction: Direction::Rtl,
-                flex_direction: FlexDirection::Column,
-                size: Size { width: length(20.0), height: length(16.0) },
-                ..Style::default()
-            },
-            &[start, end],
-        )
-        .unwrap();
+        },
+        WritingMode::VerticalRl,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            direction: Direction::Rtl,
+            flex_direction: FlexDirection::Column,
+            size: Size { width: length(20.0), height: length(16.0) },
+            ..Style::default()
+        },
+        &[start, end],
+        WritingMode::VerticalRl,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
@@ -321,20 +322,19 @@ fn absolute_start_remains_logical_when_wrap_reverse_moves_flex_start() {
             ..Style::default()
         })
         .unwrap();
-    let container = tree
-        .new_with_children(
-            Style {
-                display: Display::Flex,
-                writing_mode: WritingMode::VerticalRl,
-                direction: Direction::Rtl,
-                flex_direction: FlexDirection::Column,
-                flex_wrap: FlexWrap::WrapReverse,
-                size: Size { width: length(20.0), height: length(16.0) },
-                ..Style::default()
-            },
-            &[start, flex_start],
-        )
-        .unwrap();
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            direction: Direction::Rtl,
+            flex_direction: FlexDirection::Column,
+            flex_wrap: FlexWrap::WrapReverse,
+            size: Size { width: length(20.0), height: length(16.0) },
+            ..Style::default()
+        },
+        &[start, flex_start],
+        WritingMode::VerticalRl,
+    );
 
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 

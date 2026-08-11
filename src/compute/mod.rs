@@ -37,7 +37,10 @@ pub(crate) mod flexbox;
 #[cfg(feature = "grid")]
 pub(crate) mod grid;
 
-pub use leaf::{compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_scrollbar_insets};
+pub use leaf::{
+    compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
+    compute_leaf_layout_with_scrollbar_insets,
+};
 
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};
