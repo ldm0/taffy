@@ -111,6 +111,7 @@ pub use crate::compute::detailed_info::*;
 #[doc(inline)]
 pub use crate::compute::{
     compute_cached_layout, compute_hidden_layout, compute_leaf_layout, compute_root_layout, round_layout,
+    round_layout_with_scale_factor,
 };
 #[doc(inline)]
 pub use crate::style::Style;
