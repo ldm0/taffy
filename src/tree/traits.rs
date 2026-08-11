@@ -235,6 +235,17 @@ pub trait CacheTree {
     /// Store a computed size in the cache
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput);
 
+    /// Try to retrieve an intrinsic size result from the node's measurement
+    /// cache.
+    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
+        self.cache_get(node_id, input).map(LayoutOutput::intrinsic_size_result)
+    }
+
+    /// Store an intrinsic size result in the node's measurement cache.
+    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
+        self.cache_store(node_id, input, LayoutOutput::from_intrinsic_size_result(result));
+    }
+
     /// Clear all cache entries for the node
     fn cache_clear(&mut self, node_id: NodeId);
 }
