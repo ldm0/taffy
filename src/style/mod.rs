@@ -339,6 +339,27 @@ pub enum BoxSizing {
     ContentBox,
 }
 
+/// A preferred aspect ratio together with the CSS sizing box whose dimensions
+/// it constrains.
+///
+/// The sizing box normally follows [`BoxSizing`], but intrinsic replaced
+/// ratios and CSS `auto <ratio>` constrain the content box even when authored
+/// sizes use the border box.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct ResolvedAspectRatio {
+    /// Width divided by height, or `None` when no preferred ratio applies.
+    pub ratio: Option<f32>,
+    /// The box whose width and height must satisfy `ratio`.
+    pub box_sizing: BoxSizing,
+}
+
+impl ResolvedAspectRatio {
+    /// Removes the numeric ratio while retaining its sizing-box metadata.
+    pub const fn disabled(self) -> Self {
+        Self { ratio: None, ..self }
+    }
+}
+
 #[cfg(feature = "parse")]
 crate::util::parse::impl_parse_for_keyword_enum!(BoxSizing,
     "border-box" => BorderBox,

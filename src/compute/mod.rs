@@ -37,7 +37,7 @@ pub(crate) mod flexbox;
 #[cfg(feature = "grid")]
 pub(crate) mod grid;
 
-pub use leaf::compute_leaf_layout;
+pub use leaf::{compute_leaf_layout, compute_leaf_layout_with_aspect_ratio};
 
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};
@@ -91,32 +91,33 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         use crate::BoxSizing;
 
         let parent_size = available_space.into_options();
+        let aspect_ratio = tree.get_resolved_aspect_ratio(root);
         let style = tree.get_core_container_style(root);
 
         if style.is_block() {
             // Pull these out earlier to avoid borrowing issues
-            let aspect_ratio = style.aspect_ratio();
             let margin = style.margin().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
             let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
             let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
             let padding_border_size = (padding + border).sum_axes();
+            let box_sizing = style.box_sizing();
             let box_sizing_adjustment =
-                if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+                if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
             let min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let max_size = style
                 .max_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let clamped_style_size = style
                 .size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment)
                 .maybe_clamp(min_size, max_size);
 
