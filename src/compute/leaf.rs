@@ -8,8 +8,34 @@ use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, CoreStyle};
+use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
 use core::unreachable;
+
+/// Node-level values resolved by the embedding before leaf layout begins.
+///
+/// Keeping these values together avoids adding one public leaf-layout entry
+/// point for every combination of embedding-specific inputs.
+#[derive(Copy, Clone, Debug)]
+pub struct LeafLayoutContext {
+    /// The node's preferred aspect ratio after embedding-specific resolution.
+    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Physical space occupied by resolved scrollbar gutters.
+    scrollbar_insets: Rect<f32>,
+}
+
+impl LeafLayoutContext {
+    /// Creates a leaf context from values already resolved by the embedding.
+    pub const fn new(resolved_aspect_ratio: Option<ResolvedAspectRatio>, scrollbar_insets: Rect<f32>) -> Self {
+        Self { resolved_aspect_ratio, scrollbar_insets }
+    }
+
+    /// Builds the default context from values exposed directly by the style.
+    fn from_style(style: &impl CoreStyle) -> Self {
+        let resolved_aspect_ratio =
+            style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
+        Self::new(resolved_aspect_ratio, resolve_scrollbar_insets(style))
+    }
+}
 
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
@@ -21,10 +47,10 @@ pub fn compute_leaf_layout<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_scrollbar_insets(
+    compute_leaf_layout_with_context(
         inputs,
         style,
-        resolve_scrollbar_insets(style),
+        LeafLayoutContext::from_style(style),
         resolve_calc_value,
         measure_function,
     )
@@ -46,6 +72,33 @@ pub fn compute_leaf_layout_with_scrollbar_insets<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
+    let resolved_aspect_ratio =
+        style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
+    compute_leaf_layout_with_context(
+        inputs,
+        style,
+        LeafLayoutContext::new(resolved_aspect_ratio, scrollbar_insets),
+        resolve_calc_value,
+        measure_function,
+    )
+}
+
+/// Computes a leaf using node-level values resolved by the embedding.
+///
+/// Browser integrations should use this entry point when the preferred ratio
+/// depends on natural replaced-element sizing or when scrollbar gutters have
+/// already been resolved to physical edges.
+pub fn compute_leaf_layout_with_context<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    context: LeafLayoutContext,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    let LeafLayoutContext { resolved_aspect_ratio, scrollbar_insets } = context;
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
     // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
@@ -67,22 +120,21 @@ where
             (node_size, node_min_size, node_max_size, None)
         }
         SizingMode::InherentSize => {
-            let aspect_ratio = style.aspect_ratio();
             let style_size = style
                 .size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
-                .maybe_add(box_sizing_adjustment);
+                .maybe_add(box_sizing_adjustment)
+                .maybe_apply_resolved_aspect_ratio(resolved_aspect_ratio, pb_sum);
             let style_min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
-                .maybe_add(box_sizing_adjustment);
+                .maybe_add(box_sizing_adjustment)
+                .maybe_apply_resolved_aspect_ratio(resolved_aspect_ratio, pb_sum);
             let style_max_size =
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
 
             let node_size = known_dimensions.or(style_size);
-            (node_size, style_min_size, style_max_size, aspect_ratio)
+            (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
         }
     };
 
@@ -160,10 +212,11 @@ where
         .or(node_size)
         .unwrap_or(measured_size + content_box_inset.sum_axes())
         .maybe_clamp(node_min_size, node_max_size);
-    let size = Size {
-        width: clamped_size.width,
-        height: f32_max(clamped_size.height, aspect_ratio.map(|ratio| clamped_size.width / ratio).unwrap_or(0.0)),
-    };
+    let ratio_height = Size { width: Some(clamped_size.width), height: None }
+        .maybe_apply_resolved_aspect_ratio(aspect_ratio, pb_sum)
+        .height
+        .unwrap_or(0.0);
+    let size = Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) };
     let size = size.maybe_max(padding_border.sum_axes().map(Some));
 
     LayoutOutput {

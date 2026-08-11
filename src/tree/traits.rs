@@ -130,7 +130,7 @@ use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, S
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
-use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle};
+use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -196,6 +196,18 @@ pub trait LayoutPartialTree: TraversePartialTree {
     #[inline]
     fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
         resolve_scrollbar_insets(&self.get_core_container_style(node_id))
+    }
+
+    /// Returns the node's used aspect ratio and the sizing box whose dimensions
+    /// it constrains.
+    ///
+    /// The default projects both values from [`CoreStyle`]. Browser integrations
+    /// can override this node-level seam to combine authored and natural ratios
+    /// for replaced elements. Intrinsic ratios and CSS `auto <ratio>` use the
+    /// content box even when authored sizes use the border box.
+    fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> Option<ResolvedAspectRatio> {
+        let style = self.get_core_container_style(node_id);
+        style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()))
     }
 
     /// Resolve calc value
