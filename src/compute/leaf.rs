@@ -81,7 +81,15 @@ where
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
 
-            let node_size = known_dimensions.or(style_size);
+            // A parent formatting context may make exactly one border-box axis
+            // definite (for example a stretched flex cross size). Resolve the
+            // other axis through the preferred ratio at the leaf boundary just
+            // like an authored one-axis size.
+            let node_size = known_dimensions.or(style_size).maybe_apply_aspect_ratio_with_box_sizing(
+                resolved_aspect_ratio,
+                BoxSizing::BorderBox,
+                pb_sum,
+            );
             (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
         }
     };
