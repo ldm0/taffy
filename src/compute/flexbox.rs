@@ -53,6 +53,11 @@ struct FlexItem {
     aspect_ratio: ResolvedAspectRatio,
     /// The CSS sizing box used by authored size properties.
     box_sizing: BoxSizing,
+    /// Whether the used flex basis is content-based.
+    ///
+    /// `flex-basis: auto` resolves to `content` when the preferred main size is
+    /// also `auto`, so this cannot be recovered from the flex-basis token alone.
+    uses_content_flex_basis: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -186,6 +191,29 @@ struct AlgoConstants {
     container_size: Size<f32>,
     /// The size of the internal container
     inner_container_size: Size<f32>,
+}
+
+/// Resolve the space available to a flex item's cross axis.
+///
+/// A definite container cross size remains definite while the container's main
+/// axis is being measured under a min/max-content constraint. This is what
+/// allows stretch alignment and an aspect ratio to contribute to an inline-flex
+/// container's intrinsic main size.
+fn resolve_cross_axis_available_space(
+    available_space: AvailableSpace,
+    container_cross_size: Option<f32>,
+    min_size: Option<f32>,
+    max_size: Option<f32>,
+) -> AvailableSpace {
+    if let Some(container_cross_size) = container_cross_size {
+        return AvailableSpace::Definite(container_cross_size.maybe_clamp(min_size, max_size));
+    }
+
+    match available_space {
+        AvailableSpace::Definite(value) => AvailableSpace::Definite(value.maybe_clamp(min_size, max_size)),
+        AvailableSpace::MinContent => min_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MinContent),
+        AvailableSpace::MaxContent => max_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent),
+    }
 }
 
 /// Computes the layout of a box according to the flexbox algorithm
@@ -618,9 +646,12 @@ fn generate_anonymous_flex_items(
             let raw_size = child_style.size();
             let raw_min_size = child_style.min_size();
             let raw_max_size = child_style.max_size();
+            let flex_basis = child_style.flex_basis();
+            let uses_content_flex_basis =
+                flex_basis.is_content() || (flex_basis.is_auto() && raw_size.main(constants.dir).is_auto());
             let mut untransferred_size =
                 raw_size.maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis));
-            let mut size = if child_style.flex_basis().is_content() {
+            let mut size = if uses_content_flex_basis {
                 untransferred_size.with_main(constants.dir, None)
             } else {
                 untransferred_size
@@ -632,9 +663,8 @@ fn generate_anonymous_flex_items(
             let mut max_size = raw_max_size
                 .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
-            let size_is_auto = raw_size
-                .map(|dimension| dimension.is_auto())
-                .with_main(constants.dir, child_style.flex_basis().is_content());
+            let size_is_auto =
+                raw_size.map(|dimension| dimension.is_auto()).with_main(constants.dir, uses_content_flex_basis);
             let inset = child_style
                 .inset()
                 .zip_size(constants.node_inner_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
@@ -651,7 +681,6 @@ fn generate_anonymous_flex_items(
             let scrollbar_width = child_style.scrollbar_width();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
-            let flex_basis_is_content = child_style.flex_basis().is_content();
             drop(child_style);
 
             let child_available_space = Size {
@@ -685,7 +714,7 @@ fn generate_anonymous_flex_items(
             );
             if let Some(intrinsic_width) = intrinsic.preferred {
                 untransferred_size.width = Some(intrinsic_width - box_sizing_adjustment.width);
-                if !flex_basis_is_content || !constants.dir.is_row() {
+                if !uses_content_flex_basis || !constants.dir.is_row() {
                     size.width = size.width.or(Some(intrinsic_width));
                 }
             }
@@ -705,6 +734,7 @@ fn generate_anonymous_flex_items(
                 transferred_max_size: resolved.max_size,
                 aspect_ratio,
                 box_sizing,
+                uses_content_flex_basis,
 
                 inset,
                 margin,
@@ -815,7 +845,7 @@ fn determine_flex_base_size(
     for child in flex_items.iter_mut() {
         let child_style = tree.get_flexbox_child_style(child.node);
         let flex_basis_style = child_style.flex_basis();
-        let flex_basis_is_content = flex_basis_style.is_content();
+        let uses_content_flex_basis = child.uses_content_flex_basis;
         let aspect_ratio = child.aspect_ratio;
         let padding_border = (child.padding + child.border).sum_axes();
         let box_sizing_adjustment =
@@ -835,23 +865,16 @@ fn determine_flex_base_size(
         let child_max_cross = transferred_max_size.cross(dir).maybe_add(cross_axis_margin_sum);
 
         // Clamp available space by min- and max- size
-        let cross_axis_available_space: AvailableSpace = match available_space.cross(dir) {
-            AvailableSpace::Definite(val) => AvailableSpace::Definite(
-                cross_axis_parent_size.unwrap_or(val).maybe_clamp(child_min_cross, child_max_cross),
-            ),
-            AvailableSpace::MinContent => match child_min_cross {
-                Some(min) => AvailableSpace::Definite(min),
-                None => AvailableSpace::MinContent,
-            },
-            AvailableSpace::MaxContent => match child_max_cross {
-                Some(max) => AvailableSpace::Definite(max),
-                None => AvailableSpace::MaxContent,
-            },
-        };
+        let cross_axis_available_space = resolve_cross_axis_available_space(
+            available_space.cross(dir),
+            cross_axis_parent_size,
+            child_min_cross,
+            child_max_cross,
+        );
 
         // Known dimensions for child sizing
         let child_known_dimensions = {
-            let mut ckd = if flex_basis_is_content {
+            let mut ckd = if uses_content_flex_basis {
                 child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
             } else {
                 child.size.with_main(dir, None)
@@ -880,7 +903,7 @@ fn determine_flex_base_size(
         let flex_basis = flex_basis_style
             .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
             .maybe_add(box_sizing_adjustment.main(dir));
-        let content_ratio_size = if flex_basis_is_content {
+        let content_ratio_size = if uses_content_flex_basis {
             child_known_dimensions
                 .maybe_sub(box_sizing_adjustment)
                 .maybe_max(Size::ZERO)
@@ -904,7 +927,7 @@ fn determine_flex_base_size(
             // A `content` basis ignores a preferred main size. It can still use
             // a main size transferred from an independently definite cross
             // size (including an align-self stretch size) through aspect-ratio.
-            let main_size = if flex_basis_is_content { content_ratio_size } else { child.size.main(dir) };
+            let main_size = if uses_content_flex_basis { content_ratio_size } else { child.size.main(dir) };
             if let Some(flex_basis) = flex_basis.or(main_size) {
                 break 'flex_basis flex_basis;
             };
@@ -1225,10 +1248,12 @@ fn determine_container_main_size(
                                 let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
                                 let child_min_cross = item.min_size.cross(dir).maybe_add(cross_axis_margin_sum);
                                 let child_max_cross = item.max_size.cross(dir).maybe_add(cross_axis_margin_sum);
-                                let cross_axis_available_space: AvailableSpace = available_space
-                                    .cross(dir)
-                                    .map_definite_value(|val| cross_axis_parent_size.unwrap_or(val))
-                                    .maybe_clamp(child_min_cross, child_max_cross);
+                                let cross_axis_available_space = resolve_cross_axis_available_space(
+                                    available_space.cross(dir),
+                                    cross_axis_parent_size,
+                                    child_min_cross,
+                                    child_max_cross,
+                                );
 
                                 let child_available_space = available_space.with_cross(dir, cross_axis_available_space);
 
