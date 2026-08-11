@@ -30,11 +30,14 @@ use super::common::intrinsic_size::resolve_intrinsic_width_constraints;
 /// reconstruct that fact later from the authored token.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UsedFlexBasis {
+    /// The flex basis resolved to a definite border-box size.
     Definite(f32),
+    /// Flex basis resolution fell back to the item's content contribution.
     Content,
 }
 
 impl UsedFlexBasis {
+    /// Whether flex sizing must obtain the basis from content.
     fn is_content(self) -> bool {
         matches!(self, Self::Content)
     }
