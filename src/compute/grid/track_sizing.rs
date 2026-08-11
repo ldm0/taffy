@@ -1,7 +1,8 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::geometry::{AbstractAxis, Line, Size};
+use crate::compute::common::baseline::logical_block_baseline;
+use crate::geometry::{AbstractAxis, Line, LogicalSize, Size};
 use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
@@ -79,7 +80,7 @@ where
     /// The axis we are currently sizing
     axis: AbstractAxis,
     /// The available grid space
-    inner_node_size: Size<Option<f32>>,
+    inner_node_size: LogicalSize<Option<f32>>,
 }
 
 impl<Tree, EstimateFunction> IntrinsicSizeMeasurer<'_, '_, Tree, EstimateFunction>
@@ -103,11 +104,11 @@ where
         )
     }
 
-    /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
-    /// to zero if the container size is indefinite as otherwise this would introduce a cyclic dependency.
+    /// Compute the item's resolved margins for size contributions. Inline-axis percentage margins resolve
+    /// to zero if the container size is indefinite to avoid a cyclic dependency.
     #[inline(always)]
     fn margins_axis_sums_with_baseline_shims(&self, item: &GridItem, available_space: Size<Option<f32>>) -> Size<f32> {
-        let percentage_basis = item.parent_writing_mode.to_logical(available_space).inline_size;
+        let percentage_basis = item.parent_writing_direction.mode.to_logical(available_space).inline_size;
         item.margins_axis_sums_with_baseline_shims(percentage_basis, self.tree)
     }
 
@@ -121,20 +122,22 @@ where
     #[inline(always)]
     fn min_content_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
-        let available_space = grid_area_size.with(self.axis, None);
+        let writing_mode = item.parent_writing_direction.mode;
+        let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.min_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
-        contribution + margin_axis_sums.get(self.axis)
+        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
     }
 
     /// Retrieve the item's max content contribution from the cache or compute it using the provided parameters
     #[inline(always)]
     fn max_content_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
-        let available_space = grid_area_size.with(self.axis, None);
+        let writing_mode = item.parent_writing_direction.mode;
+        let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.max_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
-        contribution + margin_axis_sums.get(self.axis)
+        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
     }
 
     /// The minimum contribution of an item is the smallest outer size it can have.
@@ -147,11 +150,12 @@ where
     #[inline(always)]
     fn minimum_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
-        let available_space = grid_area_size.with(self.axis, None);
+        let writing_mode = item.parent_writing_direction.mode;
+        let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution =
             item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
-        contribution + margin_axis_sums.get(self.axis)
+        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
     }
 }
 
@@ -278,8 +282,8 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     axis_max_size: Option<f32>,
     axis_alignment: AlignContent,
     other_axis_alignment: AlignContent,
-    available_grid_space: Size<AvailableSpace>,
-    inner_node_size: Size<Option<f32>>,
+    available_grid_space: LogicalSize<AvailableSpace>,
+    inner_node_size: LogicalSize<Option<f32>>,
     axis_tracks: &mut [GridTrack],
     other_axis_tracks: &mut [GridTrack],
     items: &mut [GridItem],
@@ -452,7 +456,7 @@ fn resolve_item_baselines(
     tree: &mut impl LayoutPartialTree,
     axis: AbstractAxis,
     items: &mut [GridItem],
-    inner_node_size: Size<Option<f32>>,
+    inner_node_size: LogicalSize<Option<f32>>,
 ) {
     // Sort items by track in the other axis (row) start position so that we can iterate items in groups which
     // are in the same track in the other axis (row)
@@ -493,26 +497,30 @@ fn resolve_item_baselines(
 
         // Compute the baselines of all items in the row
         for item in row_items.iter_mut() {
+            let writing_direction = item.parent_writing_direction;
             let measured_size_and_baselines = tree.perform_child_layout(
                 item.node,
                 ChildLayoutInput::new(
                     Size::NONE,
-                    inner_node_size,
-                    item.parent_writing_mode,
+                    writing_direction.mode.to_physical(inner_node_size),
+                    writing_direction.mode,
                     Size::MIN_CONTENT,
                     SizingMode::InherentSize,
                     Line::FALSE,
                 ),
             );
 
-            let baseline = measured_size_and_baselines.first_baselines.y;
-            let height = measured_size_and_baselines.size.height;
-
-            let percentage_basis = item.parent_writing_mode.to_logical(inner_node_size).inline_size;
-            item.alignment_baseline = Some(
-                baseline.unwrap_or(height)
-                    + item.margin.top.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            let block_size = writing_direction.mode.to_logical(measured_size_and_baselines.size).block_size;
+            let baseline = logical_block_baseline(
+                measured_size_and_baselines.first_baselines,
+                measured_size_and_baselines.size,
+                writing_direction,
             );
+
+            let percentage_basis = inner_node_size.inline_size;
+            let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let block_start_margin = writing_direction.to_logical_box_strut(margin).block_start;
+            item.alignment_baseline = Some(baseline.unwrap_or(block_size) + block_start_margin);
         }
 
         // Compute the max baseline of all items in the row
@@ -535,7 +543,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
     other_axis_tracks: &[GridTrack],
     items: &mut [GridItem],
     axis_available_grid_space: AvailableSpace,
-    inner_node_size: Size<Option<f32>>,
+    inner_node_size: LogicalSize<Option<f32>>,
     get_track_size_estimate: impl Fn(&GridTrack, Option<f32>, &Tree) -> Option<f32>,
 ) {
     // Step 1. Shim baseline-aligned items so their intrinsic size contributions reflect their baseline alignment.

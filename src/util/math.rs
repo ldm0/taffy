@@ -1,7 +1,7 @@
 //! Contains numerical helper traits and functions
 #![allow(clippy::manual_clamp)]
 
-use crate::geometry::Size;
+use crate::geometry::{LogicalSize, Size};
 use crate::style::AvailableSpace;
 
 /// A trait to conveniently calculate minimums and maximums when some data may not be defined
@@ -245,6 +245,43 @@ impl<In, Out, T: MaybeMath<In, Out>> MaybeMath<Size<In>, Size<Out>> for Size<T> 
 
     fn maybe_sub(self, rhs: Size<In>) -> Size<Out> {
         Size { width: self.width.maybe_sub(rhs.width), height: self.height.maybe_sub(rhs.height) }
+    }
+}
+
+impl<In, Out, T: MaybeMath<In, Out>> MaybeMath<LogicalSize<In>, LogicalSize<Out>> for LogicalSize<T> {
+    fn maybe_min(self, rhs: LogicalSize<In>) -> LogicalSize<Out> {
+        LogicalSize {
+            inline_size: self.inline_size.maybe_min(rhs.inline_size),
+            block_size: self.block_size.maybe_min(rhs.block_size),
+        }
+    }
+
+    fn maybe_max(self, rhs: LogicalSize<In>) -> LogicalSize<Out> {
+        LogicalSize {
+            inline_size: self.inline_size.maybe_max(rhs.inline_size),
+            block_size: self.block_size.maybe_max(rhs.block_size),
+        }
+    }
+
+    fn maybe_clamp(self, min: LogicalSize<In>, max: LogicalSize<In>) -> LogicalSize<Out> {
+        LogicalSize {
+            inline_size: self.inline_size.maybe_clamp(min.inline_size, max.inline_size),
+            block_size: self.block_size.maybe_clamp(min.block_size, max.block_size),
+        }
+    }
+
+    fn maybe_add(self, rhs: LogicalSize<In>) -> LogicalSize<Out> {
+        LogicalSize {
+            inline_size: self.inline_size.maybe_add(rhs.inline_size),
+            block_size: self.block_size.maybe_add(rhs.block_size),
+        }
+    }
+
+    fn maybe_sub(self, rhs: LogicalSize<In>) -> LogicalSize<Out> {
+        LogicalSize {
+            inline_size: self.inline_size.maybe_sub(rhs.inline_size),
+            block_size: self.block_size.maybe_sub(rhs.block_size),
+        }
     }
 }
 
