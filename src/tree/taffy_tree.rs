@@ -308,6 +308,7 @@ where
         let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
+        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
 
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
@@ -344,7 +345,9 @@ where
                     compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
                 }
             };
-            output.with_block_constraint_dependency(intrinsic_dependency)
+            output
+                .with_block_constraint_dependency(intrinsic_dependency)
+                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
         })
     }
 
@@ -356,6 +359,7 @@ where
         let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
+        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
 
         compute_cached_size(self, node_id, inputs, |tree, node_id, inputs| {
             let display_mode = tree.taffy.nodes[node_id.into()].style.display;
@@ -382,7 +386,10 @@ where
                     compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
                 }
             };
-            output.with_block_constraint_dependency(intrinsic_dependency).into_intrinsic_size_result()
+            output
+                .with_block_constraint_dependency(intrinsic_dependency)
+                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
+                .into_intrinsic_size_result()
         })
     }
 }
@@ -1197,6 +1204,46 @@ mod tests {
 
         assert_eq!(first.size.width, 100.0);
         assert_eq!(second.size.width, 50.0);
+    }
+
+    #[test]
+    fn intrinsic_size_records_when_aspect_ratio_supplies_inline_size() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Horizontal,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: Size::NONE,
+            available_space: Size::MAX_CONTENT,
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+
+        let mut layout_tree = taffy.as_layout_tree();
+        let ratio_sized = layout_tree.compute_child_size(node, input);
+        let externally_sized = layout_tree.compute_child_size(
+            node,
+            LayoutInput {
+                known_dimensions: Size { width: Some(70.0), height: None },
+                definite_dimensions: Size { width: Some(70.0), height: None },
+                ..input
+            },
+        );
+
+        assert_eq!(ratio_sized.size.width, 80.0);
+        assert!(ratio_sized.applied_aspect_ratio);
+        assert_eq!(externally_sized.size.width, 70.0);
+        assert!(!externally_sized.applied_aspect_ratio);
     }
 
     /// Test that adding `add_child()` works

@@ -159,6 +159,9 @@ pub struct ResolvedIntrinsicWidthInputs {
     /// Whether resolving those keywords measured content whose inline
     /// contribution depends on the containing block's block-size.
     pub depends_on_block_constraints: bool,
+    /// Whether resolving the preferred inline size synthesized it from the
+    /// block axis through the node's preferred aspect ratio.
+    pub applied_aspect_ratio: bool,
 }
 
 /// Resolve intrinsic inline-size keywords while retaining dependency
@@ -173,7 +176,11 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
     mut inputs: LayoutInput,
 ) -> ResolvedIntrinsicWidthInputs {
     if inputs.sizing_mode != SizingMode::InherentSize {
-        return ResolvedIntrinsicWidthInputs { inputs, depends_on_block_constraints: false };
+        return ResolvedIntrinsicWidthInputs {
+            inputs,
+            depends_on_block_constraints: false,
+            applied_aspect_ratio: false,
+        };
     }
 
     let (
@@ -224,10 +231,15 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         raw_max_size.width,
         available_width,
     );
+    let applied_aspect_ratio = inputs.known_dimensions.width.is_none() && transferred_preferred_width.is_some();
     let preferred = transferred_preferred_width.or(intrinsic.preferred);
     let min_size = transferred_min_width.or(intrinsic.min);
     let max_size = transferred_max_width.or(intrinsic.max);
 
     inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
-    ResolvedIntrinsicWidthInputs { inputs, depends_on_block_constraints: intrinsic.depends_on_block_constraints }
+    ResolvedIntrinsicWidthInputs {
+        inputs,
+        depends_on_block_constraints: intrinsic.depends_on_block_constraints,
+        applied_aspect_ratio,
+    }
 }
