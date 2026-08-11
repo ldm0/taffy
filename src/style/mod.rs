@@ -41,7 +41,7 @@ pub use self::grid::{GridTemplateArea, GridTemplateAreas, NamedGridLine, Templat
 #[cfg(feature = "grid")]
 pub(crate) use self::grid::{NonNamedGridPlacement, OriginZeroGridPlacement};
 
-use crate::geometry::{Point, Rect, Size};
+use crate::geometry::{Point, Rect, Size, WritingMode};
 use crate::style_helpers::TaffyAuto as _;
 use core::fmt::Debug;
 
@@ -122,6 +122,16 @@ pub trait CoreStyle {
     #[inline(always)]
     fn direction(&self) -> Direction {
         Direction::Ltr
+    }
+
+    /// The node's flow-relative axis orientation.
+    ///
+    /// Existing style implementations default to `horizontal-tb`. Browser
+    /// integrations can expose inherited `writing-mode` either here or at the
+    /// tree-level [`LayoutPartialTree`](crate::tree::LayoutPartialTree) seam.
+    #[inline(always)]
+    fn writing_mode(&self) -> WritingMode {
+        WritingMode::HorizontalTb
     }
 
     // Overflow properties
@@ -812,6 +822,10 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
     #[inline(always)]
     fn direction(&self) -> Direction {
         (*self).direction()
+    }
+    #[inline(always)]
+    fn writing_mode(&self) -> WritingMode {
+        (*self).writing_mode()
     }
     #[inline(always)]
     fn overflow(&self) -> Point<Overflow> {
