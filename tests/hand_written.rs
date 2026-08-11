@@ -1,6 +1,7 @@
 mod hand_written {
     mod absolute_position;
     mod adversarial_styles;
+    mod block_intrinsic_percentage;
     mod block_replaced;
     mod border_and_padding;
     mod caching;

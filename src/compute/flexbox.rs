@@ -7,7 +7,7 @@ use crate::style::{
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
 use crate::style_helpers::{TaffyMaxContent, TaffyMinContent};
-use crate::tree::{Layout, LayoutInput, LayoutOutput, RunMode, SizingMode};
+use crate::tree::{Layout, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
 use crate::tree::{LayoutFlexboxContainer, LayoutPartialTreeExt, NodeId};
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, new_vec_with_capacity, Vec};
@@ -614,6 +614,7 @@ fn generate_anonymous_flex_items(
             let intrinsic_inputs = LayoutInput {
                 run_mode: RunMode::ComputeSize,
                 sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
                 axis: RequestedAxis::Horizontal,
                 known_dimensions: Size::NONE,
                 definite_dimensions: Size::NONE,
@@ -2419,6 +2420,7 @@ fn perform_absolute_layout_on_absolute_children(
         let intrinsic_inputs = LayoutInput {
             run_mode: RunMode::ComputeSize,
             sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
             known_dimensions: Size { width: None, height: style_size.height },
             definite_dimensions: Size::NONE,
