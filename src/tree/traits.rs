@@ -185,6 +185,15 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// Get core style
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
 
+    /// Return the writing mode that owns a node's logical axes.
+    ///
+    /// The default reads [`CoreStyle`]. Browser adapters whose numeric style
+    /// projection does not own inherited properties may override this seam,
+    /// provided every leaf-layout call receives the same value.
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.get_core_container_style(node_id).writing_mode()
+    }
+
     /// Returns the node's used aspect ratio and the sizing box whose dimensions
     /// it constrains.
     ///
@@ -353,15 +362,6 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
 /// A private trait which allows us to add extra convenience methods to types which implement
 /// LayoutTree without making those methods public.
 pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
-    /// Return the writing mode that owns a node's logical axes.
-    ///
-    /// Keeping this projection on the private extension trait makes
-    /// [`CoreStyle`] the single source of truth for all layout algorithms.
-    #[inline(always)]
-    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
-        self.get_core_container_style(node_id).writing_mode()
-    }
-
     /// Measure a child while retaining intrinsic sizing dependency metadata.
     #[inline(always)]
     fn measure_child_size_with_metadata(

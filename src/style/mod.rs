@@ -496,9 +496,6 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     pub box_sizing: BoxSizing,
     /// Sets the direction of text, table and grid columns, and horizontal overflow.
     pub direction: Direction,
-    /// Sets the orientation of the node's inline and block axes.
-    pub writing_mode: WritingMode,
-
     // Overflow properties
     /// How children overflowing their container should affect layout
     pub overflow: Point<Overflow>,
@@ -645,7 +642,6 @@ impl<S: CheapCloneStr> Style<S> {
         item_is_replaced: false,
         box_sizing: BoxSizing::BorderBox,
         direction: Direction::Ltr,
-        writing_mode: WritingMode::HorizontalTb,
         overflow: Point { x: Overflow::Visible, y: Overflow::Visible },
         scrollbar_width: 0.0,
         #[cfg(feature = "float_layout")]
@@ -751,10 +747,6 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
     #[inline(always)]
     fn direction(&self) -> Direction {
         self.direction
-    }
-    #[inline(always)]
-    fn writing_mode(&self) -> WritingMode {
-        self.writing_mode
     }
     #[inline(always)]
     fn overflow(&self) -> Point<Overflow> {
@@ -1302,7 +1294,6 @@ mod tests {
             #[cfg(feature = "float_layout")]
             clear: Default::default(),
             direction: Default::default(),
-            writing_mode: Default::default(),
             overflow: Default::default(),
             scrollbar_width: 0.0,
             position: Default::default(),

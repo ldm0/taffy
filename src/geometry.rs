@@ -180,8 +180,11 @@ impl AbstractAxis {
         }
     }
 
-    /// Convert an `AbstractAxis` into an `AbsoluteAxis` naively assuming that the Inline axis is Horizontal
-    /// This is currently always true, but will change if Taffy ever implements the `writing_mode` property
+    /// Convert an `AbstractAxis` into an `AbsoluteAxis` using grid's current
+    /// horizontal track-storage convention.
+    ///
+    /// Callers implementing writing-mode-aware grid flow must project through
+    /// [`WritingMode`] instead of using this helper.
     #[inline]
     pub const fn as_abs_naive(&self) -> AbsoluteAxis {
         match self {
