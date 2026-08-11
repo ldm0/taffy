@@ -129,8 +129,8 @@
 use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Line, Rect, Size, WritingMode};
-use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle, ResolvedAspectRatio};
+use crate::geometry::{AbsoluteAxis, Rect, Size, WritingMode};
+use crate::style::{resolve_scrollbar_insets, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -198,11 +198,11 @@ pub trait LayoutPartialTree: TraversePartialTree {
         resolve_scrollbar_insets(&self.get_core_container_style(node_id))
     }
 
-    /// Returns the writing mode that defines this node's logical axes.
+    /// Return the writing mode that owns a node's logical axes.
     ///
-    /// The tree-level seam lets browser adapters retain inherited writing-mode
-    /// beside a converted core style without requiring that converted style to
-    /// own every browser property.
+    /// The default reads [`CoreStyle`]. Browser adapters whose numeric style
+    /// projection does not own inherited properties may override this seam,
+    /// provided every leaf-layout call receives the same value.
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.get_core_container_style(node_id).writing_mode()
     }
@@ -375,15 +375,6 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
 /// A private trait which allows us to add extra convenience methods to types which implement
 /// LayoutTree without making those methods public.
 pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
-    /// Return the writing mode that owns a node's logical axes.
-    ///
-    /// Keeping this projection on the private extension trait makes
-    /// [`CoreStyle`] the single source of truth for all layout algorithms.
-    #[inline(always)]
-    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
-        self.get_core_container_style(node_id).writing_mode()
-    }
-
     /// Measure a child while retaining intrinsic sizing dependency metadata.
     #[inline(always)]
     fn measure_child_size_with_metadata(
