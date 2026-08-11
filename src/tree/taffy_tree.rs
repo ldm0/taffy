@@ -305,8 +305,9 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let (inputs, intrinsic_dependency) =
-            crate::compute::common::intrinsic_size::resolve_intrinsic_width_inputs_with_metadata(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let inputs = resolved.inputs;
+        let intrinsic_dependency = resolved.depends_on_block_constraints;
 
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
@@ -352,8 +353,9 @@ where
     /// result internally; only its measurement projection crosses this seam.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let (inputs, intrinsic_dependency) =
-            crate::compute::common::intrinsic_size::resolve_intrinsic_width_inputs_with_metadata(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let inputs = resolved.inputs;
+        let intrinsic_dependency = resolved.depends_on_block_constraints;
 
         compute_cached_size(self, node_id, inputs, |tree, node_id, inputs| {
             let display_mode = tree.taffy.nodes[node_id.into()].style.display;
@@ -380,7 +382,7 @@ where
                     compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
                 }
             };
-            output.with_block_constraint_dependency(intrinsic_dependency).intrinsic_size_result()
+            output.with_block_constraint_dependency(intrinsic_dependency).into_intrinsic_size_result()
         })
     }
 }
