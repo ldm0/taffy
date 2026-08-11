@@ -11,7 +11,7 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
 use core::unreachable;
 
-use super::common::aspect_ratio::resolve_size_constraints;
+use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
@@ -74,6 +74,7 @@ where
                 style.min_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 resolved_aspect_ratio,
                 pb_sum,
             );
