@@ -1,14 +1,14 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::compute::common::baseline::{logical_block_baseline_or_synthesize, FontBaseline};
-use crate::geometry::{AbstractAxis, Line, LogicalSize, Size};
+use crate::compute::common::baseline::{logical_block_baseline, synthesized_logical_baseline, FontBaseline};
+use crate::geometry::{AbstractAxis, Line, LogicalSize, Size, WritingDirection};
 use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::sys::{f32_max, f32_min, Vec};
 use crate::util::{MaybeMath, ResolveOrZero};
-use crate::CompactLength;
+use crate::{CompactLength, Direction};
 use core::cmp::Ordering;
 
 /// Takes an axis, and a list of grid items sorted firstly by whether they cross a flex track
@@ -458,79 +458,98 @@ fn resolve_item_baselines(
     items: &mut [GridItem],
     inner_node_size: LogicalSize<Option<f32>>,
 ) {
-    // Sort items by track in the other axis (row) start position so that we can iterate items in groups which
-    // are in the same track in the other axis (row)
-    let other_axis = axis.other();
-    items.sort_by_key(|item| item.placement(other_axis).start);
+    // Baseline shims contribute to intrinsic sizing in the same logical axis
+    // as their shared alignment context.
+    let alignment_axis = axis;
 
-    // Iterate over grid rows
-    let mut remaining_items = &mut items[0..];
-    while !remaining_items.is_empty() {
-        // Get the row index of the current row
-        let current_row = remaining_items[0].placement(other_axis).start;
+    for item in items.iter_mut() {
+        *item.alignment_baseline.get_mut(alignment_axis) = None;
+        *item.baseline_shim.get_mut(alignment_axis) = 0.0;
 
-        // Find the item index of the first item that is in a different row (or None if we've reached the end of the list)
-        let next_row_first_item =
-            remaining_items.iter().position(|item| item.placement(other_axis).start != current_row);
-
-        // Use this index to split the `remaining_items` slice in two slices:
-        //    - A `row_items` slice containing the items (that start) in the current row
-        //    - A new `remaining_items` consisting of the remainder of the `remaining_items` slice
-        //      that hasn't been split off into `row_items
-        let row_items = if let Some(index) = next_row_first_item {
-            let (row_items, tail) = remaining_items.split_at_mut(index);
-            remaining_items = tail;
-            row_items
-        } else {
-            let row_items = remaining_items;
-            remaining_items = &mut [];
-            row_items
+        let alignment = match alignment_axis {
+            AbstractAxis::Inline => item.justify_self,
+            AbstractAxis::Block => item.align_self,
         };
-
-        // Count how many items in *this row* are baseline aligned
-        // If a row has one or zero items participating in baseline alignment then baseline alignment is a no-op
-        // for those items and we skip further computations for that row
-        let row_baseline_item_count = row_items.iter().filter(|item| item.align_self == AlignSelf::BASELINE).count();
-        if row_baseline_item_count <= 1 {
+        if alignment != AlignSelf::BASELINE {
             continue;
         }
 
-        // Compute the baselines of all items in the row
-        for item in row_items.iter_mut() {
-            let writing_direction = item.parent_writing_direction;
-            let measured_size_and_baselines = tree.perform_child_layout(
-                item.node,
-                ChildLayoutInput::new(
-                    Size::NONE,
-                    writing_direction.mode.to_physical(inner_node_size),
-                    writing_direction.mode,
-                    Size::MIN_CONTENT,
-                    SizingMode::InherentSize,
-                    Line::FALSE,
-                ),
-            );
+        let parent_writing_direction = item.parent_writing_direction;
+        let baseline_context = item.baseline_context.get(alignment_axis);
+        let baseline_writing_direction = WritingDirection::new(baseline_context.writing_mode, Direction::Ltr);
+        let measured = tree.perform_child_layout(
+            item.node,
+            ChildLayoutInput::new(
+                Size::NONE,
+                parent_writing_direction.mode.to_physical(inner_node_size),
+                parent_writing_direction.mode,
+                Size::MIN_CONTENT,
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
+        );
 
-            let baseline = logical_block_baseline_or_synthesize(
-                measured_size_and_baselines.first_baselines,
-                measured_size_and_baselines.size,
-                writing_direction,
-                FontBaseline::for_writing_mode(writing_direction.mode),
-            );
+        let child_writing_mode = tree.get_writing_mode(item.node);
+        let baseline_block_size = baseline_context.writing_mode.to_logical(measured.size).block_size;
+        let baseline = if child_writing_mode == baseline_context.writing_mode {
+            logical_block_baseline(measured.first_baselines, measured.size, baseline_writing_direction).unwrap_or_else(
+                || {
+                    synthesized_logical_baseline(
+                        baseline_block_size,
+                        baseline_writing_direction,
+                        FontBaseline::for_writing_mode(parent_writing_direction.mode),
+                    )
+                },
+            )
+        } else {
+            synthesized_logical_baseline(
+                baseline_block_size,
+                baseline_writing_direction,
+                FontBaseline::for_writing_mode(parent_writing_direction.mode),
+            )
+        };
 
-            let percentage_basis = inner_node_size.inline_size;
-            let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let block_start_margin = writing_direction.to_logical_box_strut(margin).block_start;
-            item.alignment_baseline = Some(baseline + block_start_margin);
+        let percentage_basis = inner_node_size.inline_size;
+        let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+        let group_start_margin = baseline_writing_direction.to_logical_box_strut(margin).block_start;
+        *item.alignment_baseline.get_mut(alignment_axis) = Some(baseline + group_start_margin);
+    }
+
+    // Items share a baseline only when both their selected track and their
+    // major/minor group match. Sorting keeps this pass O(n log n) without a
+    // hash table, which is important for no_std builds.
+    items.sort_by_key(|item| {
+        (
+            item.alignment_baseline.get(alignment_axis).is_some(),
+            item.baseline_sharing_track(alignment_axis),
+            item.baseline_context.get(alignment_axis).group,
+        )
+    });
+
+    let mut group_start =
+        items.iter().position(|item| item.alignment_baseline.get(alignment_axis).is_some()).unwrap_or(items.len());
+    while group_start < items.len() {
+        let track = items[group_start].baseline_sharing_track(alignment_axis);
+        let group = items[group_start].baseline_context.get(alignment_axis).group;
+        let group_len = items[group_start..]
+            .iter()
+            .take_while(|item| {
+                item.baseline_sharing_track(alignment_axis) == track
+                    && item.baseline_context.get(alignment_axis).group == group
+            })
+            .count();
+        let group_end = group_start + group_len;
+        let shared_baseline = items[group_start..group_end]
+            .iter()
+            .filter_map(|item| item.alignment_baseline.get(alignment_axis))
+            .max_by(|a, b| a.total_cmp(b))
+            .unwrap_or(0.0);
+
+        for item in &mut items[group_start..group_end] {
+            let baseline = item.alignment_baseline.get(alignment_axis).unwrap_or(0.0);
+            *item.baseline_shim.get_mut(alignment_axis) = shared_baseline - baseline;
         }
-
-        // Compute the max baseline of all items in the row
-        let row_max_baseline =
-            row_items.iter().map(|item| item.alignment_baseline.unwrap_or(0.0)).max_by(|a, b| a.total_cmp(b)).unwrap();
-
-        // Compute the baseline shim for each item in the row
-        for item in row_items.iter_mut() {
-            item.baseline_shim = row_max_baseline - item.alignment_baseline.unwrap_or(0.0);
-        }
+        group_start = group_end;
     }
 }
 

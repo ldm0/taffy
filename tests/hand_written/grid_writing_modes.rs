@@ -347,3 +347,106 @@ fn absolute_grid_lines_use_logical_track_offsets() {
         );
     }
 }
+
+#[test]
+fn grid_baseline_groups_follow_item_line_directions() {
+    let mut tree = TaffyTree::<()>::new();
+    let major =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    tree.set_writing_mode(major, WritingMode::VerticalRl).unwrap();
+
+    let minor =
+        tree.new_leaf(Style { size: Size { width: length(30.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    tree.set_writing_mode(minor, WritingMode::VerticalLr).unwrap();
+
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: length(100.0) },
+                grid_template_columns: vec![length(50.0), length(50.0)],
+                grid_template_rows: vec![length(100.0)],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[major, minor],
+        )
+        .unwrap();
+    tree.set_writing_mode(container, WritingMode::VerticalRl).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    // Opposite vertical line directions form distinct sharing groups. The
+    // major group aligns to block-start and the minor group to block-end.
+    assert_eq!(tree.unrounded_layout(major).location, Point { x: 80.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(minor).location, Point { x: 0.0, y: 50.0 });
+}
+
+#[test]
+fn grid_column_baseline_groups_align_in_the_inline_axis() {
+    let mut tree = TaffyTree::<()>::new();
+    let major =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    tree.set_writing_mode(major, WritingMode::VerticalLr).unwrap();
+
+    let minor =
+        tree.new_leaf(Style { size: Size { width: length(30.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    tree.set_writing_mode(minor, WritingMode::VerticalRl).unwrap();
+
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: length(100.0) },
+                grid_template_columns: vec![length(100.0)],
+                grid_template_rows: vec![length(50.0), length(50.0)],
+                justify_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[major, minor],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(major).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(minor).location, Point { x: 70.0, y: 50.0 });
+}
+
+#[test]
+fn grid_baseline_shims_are_isolated_per_sharing_group() {
+    let mut tree = TaffyTree::<()>::new();
+    let mut item = |width, writing_mode| {
+        let node = tree
+            .new_leaf(Style { size: Size { width: length(width), height: length(20.0) }, ..Style::default() })
+            .unwrap();
+        tree.set_writing_mode(node, writing_mode).unwrap();
+        node
+    };
+    let major_narrow = item(20.0, WritingMode::VerticalRl);
+    let major_wide = item(40.0, WritingMode::VerticalRl);
+    let minor_wide = item(30.0, WritingMode::VerticalLr);
+    let minor_narrow = item(10.0, WritingMode::VerticalLr);
+
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: length(200.0) },
+                grid_template_columns: vec![length(50.0); 4],
+                grid_template_rows: vec![length(100.0)],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[major_narrow, major_wide, minor_wide, minor_narrow],
+        )
+        .unwrap();
+    tree.set_writing_mode(container, WritingMode::VerticalRl).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(major_narrow).location, Point { x: 70.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(major_wide).location, Point { x: 60.0, y: 50.0 });
+    assert_eq!(tree.unrounded_layout(minor_wide).location, Point { x: 0.0, y: 100.0 });
+    assert_eq!(tree.unrounded_layout(minor_narrow).location, Point { x: 10.0, y: 150.0 });
+}

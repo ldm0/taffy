@@ -4,7 +4,7 @@ use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
-use crate::compute::common::baseline::logical_block_baseline;
+use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size};
 use crate::style::{
@@ -109,7 +109,8 @@ pub(super) fn align_and_position_item(
     order: u32,
     grid_area: Rect<f32>,
     container_alignment_styles: InBothAbstractAxis<Option<AlignItems>>,
-    baseline_shim: f32,
+    baseline_shim: InBothAbstractAxis<f32>,
+    baseline_group: InBothAbstractAxis<BaselineGroup>,
     direction: Direction,
     parent_writing_mode: WritingMode,
     container_border_box_size: Size<f32>,
@@ -211,12 +212,13 @@ pub(super) fn align_and_position_item(
         inline_size: logical_grid_area_size
             .inline_size
             .maybe_sub(logical_margin.inline_start)
-            .maybe_sub(logical_margin.inline_end),
+            .maybe_sub(logical_margin.inline_end)
+            - baseline_shim.inline,
         block_size: logical_grid_area_size
             .block_size
             .maybe_sub(logical_margin.block_start)
             .maybe_sub(logical_margin.block_end)
-            - baseline_shim,
+            - baseline_shim.block,
     };
     let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
     let intrinsic_available_width = if position == Position::Absolute {
@@ -399,7 +401,8 @@ pub(super) fn align_and_position_item(
         position,
         Line { start: logical_inset.inline_start, end: logical_inset.inline_end },
         Line { start: logical_margin.inline_start, end: logical_margin.inline_end },
-        0.0,
+        baseline_shim.inline,
+        baseline_group.inline,
     );
     let (block_offset, block_margin) = align_item_within_area(
         Line {
@@ -411,7 +414,8 @@ pub(super) fn align_and_position_item(
         position,
         Line { start: logical_inset.block_start, end: logical_inset.block_end },
         Line { start: logical_margin.block_start, end: logical_margin.block_end },
-        baseline_shim,
+        baseline_shim.block,
+        baseline_group.block,
     );
     let logical_location = LogicalOffset { inline_offset, block_offset };
     let location = converter.to_physical_point(logical_location, physical_size);
@@ -487,9 +491,15 @@ pub(super) fn align_item_within_area(
     inset: Line<Option<f32>>,
     margin: Line<Option<f32>>,
     baseline_shim: f32,
+    baseline_group: BaselineGroup,
 ) -> (f32, Line<f32>) {
     // Calculate grid area dimension in the axis
-    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0) + baseline_shim, end: margin.end.unwrap_or(0.0) };
+    let shim = match baseline_group {
+        BaselineGroup::Major => Line { start: baseline_shim, end: 0.0 },
+        BaselineGroup::Minor => Line { start: 0.0, end: baseline_shim },
+    };
+    let non_auto_margin =
+        Line { start: margin.start.unwrap_or(0.0) + shim.start, end: margin.end.unwrap_or(0.0) + shim.end };
     let grid_area_size = f32_max(grid_area.end - grid_area.start, 0.0);
     let free_space = f32_max(grid_area_size - resolved_size - non_auto_margin.sum(), 0.0);
 
@@ -497,8 +507,8 @@ pub(super) fn align_item_within_area(
     let auto_margin_count = margin.start.is_none() as u8 + margin.end.is_none() as u8;
     let auto_margin_size = if auto_margin_count > 0 { free_space / auto_margin_count as f32 } else { 0.0 };
     let resolved_margin = Line {
-        start: margin.start.unwrap_or(auto_margin_size) + baseline_shim,
-        end: margin.end.unwrap_or(auto_margin_size),
+        start: margin.start.unwrap_or(auto_margin_size) + shim.start,
+        end: margin.end.unwrap_or(auto_margin_size) + shim.end,
     };
 
     let overflows = resolved_size + non_auto_margin.sum() > grid_area_size;
@@ -506,12 +516,12 @@ pub(super) fn align_item_within_area(
 
     // Compute offset in the axis
     let alignment_based_offset = match alignment_keyword {
-        // TODO: Add support for baseline alignment. For now we treat it as "start".
-        AlignItemsKeyword::Start
-        | AlignItemsKeyword::FlexStart
-        | AlignItemsKeyword::Baseline
-        | AlignItemsKeyword::Stretch => resolved_margin.start,
+        AlignItemsKeyword::Start | AlignItemsKeyword::FlexStart | AlignItemsKeyword::Stretch => resolved_margin.start,
         AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => grid_area_size - resolved_size - resolved_margin.end,
+        AlignItemsKeyword::Baseline => match baseline_group {
+            BaselineGroup::Major => resolved_margin.start,
+            BaselineGroup::Minor => grid_area_size - resolved_size - resolved_margin.end,
+        },
         AlignItemsKeyword::Center => {
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }

@@ -304,6 +304,16 @@ impl<T: Copy> InBothAbstractAxis<T> {
     }
 }
 
+impl<T> InBothAbstractAxis<T> {
+    /// Mutably access the value for `axis`.
+    pub fn get_mut(&mut self, axis: AbstractAxis) -> &mut T {
+        match axis {
+            AbstractAxis::Inline => &mut self.inline,
+            AbstractAxis::Block => &mut self.block,
+        }
+    }
+}
+
 /// Container that holds an item in each absolute axis without specifying
 /// what kind of item it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

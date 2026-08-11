@@ -1,6 +1,6 @@
 //! This module is a partial implementation of the CSS Grid Level 1 specification
 //! <https://www.w3.org/TR/css-grid-1>
-use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, FontBaseline};
+use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
@@ -270,6 +270,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     for item in &mut items {
         item.aspect_ratio = tree.get_resolved_aspect_ratio(item.node);
+        item.resolve_baseline_context(tree.get_writing_mode(item.node));
     }
 
     // Extract track counts from previous step (auto-placement can expand the number of tracks)
@@ -331,8 +332,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
 
-    // Determine if the grid has any baseline aligned items
-    let has_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
+    // Baseline alignment is independent in the grid's inline and block axes.
+    // Each track-sizing pass resolves the shim that contributes in that axis.
+    let has_block_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
+    let has_inline_baseline_aligned_item = items.iter().any(|item| item.justify_self == AlignSelf::BASELINE);
 
     // Run track sizing algorithm for Inline axis
     track_sizing_algorithm(
@@ -350,7 +353,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         |track: &GridTrack, parent_size: Option<f32>, tree: &Tree| {
             track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
         },
-        has_baseline_aligned_item,
+        has_inline_baseline_aligned_item,
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.inline_size = inner_node_size.inline_size.or_else(|| initial_column_sum.into());
@@ -371,7 +374,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut columns,
         &mut items,
         |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
+        has_block_baseline_aligned_item,
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.block_size = inner_node_size.block_size.or_else(|| initial_row_sum.into());
@@ -499,7 +502,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut rows,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            has_baseline_aligned_item,
+            has_inline_baseline_aligned_item,
         );
 
         // Row sizing must be re-run (once) if:
@@ -563,7 +566,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 &mut columns,
                 &mut items,
                 |track: &GridTrack, _, _| Some(track.base_size),
-                false, // TODO: Support baseline alignment in the vertical axis
+                has_block_baseline_aligned_item,
             );
         }
     }
@@ -673,6 +676,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             grid_area,
             container_alignment_styles,
             item.baseline_shim,
+            InBothAbstractAxis { inline: item.baseline_context.inline.group, block: item.baseline_context.block.group },
             direction,
             writing_mode,
             physical_container_border_box,
@@ -826,7 +830,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 order,
                 grid_area,
                 container_alignment_styles,
-                0.0,
+                InBothAbstractAxis { inline: 0.0, block: 0.0 },
+                InBothAbstractAxis { inline: BaselineGroup::Major, block: BaselineGroup::Major },
                 direction,
                 writing_mode,
                 physical_container_border_box,
@@ -927,76 +932,86 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         .map(|item| first_occupied_track(item, AbstractAxis::Block))
         .min_by(|a, b| compare_in_flow_order(AbstractAxis::Block, *a, *b))
         .unwrap();
-    let first_item = items
-        .iter()
-        .filter(|item| {
-            first_occupied_track(item, AbstractAxis::Block) == first_occupied_row
-                && item.align_self == AlignSelf::BASELINE
-        })
-        .min_by(|a, b| {
-            compare_in_flow_order(
-                AbstractAxis::Inline,
-                first_occupied_track(a, AbstractAxis::Inline),
-                first_occupied_track(b, AbstractAxis::Inline),
-            )
-            .then(a.source_order.cmp(&b.source_order))
-        })
-        .or_else(|| {
-            items.iter().filter(|item| first_occupied_track(item, AbstractAxis::Block) == first_occupied_row).min_by(
-                |a, b| {
-                    compare_in_flow_order(
-                        AbstractAxis::Inline,
-                        first_occupied_track(a, AbstractAxis::Inline),
-                        first_occupied_track(b, AbstractAxis::Inline),
-                    )
-                    .then(a.source_order.cmp(&b.source_order))
-                },
-            )
-        })
-        .unwrap();
-    let first_baseline = first_item.block_offset + first_item.first_baseline.unwrap_or_else(|| synthesize(first_item));
+    let inline_first = |a: &&GridItem, b: &&GridItem| {
+        compare_in_flow_order(
+            AbstractAxis::Inline,
+            first_occupied_track(a, AbstractAxis::Inline),
+            first_occupied_track(b, AbstractAxis::Inline),
+        )
+        .then(a.source_order.cmp(&b.source_order))
+    };
+    let first_baseline_item = |group| {
+        items
+            .iter()
+            .filter(|item| {
+                item.align_self == AlignSelf::BASELINE
+                    && item.baseline_context.block.group == group
+                    && match group {
+                        BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == first_occupied_row,
+                        BaselineGroup::Minor => last_occupied_track(item, AbstractAxis::Block) == first_occupied_row,
+                    }
+            })
+            .min_by(inline_first)
+    };
+    let first_item = first_baseline_item(BaselineGroup::Major)
+        .or_else(|| first_baseline_item(BaselineGroup::Minor))
+        .unwrap_or_else(|| {
+            items
+                .iter()
+                .filter(|item| first_occupied_track(item, AbstractAxis::Block) == first_occupied_row)
+                .min_by(inline_first)
+                .unwrap()
+        });
+    let first_item_baseline = first_item.first_baseline.unwrap_or_else(|| synthesize(first_item));
+    let first_baseline = first_item.block_offset + first_item_baseline;
 
     let last_occupied_row = items
         .iter()
         .map(|item| last_occupied_track(item, AbstractAxis::Block))
         .max_by(|a, b| compare_in_flow_order(AbstractAxis::Block, *a, *b))
         .unwrap();
-    let last_item = items
-        .iter()
-        .filter(|item| {
-            first_occupied_track(item, AbstractAxis::Block) == last_occupied_row
-                && item.align_self == AlignSelf::BASELINE
-        })
-        .max_by(|a, b| {
-            compare_in_flow_order(
-                AbstractAxis::Inline,
-                last_occupied_track(a, AbstractAxis::Inline),
-                last_occupied_track(b, AbstractAxis::Inline),
-            )
-            .then(a.source_order.cmp(&b.source_order))
-        })
-        .or_else(|| {
-            items.iter().max_by(|a, b| {
-                compare_in_flow_order(
-                    AbstractAxis::Block,
-                    last_occupied_track(a, AbstractAxis::Block),
-                    last_occupied_track(b, AbstractAxis::Block),
-                )
-                .then(compare_in_flow_order(
-                    AbstractAxis::Inline,
-                    last_occupied_track(a, AbstractAxis::Inline),
-                    last_occupied_track(b, AbstractAxis::Inline),
-                ))
-                .then(a.source_order.cmp(&b.source_order))
+    let inline_last = |a: &&GridItem, b: &&GridItem| {
+        compare_in_flow_order(
+            AbstractAxis::Inline,
+            last_occupied_track(a, AbstractAxis::Inline),
+            last_occupied_track(b, AbstractAxis::Inline),
+        )
+        .then(a.source_order.cmp(&b.source_order))
+    };
+    let last_baseline_item = |group| {
+        items
+            .iter()
+            .filter(|item| {
+                item.align_self == AlignSelf::BASELINE
+                    && item.baseline_context.block.group == group
+                    && match group {
+                        BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == last_occupied_row,
+                        BaselineGroup::Minor => last_occupied_track(item, AbstractAxis::Block) == last_occupied_row,
+                    }
             })
-        })
-        .unwrap();
-    let last_baseline = if last_item.align_self == AlignSelf::BASELINE
-        && first_occupied_track(last_item, AbstractAxis::Block) == last_occupied_row
-    {
-        // Taffy currently supports first-baseline sharing groups. When such a
-        // group exists in the last occupied row, its shared major baseline is
-        // also the grid container's last baseline.
+            .max_by(inline_last)
+    };
+    let (last_item, last_uses_shared_baseline) = last_baseline_item(BaselineGroup::Minor)
+        .or_else(|| last_baseline_item(BaselineGroup::Major))
+        .map(|item| (item, true))
+        .unwrap_or_else(|| {
+            let item = items
+                .iter()
+                .max_by(|a, b| {
+                    compare_in_flow_order(
+                        AbstractAxis::Block,
+                        last_occupied_track(a, AbstractAxis::Block),
+                        last_occupied_track(b, AbstractAxis::Block),
+                    )
+                    .then(inline_last(a, b))
+                })
+                .unwrap();
+            (item, false)
+        });
+    let last_baseline = if last_uses_shared_baseline {
+        // Taffy currently exposes first-baseline alignment. A shared baseline
+        // in the last occupied row nevertheless becomes the grid's last
+        // baseline, with the minor group taking precedence over the major.
         last_item.first_baseline.unwrap_or_else(|| synthesize(last_item))
     } else {
         last_item.last_baseline.unwrap_or_else(|| synthesize(last_item))
@@ -1290,6 +1305,36 @@ mod tests {
         assert_eq!(
             grid_container_baselines(&items, GridFlow::new(crate::WritingMode::HorizontalTb, Direction::Ltr),),
             (12.0, 58.0)
+        );
+    }
+
+    #[test]
+    fn grid_container_prefers_major_first_and_minor_last_baseline_groups() {
+        let mut minor = baseline_item(
+            0,
+            Line { start: 0, end: 2 },
+            Line { start: 0, end: 2 },
+            true,
+            70.0,
+            30.0,
+            Some(15.0),
+            Some(24.0),
+        );
+        minor.baseline_context.block.group = BaselineGroup::Minor;
+        let major = baseline_item(
+            1,
+            Line { start: 0, end: 2 },
+            Line { start: 2, end: 4 },
+            true,
+            0.0,
+            20.0,
+            Some(12.0),
+            Some(18.0),
+        );
+
+        assert_eq!(
+            grid_container_baselines(&[minor, major], GridFlow::new(crate::WritingMode::HorizontalTb, Direction::Ltr),),
+            (12.0, 85.0),
         );
     }
 
