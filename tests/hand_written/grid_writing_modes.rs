@@ -450,3 +450,65 @@ fn grid_baseline_shims_are_isolated_per_sharing_group() {
     assert_eq!(tree.unrounded_layout(minor_wide).location, Point { x: 0.0, y: 100.0 });
     assert_eq!(tree.unrounded_layout(minor_narrow).location, Point { x: 10.0, y: 150.0 });
 }
+
+#[test]
+fn grid_cyclic_synthesized_baseline_falls_back_to_group_start() {
+    let mut tree = TaffyTree::<()>::new();
+    let cyclic =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: percent(0.5) }, ..Style::default() }).unwrap();
+    let fixed =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: length(40.0) }, ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                grid_template_columns: vec![length(50.0), length(50.0)],
+                grid_template_rows: vec![auto()],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[cyclic, fixed],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(container).size, Size { width: 100.0, height: 40.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).size, Size { width: 20.0, height: 20.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(fixed).location, Point { x: 50.0, y: 0.0 });
+}
+
+#[test]
+fn grid_cyclic_minor_baseline_falls_back_to_group_end() {
+    let mut tree = TaffyTree::<()>::new();
+    let cyclic =
+        tree.new_leaf(Style { size: Size { width: percent(0.5), height: length(20.0) }, ..Style::default() }).unwrap();
+    let fixed =
+        tree.new_leaf(Style { size: Size { width: length(40.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    for child in [cyclic, fixed] {
+        tree.set_writing_mode(child, WritingMode::VerticalLr).unwrap();
+    }
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: length(100.0) },
+                grid_template_columns: vec![length(50.0), length(50.0)],
+                grid_template_rows: vec![auto()],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[cyclic, fixed],
+        )
+        .unwrap();
+    tree.set_writing_mode(container, WritingMode::VerticalRl).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(container).size, Size { width: 40.0, height: 100.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).size, Size { width: 20.0, height: 20.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(fixed).location, Point { x: 0.0, y: 50.0 });
+}
