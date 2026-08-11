@@ -9,7 +9,8 @@
 use crate::geometry::Size;
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
 use crate::tree::{
-    IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis, SizingMode,
+    ChildLayoutInput, IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis,
+    SizingMode,
 };
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::BoxSizing;
@@ -23,12 +24,15 @@ fn measure_intrinsic_width(
 ) -> IntrinsicSizeResult {
     tree.measure_child_size_with_metadata(
         node_id,
-        Size { width: None, height: inputs.known_dimensions.height },
-        inputs.parent_size,
-        Size { width: constraint, height: inputs.available_space.height },
-        SizingMode::ContentSize,
+        ChildLayoutInput::new(
+            Size { width: None, height: inputs.known_dimensions.height },
+            inputs.parent_size,
+            inputs.parent_writing_mode,
+            Size { width: constraint, height: inputs.available_space.height },
+            SizingMode::ContentSize,
+            inputs.vertical_margins_are_collapsible,
+        ),
         RequestedAxis::Horizontal,
-        inputs.vertical_margins_are_collapsible,
     )
 }
 
@@ -183,6 +187,7 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         };
     }
 
+    let percentage_basis = inputs.constraint_space(tree.get_writing_mode(node_id)).margin_padding_percentage_basis();
     let (
         raw_size,
         raw_min_size,
@@ -197,9 +202,9 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         let raw_size = style.size();
         let raw_min_size = style.min_size();
         let raw_max_size = style.max_size();
-        let margin = style.margin().resolve_or_zero(inputs.parent_size.width, |value, basis| tree.calc(value, basis));
-        let padding = style.padding().resolve_or_zero(inputs.parent_size.width, |value, basis| tree.calc(value, basis));
-        let border = style.border().resolve_or_zero(inputs.parent_size.width, |value, basis| tree.calc(value, basis));
+        let margin = style.margin().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let box_sizing_adjustment =
             if style.box_sizing() == BoxSizing::ContentBox { (padding + border).sum_axes() } else { Size::ZERO };
         let padding_border_size = (padding + border).sum_axes();

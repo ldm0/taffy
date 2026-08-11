@@ -101,7 +101,9 @@ macro_rules! debug_log_node {
         debug_log!("sizing_mode", dbg:$inputs.sizing_mode);
         debug_log!("sizing_purpose", dbg:$inputs.sizing_purpose);
         debug_log!("known_dimensions", dbg:$inputs.known_dimensions);
+        debug_log!("definite_dimensions", dbg:$inputs.definite_dimensions);
         debug_log!("parent_size", dbg:$inputs.parent_size);
+        debug_log!("parent_writing_mode", dbg:$inputs.parent_writing_mode);
         debug_log!("available_space", dbg:$inputs.available_space);
     };
 }

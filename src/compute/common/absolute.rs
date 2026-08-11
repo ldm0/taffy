@@ -1,6 +1,6 @@
-use crate::geometry::{AbsoluteAxis, Line, Size};
+use crate::geometry::AbsoluteAxis;
 use crate::style::AvailableSpace;
-use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId};
 
 /// Resolves the fit-content width used by an auto-width absolutely positioned box.
 ///
@@ -11,30 +11,13 @@ use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 pub(crate) fn fit_content_width(
     tree: &mut impl LayoutPartialTree,
     node: NodeId,
-    known_dimensions: Size<Option<f32>>,
-    parent_size: Size<Option<f32>>,
-    available_height: AvailableSpace,
+    mut inputs: ChildLayoutInput,
     available_width: f32,
-    sizing_mode: SizingMode,
 ) -> f32 {
-    let min_content = tree.measure_child_size(
-        node,
-        known_dimensions,
-        parent_size,
-        Size { width: AvailableSpace::MinContent, height: available_height },
-        sizing_mode,
-        AbsoluteAxis::Horizontal,
-        Line::FALSE,
-    );
-    let max_content = tree.measure_child_size(
-        node,
-        known_dimensions,
-        parent_size,
-        Size { width: AvailableSpace::MaxContent, height: available_height },
-        sizing_mode,
-        AbsoluteAxis::Horizontal,
-        Line::FALSE,
-    );
+    inputs.available_space.width = AvailableSpace::MinContent;
+    let min_content = tree.measure_child_size(node, inputs, AbsoluteAxis::Horizontal);
+    inputs.available_space.width = AvailableSpace::MaxContent;
+    let max_content = tree.measure_child_size(node, inputs, AbsoluteAxis::Horizontal);
 
     available_width.max(0.0).max(min_content).min(max_content)
 }

@@ -126,9 +126,7 @@
 //! }
 //! ```
 //!
-use super::{
-    IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode, SizingPurpose,
-};
+use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Line, Rect, Size, WritingMode};
@@ -377,110 +375,42 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
 /// A private trait which allows us to add extra convenience methods to types which implement
 /// LayoutTree without making those methods public.
 pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
+    /// Return the writing mode that owns a node's logical axes.
+    ///
+    /// Keeping this projection on the private extension trait makes
+    /// [`CoreStyle`] the single source of truth for all layout algorithms.
+    #[inline(always)]
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.get_core_container_style(node_id).writing_mode()
+    }
+
     /// Measure a child while retaining intrinsic sizing dependency metadata.
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
     fn measure_child_size_with_metadata(
         &mut self,
         node_id: NodeId,
-        known_dimensions: Size<Option<f32>>,
-        parent_size: Size<Option<f32>>,
-        available_space: Size<AvailableSpace>,
-        sizing_mode: SizingMode,
+        inputs: ChildLayoutInput,
         axis: RequestedAxis,
-        vertical_margins_are_collapsible: Line<bool>,
     ) -> IntrinsicSizeResult {
-        self.compute_child_size(
-            node_id,
-            LayoutInput {
-                known_dimensions,
-                definite_dimensions: known_dimensions,
-                parent_size,
-                available_space,
-                sizing_mode,
-                sizing_purpose: SizingPurpose::IntrinsicContribution,
-                axis,
-                run_mode: RunMode::ComputeSize,
-                vertical_margins_are_collapsible,
-            },
-        )
+        self.compute_child_size(node_id, inputs.into_measurement(axis))
     }
 
     /// Compute the size of the node given the specified constraints
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn measure_child_size(
-        &mut self,
-        node_id: NodeId,
-        known_dimensions: Size<Option<f32>>,
-        parent_size: Size<Option<f32>>,
-        available_space: Size<AvailableSpace>,
-        sizing_mode: SizingMode,
-        axis: AbsoluteAxis,
-        vertical_margins_are_collapsible: Line<bool>,
-    ) -> f32 {
-        self.measure_child_size_with_metadata(
-            node_id,
-            known_dimensions,
-            parent_size,
-            available_space,
-            sizing_mode,
-            axis.into(),
-            vertical_margins_are_collapsible,
-        )
-        .size
-        .get_abs(axis)
+    fn measure_child_size(&mut self, node_id: NodeId, inputs: ChildLayoutInput, axis: AbsoluteAxis) -> f32 {
+        self.measure_child_size_with_metadata(node_id, inputs, axis.into()).size.get_abs(axis)
     }
 
     /// Compute the size of the node given the specified constraints
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn measure_child_size_both(
-        &mut self,
-        node_id: NodeId,
-        known_dimensions: Size<Option<f32>>,
-        parent_size: Size<Option<f32>>,
-        available_space: Size<AvailableSpace>,
-        sizing_mode: SizingMode,
-        vertical_margins_are_collapsible: Line<bool>,
-    ) -> Size<f32> {
-        self.measure_child_size_with_metadata(
-            node_id,
-            known_dimensions,
-            parent_size,
-            available_space,
-            sizing_mode,
-            RequestedAxis::Both,
-            vertical_margins_are_collapsible,
-        )
-        .size
+    fn measure_child_size_both(&mut self, node_id: NodeId, inputs: ChildLayoutInput) -> Size<f32> {
+        self.measure_child_size_with_metadata(node_id, inputs, RequestedAxis::Both).size
     }
 
     /// Perform a full layout on the node given the specified constraints
     #[inline(always)]
-    fn perform_child_layout(
-        &mut self,
-        node_id: NodeId,
-        known_dimensions: Size<Option<f32>>,
-        parent_size: Size<Option<f32>>,
-        available_space: Size<AvailableSpace>,
-        sizing_mode: SizingMode,
-        vertical_margins_are_collapsible: Line<bool>,
-    ) -> LayoutOutput {
-        self.compute_child_layout(
-            node_id,
-            LayoutInput {
-                known_dimensions,
-                definite_dimensions: known_dimensions,
-                parent_size,
-                available_space,
-                sizing_mode,
-                sizing_purpose: SizingPurpose::Layout,
-                axis: RequestedAxis::Both,
-                run_mode: RunMode::PerformLayout,
-                vertical_margins_are_collapsible,
-            },
-        )
+    fn perform_child_layout(&mut self, node_id: NodeId, inputs: ChildLayoutInput) -> LayoutOutput {
+        self.compute_child_layout(node_id, inputs.into_layout())
     }
 
     /// Alias to `resolve_calc_value` with a shorter function name
@@ -498,4 +428,4 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
     }
 }
 
-impl<T: LayoutPartialTree> LayoutPartialTreeExt for T {}
+impl<T: LayoutPartialTree + ?Sized> LayoutPartialTreeExt for T {}

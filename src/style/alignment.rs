@@ -11,6 +11,7 @@
 #[cfg(feature = "parse")]
 use crate::util::parse::{CssParseResult, FromCss, Parser, Token};
 
+use crate::geometry::{AbsoluteAxis, WritingMode};
 use crate::style::Direction;
 
 /// The position-keyword half of [`AlignItems`] (and its aliases `AlignSelf`,
@@ -197,24 +198,26 @@ impl AlignItems {
         self.keyword
     }
 
-    /// Resolve the writing-mode-relative `SelfStart`/`SelfEnd` keywords to `Start`/`End`
-    /// based on the item's own `direction` per CSS Box Alignment §5.2
+    /// Resolve the writing-mode-relative `SelfStart`/`SelfEnd` keywords to
+    /// `Start`/`End` based on the item's own start side per CSS Box Alignment
+    /// §5.2
     /// <https://www.w3.org/TR/css-align-3/#self-alignment>. All other keywords are
     /// returned unchanged.
     ///
     /// The `Start`/`End` keywords used by the compute paths are relative to the
-    /// *container's* writing mode/direction, so in the inline axis `SelfStart` resolves
-    /// to `Start` when the item's direction matches the container's and to `End` when it
-    /// differs. Taffy only supports the `horizontal-tb` writing mode, so in the block
-    /// axis `SelfStart`/`SelfEnd` always resolve to `Start`/`End` respectively.
+    /// container. `SelfStart` maps to `Start` only when the item's start side on
+    /// the alignment axis matches the container's start side.
     #[inline]
     pub(crate) fn resolve_self_relative(
         self,
+        item_writing_mode: WritingMode,
         item_direction: Direction,
+        container_writing_mode: WritingMode,
         container_direction: Direction,
-        axis_is_inline: bool,
+        axis: AbsoluteAxis,
     ) -> Self {
-        let flip = axis_is_inline && item_direction != container_direction;
+        let flip = item_writing_mode.is_axis_flow_reversed(axis, item_direction)
+            != container_writing_mode.is_axis_flow_reversed(axis, container_direction);
         let keyword = match self.keyword {
             AlignItemsKeyword::SelfStart => {
                 if flip {
@@ -640,30 +643,65 @@ mod tests {
 
     #[test]
     fn resolve_self_relative_inline_axis() {
+        use AbsoluteAxis::Horizontal;
         use Direction::{Ltr, Rtl};
+        use WritingMode::HorizontalTb;
         // Same direction: self-start == start, self-end == end
-        assert_eq!(AlignItems::SELF_START.resolve_self_relative(Ltr, Ltr, true), AlignItems::START);
-        assert_eq!(AlignItems::SELF_END.resolve_self_relative(Ltr, Ltr, true), AlignItems::END);
-        assert_eq!(AlignItems::SELF_START.resolve_self_relative(Rtl, Rtl, true), AlignItems::START);
-        assert_eq!(AlignItems::SELF_END.resolve_self_relative(Rtl, Rtl, true), AlignItems::END);
+        assert_eq!(
+            AlignItems::SELF_START.resolve_self_relative(HorizontalTb, Ltr, HorizontalTb, Ltr, Horizontal),
+            AlignItems::START
+        );
+        assert_eq!(
+            AlignItems::SELF_END.resolve_self_relative(HorizontalTb, Ltr, HorizontalTb, Ltr, Horizontal),
+            AlignItems::END
+        );
+        assert_eq!(
+            AlignItems::SELF_START.resolve_self_relative(HorizontalTb, Rtl, HorizontalTb, Rtl, Horizontal),
+            AlignItems::START
+        );
         // Opposite direction: self-start == end, self-end == start
-        assert_eq!(AlignItems::SELF_START.resolve_self_relative(Ltr, Rtl, true), AlignItems::END);
-        assert_eq!(AlignItems::SELF_END.resolve_self_relative(Ltr, Rtl, true), AlignItems::START);
-        assert_eq!(AlignItems::SELF_START.resolve_self_relative(Rtl, Ltr, true), AlignItems::END);
-        assert_eq!(AlignItems::SELF_END.resolve_self_relative(Rtl, Ltr, true), AlignItems::START);
+        assert_eq!(
+            AlignItems::SELF_START.resolve_self_relative(HorizontalTb, Ltr, HorizontalTb, Rtl, Horizontal),
+            AlignItems::END
+        );
+        assert_eq!(
+            AlignItems::SELF_END.resolve_self_relative(HorizontalTb, Rtl, HorizontalTb, Ltr, Horizontal),
+            AlignItems::START
+        );
         // Safety modifier is preserved
-        assert_eq!(AlignItems::SAFE_SELF_START.resolve_self_relative(Ltr, Rtl, true), AlignItems::SAFE_END);
+        assert_eq!(
+            AlignItems::SAFE_SELF_START.resolve_self_relative(HorizontalTb, Ltr, HorizontalTb, Rtl, Horizontal),
+            AlignItems::SAFE_END
+        );
         // Other keywords are unchanged
-        assert_eq!(AlignItems::START.resolve_self_relative(Ltr, Rtl, true), AlignItems::START);
-        assert_eq!(AlignItems::FLEX_END.resolve_self_relative(Ltr, Rtl, true), AlignItems::FLEX_END);
+        assert_eq!(
+            AlignItems::FLEX_END.resolve_self_relative(HorizontalTb, Ltr, HorizontalTb, Rtl, Horizontal),
+            AlignItems::FLEX_END
+        );
     }
 
     #[test]
-    fn resolve_self_relative_block_axis() {
+    fn resolve_self_relative_compares_physical_start_sides_across_writing_modes() {
+        use AbsoluteAxis::{Horizontal, Vertical};
         use Direction::{Ltr, Rtl};
-        // In the block axis (horizontal-tb only) direction never flips self-start/self-end
-        assert_eq!(AlignItems::SELF_START.resolve_self_relative(Ltr, Rtl, false), AlignItems::START);
-        assert_eq!(AlignItems::SELF_END.resolve_self_relative(Rtl, Ltr, false), AlignItems::END);
+        use WritingMode::{HorizontalTb, VerticalLr, VerticalRl};
+
+        // horizontal-tb starts on the left, while vertical-rl block-start is
+        // on the right.
+        assert_eq!(
+            AlignItems::SELF_START.resolve_self_relative(HorizontalTb, Ltr, VerticalRl, Ltr, Horizontal),
+            AlignItems::END
+        );
+        // In the vertical axis an RTL vertical-lr item's inline-start is at
+        // the bottom, opposite an LTR vertical-rl container.
+        assert_eq!(
+            AlignItems::SELF_START.resolve_self_relative(VerticalLr, Rtl, VerticalRl, Ltr, Vertical),
+            AlignItems::END
+        );
+        assert_eq!(
+            AlignItems::SELF_END.resolve_self_relative(VerticalLr, Rtl, VerticalRl, Ltr, Vertical),
+            AlignItems::START
+        );
     }
 
     #[test]

@@ -96,13 +96,12 @@ fn compute_leaf_layout_with_resolved_inputs<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
+    let percentage_basis = inputs.constraint_space(style.writing_mode()).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
-    // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
-    // This is not a bug, but is how CSS is specified (see: https://developer.mozilla.org/en-US/docs/Web/CSS/padding#values)
-    let margin = style.margin().resolve_or_zero(parent_size.width, &resolve_calc_value);
-    let padding = style.padding().resolve_or_zero(parent_size.width, &resolve_calc_value);
-    let border = style.border().resolve_or_zero(parent_size.width, &resolve_calc_value);
+    let margin = style.margin().resolve_or_zero(percentage_basis, &resolve_calc_value);
+    let padding = style.padding().resolve_or_zero(percentage_basis, &resolve_calc_value);
+    let border = style.border().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let padding_border = padding + border;
     let pb_sum = padding_border.sum_axes();
     let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
