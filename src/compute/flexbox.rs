@@ -92,8 +92,14 @@ struct FlexItem {
     /// The size that this item wants to be, plus any padding and border
     outer_target_size: Size<f32>,
 
-    /// The position of the bottom edge of this item
-    baseline: f32,
+    /// First-baseline ascent used while sizing and aligning the flex line.
+    alignment_baseline: f32,
+    /// First baseline from final child layout, in the flex container's
+    /// coordinate space.
+    first_baseline: f32,
+    /// Last baseline from final child layout, in the flex container's
+    /// coordinate space.
+    last_baseline: f32,
 
     /// A temporary value for the main offset
     ///
@@ -422,23 +428,40 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
         }
     }
 
-    // 8.5. Flex Container Baselines: calculate the flex container's first baseline
+    // 8.5. Flex Container Baselines: calculate distinct first and last
+    // baselines from the final child fragments.
     // See https://www.w3.org/TR/css-flexbox-1/#flex-baselines
     // For wrap-reverse containers the cross-start-most line is the last line rather than the first,
     // and it is that line which the container's first baseline is generated from.
     let first_line = if constants.is_wrap_reverse { flex_lines.last() } else { flex_lines.first() };
+    let last_line = if constants.is_wrap_reverse { flex_lines.first() } else { flex_lines.last() };
     let first_vertical_baseline = first_line.and_then(|line| {
         line.items
             .iter()
             .find(|item| constants.is_column || item.align_self == AlignSelf::BASELINE)
             .or_else(|| line.items.iter().next())
-            .map(|child| child.baseline)
+            .map(|child| child.first_baseline)
+    });
+    let last_vertical_baseline = last_line.and_then(|line| {
+        if constants.is_row {
+            // Taffy currently supports major (first) baseline-sharing groups.
+            // Such a group in the last line takes priority over the fallback
+            // last baseline, matching Blink's BaselineAccumulator ordering.
+            line.items
+                .iter()
+                .find(|item| item.align_self == AlignSelf::BASELINE)
+                .map(|child| child.first_baseline)
+                .or_else(|| line.items.last().map(|child| child.last_baseline))
+        } else {
+            line.items.last().map(|child| child.last_baseline)
+        }
     });
 
-    LayoutOutput::from_sizes_and_baselines(
+    LayoutOutput::from_sizes_and_baseline_sets(
         constants.container_size,
         inflow_content_size.f32_max(absolute_content_size),
         Point { x: None, y: first_vertical_baseline },
+        Point { x: None, y: last_vertical_baseline },
     )
 }
 
@@ -672,7 +695,9 @@ fn generate_anonymous_flex_items(
                 outer_target_size: Size::zero(),
                 content_flex_fraction: 0.0,
 
-                baseline: 0.0,
+                alignment_baseline: 0.0,
+                first_baseline: 0.0,
+                last_baseline: 0.0,
 
                 offset_main: 0.0,
                 offset_cross: 0.0,
@@ -1622,7 +1647,7 @@ fn calculate_children_base_lines(
                 baseline.unwrap_or(height)
             };
 
-            child.baseline = baseline + child.margin.top;
+            child.alignment_baseline = baseline + child.margin.top;
         }
     }
 }
@@ -1661,7 +1686,8 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
         //    3. The used cross-size of the flex line is the largest of the numbers found in the
         //       previous two steps and zero.
         for line in flex_lines.iter_mut() {
-            let max_baseline: f32 = line.items.iter().map(|child| child.baseline).fold(0.0, |acc, x| acc.max(x));
+            let max_baseline: f32 =
+                line.items.iter().map(|child| child.alignment_baseline).fold(0.0, |acc, x| acc.max(x));
             line.cross_size = line
                 .items
                 .iter()
@@ -1670,7 +1696,7 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
                         && !child.margin_is_auto.cross_start(constants.dir)
                         && !child.margin_is_auto.cross_end(constants.dir)
                     {
-                        max_baseline - child.baseline + child.hypothetical_outer_size.cross(constants.dir)
+                        max_baseline - child.alignment_baseline + child.hypothetical_outer_size.cross(constants.dir)
                     } else {
                         child.hypothetical_outer_size.cross(constants.dir)
                     }
@@ -1884,12 +1910,13 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
 fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &AlgoConstants) {
     for line in flex_lines {
         let line_cross_size = line.cross_size;
-        let max_baseline: f32 = line.items.iter_mut().map(|child| child.baseline).fold(0.0, |acc, x| acc.max(x));
+        let max_baseline: f32 =
+            line.items.iter_mut().map(|child| child.alignment_baseline).fold(0.0, |acc, x| acc.max(x));
         let max_baseline_to_bottom_distance: f32 = line
             .items
             .iter_mut()
             .filter(|child| child.align_self == AlignSelf::BASELINE)
-            .map(|child| child.outer_target_size.cross(constants.dir) - child.baseline)
+            .map(|child| child.outer_target_size.cross(constants.dir) - child.alignment_baseline)
             .fold(0.0, |acc, x| acc.max(x));
 
         for child in line.items.iter_mut() {
@@ -1991,9 +2018,9 @@ fn align_flex_items_along_cross_axis(
                     // In a wrap-reverse container the cross axis is flipped, so the baseline-aligned
                     // group of items is aligned to the cross-start edge, which is the bottom of the line.
                     let line_cross_size = free_space + child.outer_target_size.cross(constants.dir);
-                    line_cross_size - max_baseline_to_bottom_distance - child.baseline
+                    line_cross_size - max_baseline_to_bottom_distance - child.alignment_baseline
                 } else {
-                    max_baseline - child.baseline
+                    max_baseline - child.alignment_baseline
                 }
             } else {
                 // Until we support vertical writing modes, baseline alignment only makes sense if
@@ -2137,25 +2164,32 @@ fn calculate_flex_item(
         + item.margin.cross_start(direction)
         + cross_relative_inset;
 
+    let inner_first_baseline = {
+        let baseline = layout_output.first_baselines.y.unwrap_or(size.height);
+        if item.overflow.y.is_scroll_container() {
+            baseline.min(size.height).max(0.0)
+        } else {
+            baseline
+        }
+    };
+    let inner_last_baseline = {
+        let baseline = layout_output.last_baselines.y.unwrap_or(size.height);
+        if item.overflow.y.is_scroll_container() {
+            baseline.min(size.height).max(0.0)
+        } else {
+            baseline
+        }
+    };
+
     if direction.is_row() {
         let baseline_offset_cross =
             total_offset_cross + item.offset_cross + effective_line_offset_cross + item.margin.cross_start(direction);
-        // Scroll containers' baselines are determined from their content as if scrolled to the initial
-        // position, but are additionally clamped to their border box.
-        // See https://github.com/w3c/csswg-drafts/issues/7660
-        let inner_baseline = {
-            let baseline = layout_output.first_baselines.y.unwrap_or(size.height);
-            if item.overflow.y.is_scroll_container() {
-                baseline.min(size.height).max(0.0)
-            } else {
-                baseline
-            }
-        };
-        item.baseline = baseline_offset_cross + inner_baseline;
+        item.first_baseline = baseline_offset_cross + inner_first_baseline;
+        item.last_baseline = baseline_offset_cross + inner_last_baseline;
     } else {
         let baseline_offset_main = *total_offset_main + item.offset_main + item.margin.main_start(direction);
-        let inner_baseline = layout_output.first_baselines.y.unwrap_or(size.height);
-        item.baseline = baseline_offset_main + inner_baseline;
+        item.first_baseline = baseline_offset_main + inner_first_baseline;
+        item.last_baseline = baseline_offset_main + inner_last_baseline;
     }
 
     let location = if direction.is_row() {
