@@ -3,13 +3,13 @@ use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
-use crate::geometry::{Line, Point, Rect, Size};
+use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
     AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow, ResolvedAspectRatio,
 };
-use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, GridItemStyle, LengthPercentage};
+use crate::{BoxSizing, GridItemStyle, LengthPercentage, WritingMode};
 use core::ops::Range;
 
 /// Represents a single grid item
@@ -17,6 +17,10 @@ use core::ops::Range;
 pub(in super::super) struct GridItem {
     /// The id of the node that this item represents
     pub node: NodeId,
+
+    /// Writing mode of the grid container that establishes this item's
+    /// containing block.
+    pub parent_writing_mode: WritingMode,
 
     /// The order of the item in the children array
     ///
@@ -106,18 +110,18 @@ impl GridItem {
     /// Create a new item given a concrete placement in both axes
     pub fn new_with_placement_style_and_order<S: GridItemStyle>(
         node: NodeId,
-        col_span: Line<OriginZeroLine>,
-        row_span: Line<OriginZeroLine>,
+        parent_writing_mode: WritingMode,
+        placement: InBothAbsAxis<Line<OriginZeroLine>>,
         style: S,
-        parent_align_items: AlignItems,
-        parent_justify_items: AlignItems,
+        parent_alignment: InBothAbsAxis<AlignItems>,
         source_order: u16,
     ) -> Self {
         GridItem {
             node,
+            parent_writing_mode,
             source_order,
-            row: row_span,
-            column: col_span,
+            row: placement.vertical,
+            column: placement.horizontal,
             is_compressible_replaced: style.is_compressible_replaced(),
             overflow: style.overflow(),
             box_sizing: style.box_sizing(),
@@ -128,8 +132,8 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_align_items),
-            justify_self: style.justify_self().unwrap_or(parent_justify_items),
+            align_self: style.align_self().unwrap_or(parent_alignment.vertical),
+            justify_self: style.justify_self().unwrap_or(parent_alignment.horizontal),
             alignment_baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -260,17 +264,17 @@ impl GridItem {
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
     ) -> Size<Option<f32>> {
-        let margins = self.margins_axis_sums_with_baseline_shims(grid_area_size.width, tree);
+        let percentage_basis = self.parent_writing_mode.to_logical(grid_area_size).inline_size;
+        let margins = self.margins_axis_sums_with_baseline_shims(percentage_basis, tree);
 
         let aspect_ratio = self.aspect_ratio;
-        // CSS resolves percentage padding and border against the inline size of the containing
-        // block. For a grid item under intrinsic measurement, that inline-size basis is the grid
-        // area's width when it is definite.
+        // CSS resolves percentage padding and border against the inline size
+        // of the containing block.
         // Spec:
         // https://www.w3.org/TR/css-grid-1/#item-margins
         // https://www.w3.org/TR/CSS22/box.html#padding-properties
-        let padding = self.padding.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
-        let border = self.border.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let padding = self.padding.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+        let border = self.border.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
@@ -453,15 +457,18 @@ impl GridItem {
         // https://www.w3.org/TR/css-grid-1/#algo-overview
         let measured = tree.measure_child_size_with_metadata(
             self.node,
-            known_dimensions,
-            grid_area_size,
-            available_space.map(|opt| match opt {
-                Some(size) => AvailableSpace::Definite(size),
-                None => AvailableSpace::MinContent,
-            }),
-            SizingMode::InherentSize,
+            ChildLayoutInput::new(
+                known_dimensions,
+                grid_area_size,
+                self.parent_writing_mode,
+                available_space.map(|opt| match opt {
+                    Some(size) => AvailableSpace::Definite(size),
+                    None => AvailableSpace::MinContent,
+                }),
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
             axis.as_abs_naive().into(),
-            Line::FALSE,
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
         measured.size.get(axis)
@@ -497,15 +504,18 @@ impl GridItem {
         // from the container.
         let measured = tree.measure_child_size_with_metadata(
             self.node,
-            known_dimensions,
-            grid_area_size,
-            available_space.map(|opt| match opt {
-                Some(size) => AvailableSpace::Definite(size),
-                None => AvailableSpace::MaxContent,
-            }),
-            SizingMode::InherentSize,
+            ChildLayoutInput::new(
+                known_dimensions,
+                grid_area_size,
+                self.parent_writing_mode,
+                available_space.map(|opt| match opt {
+                    Some(size) => AvailableSpace::Definite(size),
+                    None => AvailableSpace::MaxContent,
+                }),
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
             axis.as_abs_naive().into(),
-            Line::FALSE,
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
         measured.size.get(axis)
@@ -543,8 +553,9 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         inner_node_size: Size<Option<f32>>,
     ) -> f32 {
-        let padding = self.padding.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
-        let border = self.border.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let percentage_basis = self.parent_writing_mode.to_logical(grid_area_size).inline_size;
+        let padding = self.padding.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+        let border = self.border.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };

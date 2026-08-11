@@ -53,8 +53,8 @@ pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCal
 use crate::geometry::{Line, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
 use crate::tree::{
-    IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree,
-    RunMode, SizingMode, SizingPurpose,
+    ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt,
+    NodeId, RoundTree, RunMode, SizingMode, SizingPurpose,
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
@@ -68,6 +68,7 @@ pub use self::common::intrinsic_size::{
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
+    let root_writing_mode = tree.get_writing_mode(root);
     // A block root only falls back to filling definite available space when
     // its preferred width is auto. Resolve intrinsic sizing keywords before
     // that fallback so they remain explicit used sizes at the root seam.
@@ -82,11 +83,13 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: available_space.into_options(),
+            parent_writing_mode: root_writing_mode,
             available_space,
             vertical_margins_are_collapsible: Line::FALSE,
         },
     );
     let mut known_dimensions = root_inputs.known_dimensions;
+    let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
 
     #[cfg(feature = "block_layout")]
     {
@@ -98,9 +101,9 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
 
         if style.is_block() {
             // Pull these out earlier to avoid borrowing issues
-            let margin = style.margin().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-            let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-            let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+            let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let padding_border_size = (padding + border).sum_axes();
             let box_sizing = style.box_sizing();
             let box_sizing_adjustment =
@@ -153,19 +156,19 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     // Recursively compute node layout
     let output = tree.perform_child_layout(
         root,
-        known_dimensions,
-        available_space.into_options(),
-        available_space,
-        SizingMode::InherentSize,
-        Line::FALSE,
+        ChildLayoutInput::new(
+            known_dimensions,
+            available_space.into_options(),
+            root_writing_mode,
+            available_space,
+            SizingMode::InherentSize,
+            Line::FALSE,
+        ),
     );
     let style = tree.get_core_container_style(root);
-    let padding =
-        style.padding().resolve_or_zero(available_space.width.into_option(), |val, basis| tree.calc(val, basis));
-    let border =
-        style.border().resolve_or_zero(available_space.width.into_option(), |val, basis| tree.calc(val, basis));
-    let margin =
-        style.margin().resolve_or_zero(available_space.width.into_option(), |val, basis| tree.calc(val, basis));
+    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let scrollbar_size = Size {
         width: if style.overflow().y == Overflow::Scroll { style.scrollbar_width() } else { 0.0 },
         height: if style.overflow().x == Overflow::Scroll { style.scrollbar_width() } else { 0.0 },
