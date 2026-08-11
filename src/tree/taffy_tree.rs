@@ -1191,6 +1191,7 @@ mod tests {
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size { width: Some(200.0), height: Some(100.0) },
+            parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
             vertical_margins_are_collapsible: Line::FALSE,
         };
@@ -1225,6 +1226,7 @@ mod tests {
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size::NONE,
+            parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
             vertical_margins_are_collapsible: Line::FALSE,
         };

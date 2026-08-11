@@ -3,7 +3,9 @@
 use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
-use crate::tree::{Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode};
+use crate::tree::{
+    ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
+};
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
 use crate::util::MaybeMath;
@@ -47,6 +49,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     node: NodeId,
     inputs: LayoutInput,
 ) -> LayoutOutput {
+    let writing_mode = tree.get_writing_mode(node);
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
@@ -60,8 +64,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     } else {
         resolved_aspect_ratio.disabled()
     };
-    let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-    let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border = padding + border;
     let padding_border_size = padding_border.sum_axes();
     let box_sizing = style.box_sizing();
@@ -251,6 +255,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut cell_occupancy_matrix,
         &mut items,
         in_flow_children_iter,
+        writing_mode,
         direction,
         style.grid_auto_flow(),
         align_items.unwrap_or(AlignItems::STRETCH),
@@ -642,6 +647,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             container_alignment_styles,
             item.baseline_shim,
             direction,
+            writing_mode,
             container_border_box.width,
             border,
         );
@@ -669,11 +675,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             tree.set_unrounded_layout(child, &Layout::with_order(order));
             tree.perform_child_layout(
                 child,
-                Size::NONE,
-                Size::NONE,
-                Size::MAX_CONTENT,
-                SizingMode::InherentSize,
-                Line::FALSE,
+                ChildLayoutInput::new(
+                    Size::NONE,
+                    Size::NONE,
+                    writing_mode,
+                    Size::MAX_CONTENT,
+                    SizingMode::InherentSize,
+                    Line::FALSE,
+                ),
             );
             order += 1;
             return;
@@ -764,6 +773,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 container_alignment_styles,
                 0.0,
                 direction,
+                writing_mode,
                 container_border_box.width,
                 border,
             );
@@ -1033,11 +1043,13 @@ mod tests {
             Style { align_self: participates_in_baseline_alignment.then_some(AlignSelf::BASELINE), ..Style::default() };
         let mut item = GridItem::new_with_placement_style_and_order(
             NodeId::new(u64::from(source_order)),
-            Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
-            Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+            crate::WritingMode::HorizontalTb,
+            InBothAbsAxis {
+                horizontal: Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+                vertical: Line { start: OriginZeroLine(0), end: OriginZeroLine(1) },
+            },
             style,
-            AlignItems::STRETCH,
-            AlignItems::STRETCH,
+            InBothAbsAxis { horizontal: AlignItems::STRETCH, vertical: AlignItems::STRETCH },
             source_order,
         );
         item.row_indexes = row_indexes;

@@ -7,7 +7,7 @@ use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
 use crate::style::{AlignItems, GridAutoFlow, OriginZeroGridPlacement};
 use crate::tree::NodeId;
 use crate::util::sys::Vec;
-use crate::{CoreStyle, Direction, GridItemStyle};
+use crate::{CoreStyle, Direction, GridItemStyle, WritingMode};
 
 #[inline]
 /// Returns whether placement/search should run in reverse for this axis.
@@ -88,6 +88,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     cell_occupancy_matrix: &mut CellOccupancyMatrix,
     items: &mut Vec<GridItem>,
     children_iter: impl Fn() -> ChildIter,
+    parent_writing_mode: WritingMode,
     direction: Direction,
     grid_auto_flow: GridAutoFlow,
     align_items: AlignItems,
@@ -134,6 +135,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_node,
                 index,
                 style,
+                parent_writing_mode,
                 align_items,
                 justify_items,
                 primary_axis,
@@ -171,6 +173,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_node,
                 index,
                 style,
+                parent_writing_mode,
                 align_items,
                 justify_items,
                 primary_axis,
@@ -243,6 +246,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_node,
                 index,
                 style,
+                parent_writing_mode,
                 align_items,
                 justify_items,
                 primary_axis,
@@ -530,6 +534,7 @@ fn record_grid_placement<S: GridItemStyle>(
     node: NodeId,
     index: usize,
     style: S,
+    parent_writing_mode: WritingMode,
     parent_align_items: AlignItems,
     parent_justify_items: AlignItems,
     primary_axis: AbsoluteAxis,
@@ -559,11 +564,10 @@ fn record_grid_placement<S: GridItemStyle>(
     };
     items.push(GridItem::new_with_placement_style_and_order(
         node,
-        col_span,
-        row_span,
+        parent_writing_mode,
+        InBothAbsAxis { horizontal: col_span, vertical: row_span },
         style,
-        parent_align_items,
-        parent_justify_items,
+        InBothAbsAxis { horizontal: parent_justify_items, vertical: parent_align_items },
         index as u16,
     ));
 
@@ -619,6 +623,7 @@ mod tests {
                 &mut cell_occupancy_matrix,
                 &mut items,
                 children_iter,
+                crate::WritingMode::HorizontalTb,
                 Direction::Ltr,
                 flow,
                 AlignSelf::START,
@@ -859,6 +864,7 @@ mod tests {
                 &mut cell_occupancy_matrix,
                 &mut items,
                 || children.iter().map(|(index, style)| (*index, NodeId::from(*index), style)),
+                crate::WritingMode::HorizontalTb,
                 Direction::Rtl,
                 GridAutoFlow::Row,
                 AlignSelf::START,
