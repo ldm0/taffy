@@ -1,7 +1,7 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::compute::common::baseline::logical_block_baseline;
+use crate::compute::common::baseline::logical_block_baseline_or_synthesize;
 use crate::geometry::{AbstractAxis, Line, LogicalSize, Size};
 use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
@@ -510,8 +510,7 @@ fn resolve_item_baselines(
                 ),
             );
 
-            let block_size = writing_direction.mode.to_logical(measured_size_and_baselines.size).block_size;
-            let baseline = logical_block_baseline(
+            let baseline = logical_block_baseline_or_synthesize(
                 measured_size_and_baselines.first_baselines,
                 measured_size_and_baselines.size,
                 writing_direction,
@@ -520,7 +519,7 @@ fn resolve_item_baselines(
             let percentage_basis = inner_node_size.inline_size;
             let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let block_start_margin = writing_direction.to_logical_box_strut(margin).block_start;
-            item.alignment_baseline = Some(baseline.unwrap_or(block_size) + block_start_margin);
+            item.alignment_baseline = Some(baseline + block_start_margin);
         }
 
         // Compute the max baseline of all items in the row

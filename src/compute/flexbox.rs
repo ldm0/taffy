@@ -1,6 +1,7 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
 use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
-use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingMode};
+use crate::compute::common::baseline::{logical_block_baseline_or_synthesize, physical_baseline};
+use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
 use crate::style::{
     AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
     JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
@@ -221,12 +222,12 @@ struct FlexItem {
 
     /// First-baseline ascent used while sizing and aligning the flex line.
     alignment_baseline: f32,
-    /// First baseline from final child layout, in the flex container's
-    /// coordinate space.
-    first_baseline: f32,
-    /// Last baseline from final child layout, in the flex container's
-    /// coordinate space.
-    last_baseline: f32,
+    /// First baseline from final child layout, measured from the flex
+    /// container's logical block-start edge.
+    first_block_baseline: f32,
+    /// Last baseline from final child layout, measured from the flex
+    /// container's logical block-start edge.
+    last_block_baseline: f32,
 
     /// A temporary value for the main offset
     ///
@@ -321,6 +322,14 @@ struct AlgoConstants {
     container_size: Size<f32>,
     /// The size of the internal container
     inner_container_size: Size<f32>,
+}
+
+impl AlgoConstants {
+    /// The flow-relative coordinate system established by this container.
+    #[inline(always)]
+    fn writing_direction(&self) -> WritingDirection {
+        WritingDirection::new(self.writing_mode, self.inline_direction)
+    }
 }
 
 /// Resolve the space available to a flex item's cross axis.
@@ -633,14 +642,14 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // and it is that line which the container's first baseline is generated from.
     let first_line = if constants.is_wrap_reverse { flex_lines.last() } else { flex_lines.first() };
     let last_line = if constants.is_wrap_reverse { flex_lines.first() } else { flex_lines.last() };
-    let first_vertical_baseline = first_line.and_then(|line| {
+    let first_block_baseline = first_line.and_then(|line| {
         line.items
             .iter()
             .find(|item| constants.main_axis_is_block || item.align_self == AlignSelf::BASELINE)
             .or_else(|| line.items.iter().next())
-            .map(|child| child.first_baseline)
+            .map(|child| child.first_block_baseline)
     });
-    let last_vertical_baseline = last_line.and_then(|line| {
+    let last_block_baseline = last_line.and_then(|line| {
         if constants.main_axis_is_inline {
             // Taffy currently supports major (first) baseline-sharing groups.
             // Such a group in the last line takes priority over the fallback
@@ -648,18 +657,20 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
             line.items
                 .iter()
                 .find(|item| item.align_self == AlignSelf::BASELINE)
-                .map(|child| child.first_baseline)
-                .or_else(|| line.items.last().map(|child| child.last_baseline))
+                .map(|child| child.first_block_baseline)
+                .or_else(|| line.items.last().map(|child| child.last_block_baseline))
         } else {
-            line.items.last().map(|child| child.last_baseline)
+            line.items.last().map(|child| child.last_block_baseline)
         }
     });
+
+    let writing_direction = constants.writing_direction();
 
     LayoutOutput::from_sizes_and_baseline_sets(
         constants.container_size,
         inflow_content_size.f32_max(absolute_content_size),
-        Point { x: None, y: first_vertical_baseline },
-        Point { x: None, y: last_vertical_baseline },
+        physical_baseline(first_block_baseline, constants.container_size, writing_direction),
+        physical_baseline(last_block_baseline, constants.container_size, writing_direction),
     )
 }
 
@@ -965,8 +976,8 @@ fn generate_anonymous_flex_items(
                 content_flex_fraction: 0.0,
 
                 alignment_baseline: 0.0,
-                first_baseline: 0.0,
-                last_baseline: 0.0,
+                first_block_baseline: 0.0,
+                last_block_baseline: 0.0,
 
                 offset_main: 0.0,
                 offset_cross: 0.0,
@@ -1876,12 +1887,14 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
-    // Baseline sharing currently consumes the physical y baseline synthesized
-    // by leaf/block layout. A vertical inline axis needs physical x-baseline
-    // propagation before it can participate here.
-    if !constants.main_axis_is_inline || !constants.is_row {
+    // Baseline alignment applies only when the flex main axis is parallel to
+    // the container's inline axis. Keep the measured ascent in logical block
+    // coordinates; physical x/y is only an output concern.
+    if !constants.main_axis_is_inline {
         return;
     }
+
+    let writing_direction = constants.writing_direction();
 
     for line in flex_lines {
         // If a flex line has one or zero items participating in baseline alignment then baseline alignment is a no-op so we skip
@@ -1931,19 +1944,21 @@ fn calculate_children_base_lines(
                 ),
             );
 
-            let baseline = measured_size_and_baselines.first_baselines.y;
-            let height = measured_size_and_baselines.size.height;
+            let child_size = measured_size_and_baselines.size;
+            let child_block_size = constants.writing_mode.to_logical(child_size).block_size;
+            let baseline = logical_block_baseline_or_synthesize(
+                measured_size_and_baselines.first_baselines,
+                child_size,
+                writing_direction,
+            );
 
             // Scroll containers' baselines are determined from their content as if scrolled to the
             // initial position, but are additionally clamped to their border box.
             // See https://github.com/w3c/csswg-drafts/issues/7660
-            let baseline = if child.overflow.y.is_scroll_container() {
-                baseline.unwrap_or(height).min(height).max(0.0)
-            } else {
-                baseline.unwrap_or(height)
-            };
+            let baseline = if child.is_scroll_container() { baseline.min(child_block_size).max(0.0) } else { baseline };
 
-            child.alignment_baseline = baseline + child.margin.top;
+            let block_start_margin = writing_direction.to_logical_box_strut(child.margin).block_start;
+            child.alignment_baseline = baseline + block_start_margin;
         }
     }
 }
@@ -2207,7 +2222,7 @@ fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &Algo
         let line_cross_size = line.cross_size;
         let max_baseline: f32 =
             line.items.iter_mut().map(|child| child.alignment_baseline).fold(0.0, |acc, x| acc.max(x));
-        let max_baseline_to_bottom_distance: f32 = line
+        let max_baseline_to_block_end_distance: f32 = line
             .items
             .iter_mut()
             .filter(|child| child.align_self == AlignSelf::BASELINE)
@@ -2243,7 +2258,7 @@ fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &Algo
                     child,
                     free_space,
                     max_baseline,
-                    max_baseline_to_bottom_distance,
+                    max_baseline_to_block_end_distance,
                     constants,
                 );
             }
@@ -2262,7 +2277,7 @@ fn align_flex_items_along_cross_axis(
     child: &FlexItem,
     free_space: f32,
     max_baseline: f32,
-    max_baseline_to_bottom_distance: f32,
+    max_baseline_to_block_end_distance: f32,
     constants: &AlgoConstants,
 ) -> f32 {
     // If align-self uses a "safe" overflow-position keyword and the item would overflow its
@@ -2306,18 +2321,25 @@ fn align_flex_items_along_cross_axis(
         }
         AlignItemsKeyword::Center => free_space / 2.0,
         AlignItemsKeyword::Baseline => {
-            if constants.is_row {
-                if constants.is_wrap_reverse {
-                    // In a wrap-reverse container the cross axis is flipped, so the baseline-aligned
-                    // group of items is aligned to the cross-start edge, which is the bottom of the line.
+            if constants.main_axis_is_inline {
+                // First-baseline alignment is resolved in the container's
+                // logical block axis. `offset_cross`, however, is a physical
+                // low-edge offset, so flipped block flow is projected only
+                // after the logical alignment position has been chosen.
+                let logical_offset = if constants.is_wrap_reverse {
                     let line_cross_size = free_space + child.outer_target_size.cross(constants.dir);
-                    line_cross_size - max_baseline_to_bottom_distance - child.alignment_baseline
+                    line_cross_size - max_baseline_to_block_end_distance - child.alignment_baseline
                 } else {
                     max_baseline - child.alignment_baseline
+                };
+                if constants.cross_axis_start_reversed {
+                    free_space - logical_offset
+                } else {
+                    logical_offset
                 }
             } else {
-                // Taffy does not yet synthesize vertical baselines, so use the
-                // flex-start fallback on a vertical cross axis.
+                // A column flex container's cross axis is its logical inline
+                // axis, so first-baseline alignment falls back to flex-start.
                 if constants.cross_axis_flex_start_reversed {
                     free_space
                 } else {
@@ -2444,51 +2466,51 @@ fn calculate_flex_item(
     };
     let effective_line_offset_cross = if is_rtl_column { 0.0 } else { line_offset_cross };
 
-    let offset_main = if is_rtl_row {
-        *total_offset_main - item.offset_main - item.margin.main_end(direction) - main_relative_inset - size.width
+    let static_offset_main = if is_rtl_row {
+        *total_offset_main - item.offset_main - item.margin.main_end(direction) - size.width
     } else {
-        *total_offset_main + item.offset_main + item.margin.main_start(direction) + main_relative_inset
+        *total_offset_main + item.offset_main + item.margin.main_start(direction)
     };
+    let offset_main =
+        if is_rtl_row { static_offset_main - main_relative_inset } else { static_offset_main + main_relative_inset };
 
-    let offset_cross = total_offset_cross
-        + item.offset_cross
-        + effective_line_offset_cross
-        + item.margin.cross_start(direction)
-        + cross_relative_inset;
+    let static_offset_cross =
+        total_offset_cross + item.offset_cross + effective_line_offset_cross + item.margin.cross_start(direction);
+    let offset_cross = static_offset_cross + cross_relative_inset;
 
-    let inner_first_baseline = {
-        let baseline = layout_output.first_baselines.y.unwrap_or(size.height);
-        if item.overflow.y.is_scroll_container() {
-            baseline.min(size.height).max(0.0)
-        } else {
-            baseline
-        }
-    };
-    let inner_last_baseline = {
-        let baseline = layout_output.last_baselines.y.unwrap_or(size.height);
-        if item.overflow.y.is_scroll_container() {
-            baseline.min(size.height).max(0.0)
-        } else {
-            baseline
-        }
-    };
-
-    if direction.is_row() {
-        let baseline_offset_cross =
-            total_offset_cross + item.offset_cross + effective_line_offset_cross + item.margin.cross_start(direction);
-        item.first_baseline = baseline_offset_cross + inner_first_baseline;
-        item.last_baseline = baseline_offset_cross + inner_last_baseline;
+    let static_location = if direction.is_row() {
+        Point { x: static_offset_main, y: static_offset_cross }
     } else {
-        let baseline_offset_main = *total_offset_main + item.offset_main + item.margin.main_start(direction);
-        item.first_baseline = baseline_offset_main + inner_first_baseline;
-        item.last_baseline = baseline_offset_main + inner_last_baseline;
-    }
-
+        Point { x: static_offset_cross, y: static_offset_main }
+    };
     let location = if direction.is_row() {
         Point { x: offset_main, y: offset_cross }
     } else {
         Point { x: offset_cross, y: offset_main }
     };
+
+    // Fragment baselines are stored in physical x/y by child layout. Project
+    // them into the parent's logical block axis and keep them there while the
+    // flex container selects its own first and last baseline. Relative
+    // positioning intentionally does not alter the in-flow baseline position.
+    let writing_direction = constants.writing_direction();
+    let child_block_size = constants.writing_mode.to_logical(size).block_size;
+    let logical_block_offset =
+        writing_direction.converter(constants.container_size).to_logical_point(static_location, size).block_offset;
+    let clamp_baseline = |baseline: f32| {
+        if item.is_scroll_container() {
+            baseline.min(child_block_size).max(0.0)
+        } else {
+            baseline
+        }
+    };
+    let inner_first_baseline =
+        clamp_baseline(logical_block_baseline_or_synthesize(layout_output.first_baselines, size, writing_direction));
+    let inner_last_baseline =
+        clamp_baseline(logical_block_baseline_or_synthesize(layout_output.last_baselines, size, writing_direction));
+    item.first_block_baseline = logical_block_offset + inner_first_baseline;
+    item.last_block_baseline = logical_block_offset + inner_last_baseline;
+
     let scrollbar_size = Size {
         width: if item.overflow.y == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
         height: if item.overflow.x == Overflow::Scroll { item.scrollbar_width } else { 0.0 },

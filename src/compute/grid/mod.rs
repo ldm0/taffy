@@ -1,6 +1,6 @@
 //! This module is a partial implementation of the CSS Grid Level 1 specification
 //! <https://www.w3.org/TR/css-grid-1>
-use crate::compute::common::baseline::physical_baseline;
+use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
@@ -885,10 +885,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 /// This follows Blink's `GridBaselineAccumulator`: a baseline-sharing group in the first/last
 /// occupied row wins, otherwise selection falls back to the first/last item in
 /// grid order. Fallback selection uses the child's corresponding baseline and
-/// synthesizes one at its block-end border edge only when that baseline is
-/// absent.
+/// synthesizes one on the formatting context's line-under edge only when that
+/// baseline is absent.
 fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
     debug_assert!(!items.is_empty());
+
+    let synthesize = |item: &GridItem| synthesized_logical_baseline(item.block_size, flow.writing_direction());
 
     let compare_in_flow_order = |axis: AbstractAxis, a: u16, b: u16| {
         if flow.axis_is_reversed(axis) {
@@ -946,7 +948,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
             )
         })
         .unwrap();
-    let first_baseline = first_item.block_offset + first_item.first_baseline.unwrap_or(first_item.block_size);
+    let first_baseline = first_item.block_offset + first_item.first_baseline.unwrap_or_else(|| synthesize(first_item));
 
     let last_occupied_row = items
         .iter()
@@ -989,9 +991,9 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         // Taffy currently supports first-baseline sharing groups. When such a
         // group exists in the last occupied row, its shared major baseline is
         // also the grid container's last baseline.
-        last_item.first_baseline.unwrap_or(last_item.block_size)
+        last_item.first_baseline.unwrap_or_else(|| synthesize(last_item))
     } else {
-        last_item.last_baseline.unwrap_or(last_item.block_size)
+        last_item.last_baseline.unwrap_or_else(|| synthesize(last_item))
     };
 
     (first_baseline, last_item.block_offset + last_baseline)
@@ -1317,6 +1319,27 @@ mod tests {
                 GridFlow::new(writing_direction.mode, writing_direction.direction)
             ),
             (8.0, 65.0)
+        );
+    }
+
+    #[test]
+    fn grid_synthesizes_missing_baselines_on_the_line_under_edge() {
+        let item =
+            baseline_item(0, Line { start: 0, end: 2 }, Line { start: 0, end: 2 }, false, 10.0, 20.0, None, None);
+
+        assert_eq!(
+            grid_container_baselines(
+                core::slice::from_ref(&item),
+                GridFlow::new(crate::WritingMode::VerticalLr, Direction::Ltr),
+            ),
+            (10.0, 10.0),
+        );
+        assert_eq!(
+            grid_container_baselines(
+                core::slice::from_ref(&item),
+                GridFlow::new(crate::WritingMode::VerticalRl, Direction::Ltr),
+            ),
+            (30.0, 30.0),
         );
     }
 }
