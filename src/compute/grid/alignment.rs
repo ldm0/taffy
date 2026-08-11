@@ -25,10 +25,15 @@ use crate::{BoxSizing, Direction, LayoutGridContainer, RequestedAxis};
 /// the grid container propagate distinct first and last baselines to its own
 /// parent formatting context.
 pub(super) struct GridItemPlacement {
+    /// Contribution of the positioned item to the grid's scrollable content.
     pub(super) content_size_contribution: Size<f32>,
+    /// Used block-start position relative to the grid container.
     pub(super) block_start: f32,
+    /// Used border-box block-size.
     pub(super) block_size: f32,
+    /// First baseline relative to the item's border box.
     pub(super) first_baseline: Option<f32>,
+    /// Last baseline relative to the item's border box.
     pub(super) last_baseline: Option<f32>,
 }
 

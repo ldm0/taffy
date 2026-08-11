@@ -5,6 +5,7 @@ use crate::{BoxSizing, ResolvedAspectRatio, Size};
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ResolvedSizeConstraints {
+    /// Preferred border-box size after applying the ratio transfer.
     pub size: Size<Option<f32>>,
     /// Used minimum constraint for the requested transfer mode.
     pub min_size: Size<Option<f32>>,
@@ -22,7 +23,9 @@ pub(crate) struct ResolvedSizeConstraints {
 /// the shared resolver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TransferredSizesMode {
+    /// Apply min/max constraints transferred through the preferred ratio.
     Normal,
+    /// Retain only constraints explicitly authored in the requested axis.
     Ignore,
 }
 
@@ -68,6 +71,7 @@ pub(crate) fn resolve_size_constraints(
     }
 }
 
+/// Transfer one pair of axis constraints through the preferred ratio.
 fn transferred_constraints(
     constraints: Size<Option<f32>>,
     target_is_auto: Size<bool>,
@@ -94,6 +98,7 @@ fn transferred_constraints(
     }
 }
 
+/// Merge explicit and transferred minimums while honoring an explicit maximum.
 fn merge_minimum(explicit_min: Option<f32>, transferred_min: Option<f32>, explicit_max: Option<f32>) -> Option<f32> {
     let transferred_min = match (transferred_min, explicit_max) {
         (Some(transferred), Some(maximum)) => Some(transferred.min(maximum)),
@@ -106,6 +111,7 @@ fn merge_minimum(explicit_min: Option<f32>, transferred_min: Option<f32>, explic
     }
 }
 
+/// Merge explicit and transferred maximums while preserving the used minimum.
 fn merge_maximum(explicit_max: Option<f32>, transferred_max: Option<f32>, used_min: Option<f32>) -> Option<f32> {
     let maximum = match (explicit_max, transferred_max) {
         (Some(explicit), Some(transferred)) => Some(explicit.min(transferred)),
