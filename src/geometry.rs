@@ -2,7 +2,10 @@
 
 use crate::util::sys::f32_max;
 use crate::CompactLength;
-use crate::{style::Dimension, util::sys::f32_min};
+use crate::{
+    style::{BoxSizing, Dimension, ResolvedAspectRatio},
+    util::sys::f32_min,
+};
 use core::ops::{Add, Sub};
 
 #[cfg(feature = "flexbox")]
@@ -597,6 +600,72 @@ impl Size<Option<f32>> {
             },
             None => self,
         }
+    }
+
+    /// Applies an aspect ratio while allowing the source dimensions and the
+    /// ratio itself to refer to different CSS sizing boxes.
+    ///
+    /// This distinction is observable for `aspect-ratio: auto <ratio>` and
+    /// intrinsic replaced-element ratios: those constrain the content box,
+    /// even when `box-sizing: border-box` makes authored sizes refer to the
+    /// border box.
+    pub fn maybe_apply_aspect_ratio_with_box_sizing(
+        self,
+        aspect_ratio: ResolvedAspectRatio,
+        source_box_sizing: BoxSizing,
+        padding_border: Size<f32>,
+    ) -> Size<Option<f32>> {
+        let Some(ratio) = aspect_ratio.ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0) else {
+            return self;
+        };
+        let convert = |value: f32, inset: f32, from: BoxSizing, to: BoxSizing| match (from, to) {
+            (BoxSizing::ContentBox, BoxSizing::BorderBox) => value + inset,
+            (BoxSizing::BorderBox, BoxSizing::ContentBox) => (value - inset).max(0.0),
+            _ => value,
+        };
+        match (self.width, self.height) {
+            (Some(width), None) => {
+                let ratio_width = convert(width, padding_border.width, source_box_sizing, aspect_ratio.box_sizing);
+                let ratio_height = ratio_width / ratio;
+                let source_height =
+                    convert(ratio_height, padding_border.height, aspect_ratio.box_sizing, source_box_sizing);
+                Size { width: Some(width), height: source_height.is_finite().then_some(source_height.max(0.0)) }
+            }
+            (None, Some(height)) => {
+                let ratio_height = convert(height, padding_border.height, source_box_sizing, aspect_ratio.box_sizing);
+                let ratio_width = ratio_height * ratio;
+                let source_width =
+                    convert(ratio_width, padding_border.width, aspect_ratio.box_sizing, source_box_sizing);
+                Size { width: source_width.is_finite().then_some(source_width.max(0.0)), height: Some(height) }
+            }
+            _ => self,
+        }
+    }
+}
+
+#[cfg(test)]
+mod aspect_ratio_tests {
+    use super::Size;
+    use crate::{BoxSizing, ResolvedAspectRatio};
+
+    #[test]
+    fn aspect_ratio_uses_its_own_sizing_box() {
+        let border_box_width = Size { width: Some(100.0), height: None };
+        let padding_border = Size { width: 20.0, height: 20.0 };
+
+        let content_box_ratio = border_box_width.maybe_apply_aspect_ratio_with_box_sizing(
+            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            BoxSizing::BorderBox,
+            padding_border,
+        );
+        let border_box_ratio = border_box_width.maybe_apply_aspect_ratio_with_box_sizing(
+            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            BoxSizing::BorderBox,
+            padding_border,
+        );
+
+        assert_eq!(content_box_ratio, Size { width: Some(100.0), height: Some(60.0) });
+        assert_eq!(border_box_ratio, Size { width: Some(100.0), height: Some(50.0) });
     }
 }
 

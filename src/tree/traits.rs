@@ -130,7 +130,7 @@ use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, S
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Line, Size};
-use crate::style::{AvailableSpace, CoreStyle};
+use crate::style::{AvailableSpace, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -184,6 +184,18 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Get core style
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
+
+    /// Returns the node's used aspect ratio and the sizing box whose dimensions
+    /// it constrains.
+    ///
+    /// The default projects both values from [`CoreStyle`]. Browser integrations
+    /// can override this node-level seam to combine authored and natural ratios
+    /// for replaced elements. Intrinsic ratios and CSS `auto <ratio>` use the
+    /// content box even when authored sizes use the border box.
+    fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> ResolvedAspectRatio {
+        let style = self.get_core_container_style(node_id);
+        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() }
+    }
 
     /// Resolve calc value
     #[inline(always)]

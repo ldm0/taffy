@@ -8,13 +8,37 @@ use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, CoreStyle};
+use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
 use core::unreachable;
 
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    compute_leaf_layout_with_aspect_ratio(
+        inputs,
+        style,
+        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+        resolve_calc_value,
+        measure_function,
+    )
+}
+
+/// Compute the size of a leaf node using a node-level resolved aspect ratio.
+///
+/// Browser integrations should use this entry point when the used ratio may
+/// depend on natural replaced-element sizing or when the ratio constrains a
+/// different sizing box than authored width and height.
+pub fn compute_leaf_layout_with_aspect_ratio<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    resolved_aspect_ratio: ResolvedAspectRatio,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
@@ -39,25 +63,24 @@ where
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, None)
+            (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled())
         }
         SizingMode::InherentSize => {
-            let aspect_ratio = style.aspect_ratio();
             let style_size = style
                 .size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(resolved_aspect_ratio, style.box_sizing(), pb_sum)
                 .maybe_add(box_sizing_adjustment);
             let style_min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(resolved_aspect_ratio, style.box_sizing(), pb_sum)
                 .maybe_add(box_sizing_adjustment);
             let style_max_size =
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
 
             let node_size = known_dimensions.or(style_size);
-            (node_size, style_min_size, style_max_size, aspect_ratio)
+            (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
         }
     };
 
@@ -145,10 +168,11 @@ where
         .or(node_size)
         .unwrap_or(measured_size + content_box_inset.sum_axes())
         .maybe_clamp(node_min_size, node_max_size);
-    let size = Size {
-        width: clamped_size.width,
-        height: f32_max(clamped_size.height, aspect_ratio.map(|ratio| clamped_size.width / ratio).unwrap_or(0.0)),
-    };
+    let ratio_height = Size { width: Some(clamped_size.width), height: None }
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
+        .height
+        .unwrap_or(0.0);
+    let size = Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) };
     let size = size.maybe_max(padding_border.sum_axes().map(Some));
 
     LayoutOutput {

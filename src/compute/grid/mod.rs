@@ -47,18 +47,23 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 ) -> LayoutOutput {
     let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
 
+    let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let style = tree.get_grid_container_style(node);
     let direction = style.direction();
 
     // 1. Compute "available grid space"
     // https://www.w3.org/TR/css-grid-1/#available-grid-space
-    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { style.aspect_ratio() } else { None };
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize {
+        resolved_aspect_ratio
+    } else {
+        resolved_aspect_ratio.disabled()
+    };
     let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
     let padding_border = padding + border;
     let padding_border_size = padding_border.sum_axes();
-    let box_sizing_adjustment =
-        if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let box_sizing = style.box_sizing();
+    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
     let (min_size, max_size, preferred_size) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
@@ -66,17 +71,17 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             let min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let max_size = style
                 .max_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             let preferred_size = style
                 .size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment);
             (min_size, max_size, preferred_size)
         }
@@ -243,6 +248,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         justify_items.unwrap_or(AlignItems::STRETCH),
         &name_resolver,
     );
+    for item in &mut items {
+        item.aspect_ratio = tree.get_resolved_aspect_ratio(item.node);
+    }
 
     // Extract track counts from previous step (auto-placement can expand the number of tracks)
     let final_col_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal);
