@@ -80,6 +80,39 @@ impl WritingDirection {
     pub const fn converter<T>(self, outer_size: Size<T>) -> WritingModeConverter<T> {
         WritingModeConverter::new(self, outer_size)
     }
+
+    /// Convert physical box edges into logical start/end edges.
+    pub fn to_logical_box_strut<T: Copy>(self, rect: Rect<T>) -> LogicalBoxStrut<T> {
+        let (inline_low, inline_high, block_low, block_high) = if self.mode.is_horizontal() {
+            (rect.left, rect.right, rect.top, rect.bottom)
+        } else {
+            (rect.top, rect.bottom, rect.left, rect.right)
+        };
+        let (inline_start, inline_end) =
+            if self.is_inline_flow_reversed() { (inline_high, inline_low) } else { (inline_low, inline_high) };
+        let (block_start, block_end) =
+            if self.is_block_flow_reversed() { (block_high, block_low) } else { (block_low, block_high) };
+        LogicalBoxStrut { inline_start, inline_end, block_start, block_end }
+    }
+
+    /// Convert logical start/end edges back into physical box edges.
+    pub fn to_physical_box_strut<T: Copy>(self, rect: LogicalBoxStrut<T>) -> Rect<T> {
+        let (inline_low, inline_high) = if self.is_inline_flow_reversed() {
+            (rect.inline_end, rect.inline_start)
+        } else {
+            (rect.inline_start, rect.inline_end)
+        };
+        let (block_low, block_high) = if self.is_block_flow_reversed() {
+            (rect.block_end, rect.block_start)
+        } else {
+            (rect.block_start, rect.block_end)
+        };
+        if self.mode.is_horizontal() {
+            Rect { left: inline_low, right: inline_high, top: block_low, bottom: block_high }
+        } else {
+            Rect { left: block_low, right: block_high, top: inline_low, bottom: inline_high }
+        }
+    }
 }
 
 impl WritingMode {
@@ -587,6 +620,19 @@ impl<T> LogicalSize<T> {
         F: Fn(T) -> R,
     {
         LogicalSize { inline_size: f(self.inline_size), block_size: f(self.block_size) }
+    }
+}
+
+impl LogicalSize<f32> {
+    /// A logical size whose inline and block extents are zero.
+    pub const ZERO: Self = Self { inline_size: 0.0, block_size: 0.0 };
+
+    /// Component-wise maximum that preserves CSS floating-point semantics.
+    pub(crate) fn f32_max(self, other: Self) -> Self {
+        Self {
+            inline_size: f32_max(self.inline_size, other.inline_size),
+            block_size: f32_max(self.block_size, other.block_size),
+        }
     }
 }
 
@@ -1154,42 +1200,12 @@ impl<T: Copy> WritingModeConverter<T> {
 
     /// Convert physical box edges into logical start/end edges.
     pub fn to_logical_box_strut(&self, rect: Rect<T>) -> LogicalBoxStrut<T> {
-        let mode = self.writing_direction.mode;
-        let (inline_low, inline_high, block_low, block_high) = if mode.is_horizontal() {
-            (rect.left, rect.right, rect.top, rect.bottom)
-        } else {
-            (rect.top, rect.bottom, rect.left, rect.right)
-        };
-        let (inline_start, inline_end) = if self.writing_direction.is_inline_flow_reversed() {
-            (inline_high, inline_low)
-        } else {
-            (inline_low, inline_high)
-        };
-        let (block_start, block_end) = if self.writing_direction.is_block_flow_reversed() {
-            (block_high, block_low)
-        } else {
-            (block_low, block_high)
-        };
-        LogicalBoxStrut { inline_start, inline_end, block_start, block_end }
+        self.writing_direction.to_logical_box_strut(rect)
     }
 
     /// Convert logical start/end edges back into physical box edges.
     pub fn to_physical_box_strut(&self, rect: LogicalBoxStrut<T>) -> Rect<T> {
-        let (inline_low, inline_high) = if self.writing_direction.is_inline_flow_reversed() {
-            (rect.inline_end, rect.inline_start)
-        } else {
-            (rect.inline_start, rect.inline_end)
-        };
-        let (block_low, block_high) = if self.writing_direction.is_block_flow_reversed() {
-            (rect.block_end, rect.block_start)
-        } else {
-            (rect.block_start, rect.block_end)
-        };
-        if self.writing_direction.mode.is_horizontal() {
-            Rect { left: inline_low, right: inline_high, top: block_low, bottom: block_high }
-        } else {
-            Rect { left: block_low, right: block_high, top: inline_low, bottom: inline_high }
-        }
+        self.writing_direction.to_physical_box_strut(rect)
     }
 }
 

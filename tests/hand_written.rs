@@ -3,6 +3,7 @@ mod hand_written {
     mod adversarial_styles;
     mod block_intrinsic_percentage;
     mod block_replaced;
+    mod block_writing_modes;
     mod border_and_padding;
     mod caching;
     mod flex_aspect_ratio;
