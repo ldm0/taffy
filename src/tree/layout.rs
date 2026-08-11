@@ -166,6 +166,12 @@ pub struct LayoutInput {
     pub definite_dimensions: Size<Option<f32>>,
     /// Parent size dimensions are intended to be used for percentage resolution.
     pub parent_size: Size<Option<f32>>,
+    /// Writing mode of the containing block that supplied `parent_size`.
+    ///
+    /// This is required to recover the containing block's logical inline size
+    /// after the physical constraints have been projected into an orthogonal
+    /// child's coordinate space.
+    pub parent_writing_mode: WritingMode,
     /// Available space represents an amount of space to layout into, and is used as a soft constraint
     /// for the purpose of wrapping.
     pub available_space: Size<AvailableSpace>,
@@ -182,6 +188,7 @@ impl LayoutInput {
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
         parent_size: Size::NONE,
+        parent_writing_mode: WritingMode::HorizontalTb,
         available_space: Size::MAX_CONTENT,
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
@@ -189,42 +196,123 @@ impl LayoutInput {
         vertical_margins_are_collapsible: Line::FALSE,
     };
 
-    /// Project physical inputs into the logical axes used by `writing_mode`.
-    ///
-    /// Parents retain physical storage at the tree boundary; formatting
-    /// algorithms consume this view so orthogonal children do not reinterpret
-    /// width as inline-size. This is the incremental constraint-space seam for
-    /// migrating algorithms from physical to flow-relative geometry.
+    /// Project the physical tree-boundary inputs into `writing_mode`'s logical
+    /// axes.
     #[inline(always)]
-    pub fn logical_constraints(self, writing_mode: WritingMode, parent_writing_mode: WritingMode) -> ConstraintSpace {
+    pub fn constraint_space(self, writing_mode: WritingMode) -> ConstraintSpace {
         ConstraintSpace {
+            run_mode: self.run_mode,
+            sizing_mode: self.sizing_mode,
+            sizing_purpose: self.sizing_purpose,
             writing_mode,
-            parent_writing_mode,
-            is_orthogonal: writing_mode.is_orthogonal_to(parent_writing_mode),
+            parent_writing_mode: self.parent_writing_mode,
             known_size: writing_mode.to_logical(self.known_dimensions),
             definite_size: writing_mode.to_logical(self.definite_dimensions),
             percentage_resolution_size: writing_mode.to_logical(self.parent_size),
             available_size: writing_mode.to_logical(self.available_space),
             requested_axis: self.axis,
+            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+        }
+    }
+}
+
+/// Inputs shared by intrinsic measurement and final layout of a child.
+///
+/// Formatting algorithms construct this value at the containing-block
+/// boundary. The tree helpers then add only the operation-specific run mode,
+/// purpose and requested axis, preventing those two paths from drifting apart
+/// as constraint-space state grows.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) struct ChildLayoutInput {
+    /// Child border-box dimensions that are already known.
+    pub known_dimensions: Size<Option<f32>>,
+    /// Physical containing-block dimensions used to resolve child percentages.
+    pub parent_size: Size<Option<f32>>,
+    /// Writing mode that establishes the containing block's logical axes.
+    pub parent_writing_mode: WritingMode,
+    /// Physical available space offered by the parent formatting algorithm.
+    pub available_space: Size<AvailableSpace>,
+    /// Whether authored size constraints participate in child sizing.
+    pub sizing_mode: SizingMode,
+    /// Whether the child's physical vertical margins may collapse through the boundary.
+    pub vertical_margins_are_collapsible: Line<bool>,
+}
+
+impl ChildLayoutInput {
+    /// Construct the shared inputs at a parent-to-child layout boundary.
+    #[inline(always)]
+    pub const fn new(
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        parent_writing_mode: WritingMode,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> Self {
+        Self {
+            known_dimensions,
+            parent_size,
+            parent_writing_mode,
+            available_space,
+            sizing_mode,
+            vertical_margins_are_collapsible,
+        }
+    }
+
+    /// Convert shared child inputs into an intrinsic measurement request.
+    #[inline(always)]
+    pub const fn into_measurement(self, axis: RequestedAxis) -> LayoutInput {
+        LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: self.sizing_mode,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis,
+            known_dimensions: self.known_dimensions,
+            definite_dimensions: self.known_dimensions,
+            parent_size: self.parent_size,
+            parent_writing_mode: self.parent_writing_mode,
+            available_space: self.available_space,
+            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+        }
+    }
+
+    /// Convert shared child inputs into a final layout request.
+    #[inline(always)]
+    pub const fn into_layout(self) -> LayoutInput {
+        LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: self.sizing_mode,
+            sizing_purpose: SizingPurpose::Layout,
+            axis: RequestedAxis::Both,
+            known_dimensions: self.known_dimensions,
+            definite_dimensions: self.known_dimensions,
+            parent_size: self.parent_size,
+            parent_writing_mode: self.parent_writing_mode,
+            available_space: self.available_space,
+            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
     }
 }
 
 /// A flow-relative view of the constraints passed to one layout algorithm.
 ///
-/// Like Blink's constraint space, this records both the child's writing mode
-/// and whether its axes are orthogonal to its containing block. It deliberately
-/// remains a view over [`LayoutInput`] while Taffy's formatting algorithms are
-/// migrated incrementally.
+/// Like Blink's constraint space, this records both the node's writing mode and
+/// whether its axes are orthogonal to its containing block. Physical sizes are
+/// converted only at tree and fragment boundaries.
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ConstraintSpace {
+    /// Whether the node is being measured or fully laid out.
+    pub run_mode: RunMode,
+    /// Whether authored size constraints participate in this computation.
+    pub sizing_mode: SizingMode,
+    /// Whether this computation produces final layout or an intrinsic
+    /// contribution.
+    pub sizing_purpose: SizingPurpose,
     /// Writing mode whose logical axes own these sizes.
     pub writing_mode: WritingMode,
     /// Writing mode of the containing block that produced this space.
     pub parent_writing_mode: WritingMode,
-    /// Whether the child's inline axis is parallel to the parent's block axis.
-    pub is_orthogonal: bool,
     /// Fixed dimensions supplied by the parent, in child logical axes.
     pub known_size: LogicalSize<Option<f32>>,
     /// Definite dimensions usable as descendant percentage bases.
@@ -235,9 +323,47 @@ pub struct ConstraintSpace {
     pub available_size: LogicalSize<AvailableSpace>,
     /// Physical-axis request retained for compatibility with current callers.
     requested_axis: RequestedAxis,
+    /// Block-start/end margin-collapse permissions for block layout.
+    pub vertical_margins_are_collapsible: Line<bool>,
 }
 
 impl ConstraintSpace {
+    /// Convert this logical constraint space back to the physical input used at
+    /// the tree dispatch boundary.
+    #[inline(always)]
+    pub fn into_layout_input(self) -> LayoutInput {
+        LayoutInput {
+            run_mode: self.run_mode,
+            sizing_mode: self.sizing_mode,
+            sizing_purpose: self.sizing_purpose,
+            axis: self.requested_axis,
+            known_dimensions: self.writing_mode.to_physical(self.known_size),
+            definite_dimensions: self.writing_mode.to_physical(self.definite_size),
+            parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
+            parent_writing_mode: self.parent_writing_mode,
+            available_space: self.writing_mode.to_physical(self.available_size),
+            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+        }
+    }
+
+    /// Whether this node establishes a flow orthogonal to its containing block.
+    #[inline(always)]
+    pub const fn is_orthogonal(self) -> bool {
+        self.writing_mode.is_orthogonal_to(self.parent_writing_mode)
+    }
+
+    /// The containing block's logical inline size used to resolve percentage
+    /// margins, padding and borders.
+    ///
+    /// `percentage_resolution_size` is stored in this node's logical axes, so
+    /// project through physical space before reading it in the containing
+    /// block's logical coordinate system.
+    #[inline(always)]
+    pub fn margin_padding_percentage_basis(self) -> Option<f32> {
+        let physical_size = self.writing_mode.to_physical(self.percentage_resolution_size);
+        self.parent_writing_mode.to_logical(physical_size).inline_size
+    }
+
     /// Whether the caller requested this node's logical inline size.
     #[inline(always)]
     pub const fn requests_inline_size(self) -> bool {
@@ -248,6 +374,53 @@ impl ConstraintSpace {
     #[inline(always)]
     pub const fn requests_block_size(self) -> bool {
         self.requested_axis.contains(self.writing_mode.block_axis())
+    }
+}
+
+#[cfg(test)]
+mod constraint_space_tests {
+    use super::*;
+
+    #[test]
+    fn orthogonal_space_recovers_the_containing_blocks_inline_percentage_basis() {
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Horizontal,
+            known_dimensions: Size { width: Some(30.0), height: None },
+            definite_dimensions: Size { width: Some(30.0), height: None },
+            parent_size: Size { width: Some(100.0), height: Some(200.0) },
+            parent_writing_mode: WritingMode::VerticalRl,
+            available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
+            vertical_margins_are_collapsible: Line { start: true, end: false },
+        };
+
+        let space = input.constraint_space(WritingMode::HorizontalTb);
+
+        assert!(space.is_orthogonal());
+        assert_eq!(space.percentage_resolution_size.inline_size, Some(100.0));
+        assert_eq!(space.percentage_resolution_size.block_size, Some(200.0));
+        assert_eq!(space.margin_padding_percentage_basis(), Some(200.0));
+        assert!(space.requests_inline_size());
+        assert!(!space.requests_block_size());
+        assert_eq!(space.into_layout_input(), input);
+    }
+
+    #[test]
+    fn parallel_vertical_space_uses_its_inline_axis_directly() {
+        let input = LayoutInput {
+            parent_size: Size { width: Some(100.0), height: Some(200.0) },
+            parent_writing_mode: WritingMode::VerticalLr,
+            ..LayoutInput::HIDDEN
+        };
+
+        let space = input.constraint_space(WritingMode::VerticalRl);
+
+        assert!(!space.is_orthogonal());
+        assert_eq!(space.percentage_resolution_size.inline_size, Some(200.0));
+        assert_eq!(space.margin_padding_percentage_basis(), Some(200.0));
+        assert_eq!(space.into_layout_input(), input);
     }
 }
 

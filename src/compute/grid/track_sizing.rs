@@ -4,7 +4,7 @@ use super::types::{GridItem, GridTrack, TrackCounts};
 use crate::geometry::{AbstractAxis, Line, Size};
 use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
-use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
+use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::sys::{f32_max, f32_min, Vec};
 use crate::util::{MaybeMath, ResolveOrZero};
 use crate::CompactLength;
@@ -106,7 +106,8 @@ where
     /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
     /// to zero if the container size is indefinite as otherwise this would introduce a cyclic dependency.
     #[inline(always)]
-    fn margins_axis_sums_with_baseline_shims(&self, item: &GridItem, percentage_basis: Option<f32>) -> Size<f32> {
+    fn margins_axis_sums_with_baseline_shims(&self, item: &GridItem, available_space: Size<Option<f32>>) -> Size<f32> {
+        let percentage_basis = item.parent_writing_mode.to_logical(available_space).inline_size;
         item.margins_axis_sums_with_baseline_shims(percentage_basis, self.tree)
     }
 
@@ -121,7 +122,7 @@ where
     fn min_content_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = grid_area_size.with(self.axis, None);
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space.width);
+        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.min_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
         contribution + margin_axis_sums.get(self.axis)
     }
@@ -131,7 +132,7 @@ where
     fn max_content_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = grid_area_size.with(self.axis, None);
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space.width);
+        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.max_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
         contribution + margin_axis_sums.get(self.axis)
     }
@@ -147,7 +148,7 @@ where
     fn minimum_contribution(&mut self, item: &mut GridItem, axis_tracks: &[GridTrack]) -> f32 {
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = grid_area_size.with(self.axis, None);
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space.width);
+        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution =
             item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
         contribution + margin_axis_sums.get(self.axis)
@@ -494,19 +495,23 @@ fn resolve_item_baselines(
         for item in row_items.iter_mut() {
             let measured_size_and_baselines = tree.perform_child_layout(
                 item.node,
-                Size::NONE,
-                inner_node_size,
-                Size::MIN_CONTENT,
-                SizingMode::InherentSize,
-                Line::FALSE,
+                ChildLayoutInput::new(
+                    Size::NONE,
+                    inner_node_size,
+                    item.parent_writing_mode,
+                    Size::MIN_CONTENT,
+                    SizingMode::InherentSize,
+                    Line::FALSE,
+                ),
             );
 
             let baseline = measured_size_and_baselines.first_baselines.y;
             let height = measured_size_and_baselines.size.height;
 
+            let percentage_basis = item.parent_writing_mode.to_logical(inner_node_size).inline_size;
             item.alignment_baseline = Some(
                 baseline.unwrap_or(height)
-                    + item.margin.top.resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)),
+                    + item.margin.top.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
             );
         }
 

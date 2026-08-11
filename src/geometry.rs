@@ -3,7 +3,7 @@
 use crate::util::sys::f32_max;
 use crate::CompactLength;
 use crate::{
-    style::{BoxSizing, Dimension, ResolvedAspectRatio},
+    style::{BoxSizing, Dimension, Direction, ResolvedAspectRatio},
     util::sys::f32_min,
 };
 use core::ops::{Add, Sub};
@@ -74,6 +74,36 @@ impl WritingMode {
     #[inline(always)]
     pub const fn is_block_flow_reversed(self) -> bool {
         matches!(self, Self::VerticalRl | Self::SidewaysRl)
+    }
+
+    /// Whether inline progression runs in the reverse physical direction.
+    ///
+    /// `direction: rtl` reverses the usual inline progression in horizontal,
+    /// vertical and `sideways-rl` modes. `sideways-lr` has the opposite base
+    /// progression, so its inline axis is reversed for `direction: ltr`.
+    #[inline(always)]
+    pub const fn is_inline_flow_reversed(self, direction: Direction) -> bool {
+        match self {
+            Self::SidewaysLr => matches!(direction, Direction::Ltr),
+            _ => matches!(direction, Direction::Rtl),
+        }
+    }
+
+    /// Whether this writing mode's start side lies at the high coordinate of
+    /// `axis`.
+    ///
+    /// The physical axis may represent either the inline or block axis. This
+    /// projection is used when an item's `self-start`/`self-end` edges are
+    /// compared with the containing block's start/end edges.
+    #[inline(always)]
+    pub const fn is_axis_flow_reversed(self, axis: AbsoluteAxis, direction: Direction) -> bool {
+        let axis_is_inline =
+            matches!((self.is_horizontal(), axis), (true, AbsoluteAxis::Horizontal) | (false, AbsoluteAxis::Vertical));
+        if axis_is_inline {
+            self.is_inline_flow_reversed(direction)
+        } else {
+            self.is_block_flow_reversed()
+        }
     }
 
     /// Project a physical size into this writing mode's logical axes.

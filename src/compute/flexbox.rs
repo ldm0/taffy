@@ -1,13 +1,13 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
 use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
-use crate::geometry::{Line, Point, Rect, Size};
+use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingMode};
 use crate::style::{
     AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
     JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
 use crate::style_helpers::{TaffyMaxContent, TaffyMinContent};
-use crate::tree::{Layout, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
+use crate::tree::{ChildLayoutInput, Layout, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
 use crate::tree::{LayoutFlexboxContainer, LayoutPartialTreeExt, NodeId};
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, new_vec_with_capacity, Vec};
@@ -40,6 +40,90 @@ impl UsedFlexBasis {
     /// Whether flex sizing must obtain the basis from content.
     fn is_content(self) -> bool {
         matches!(self, Self::Content)
+    }
+}
+
+/// The container's logical flex flow normalized into the physical coordinate
+/// system used by [`Layout`].
+///
+/// CSS defines row/column and their start edges in flow-relative axes, while
+/// Taffy stores fragments in x/y coordinates. Keeping that projection here
+/// gives the rest of the algorithm one coherent physical main/cross space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FlexFlow {
+    /// Main-axis orientation and reversal in physical coordinates.
+    direction: FlexDirection,
+    /// Direction of the physical horizontal axis, wherever it appears in the
+    /// main/cross pair.
+    horizontal_direction: Direction,
+    /// Whether the main axis is the container's logical inline axis.
+    main_axis_is_inline: bool,
+    /// Whether the container's logical main-start lies at the physical high
+    /// coordinate of the main axis.
+    main_axis_start_reversed: bool,
+    /// Whether the container's logical cross-start lies at the physical high
+    /// coordinate of the cross axis.
+    cross_axis_start_reversed: bool,
+    /// Whether flex-start lies at the physical high coordinate of the main
+    /// axis after applying `*-reverse`.
+    main_axis_flex_start_reversed: bool,
+    /// Whether flex-start lies at the physical high coordinate of the cross
+    /// axis after applying `wrap-reverse`.
+    cross_axis_flex_start_reversed: bool,
+    /// Whether the physical cross axis is reversed after combining its base
+    /// writing-mode direction with `wrap-reverse`.
+    cross_axis_reversed: bool,
+}
+
+impl FlexFlow {
+    /// Resolve a logical flex flow into the physical coordinate system used by
+    /// Taffy's stored layout rectangles.
+    fn resolve(
+        flex_direction: FlexDirection,
+        flex_wrap: FlexWrap,
+        writing_mode: WritingMode,
+        inline_direction: Direction,
+    ) -> Self {
+        let main_axis_is_inline = flex_direction.is_row();
+        let authored_main_reversed = flex_direction.is_reverse();
+        let authored_cross_reversed = flex_wrap == FlexWrap::WrapReverse;
+        let main_axis = if main_axis_is_inline { writing_mode.inline_axis() } else { writing_mode.block_axis() };
+        let base_main_reversed = if main_axis_is_inline {
+            writing_mode.is_inline_flow_reversed(inline_direction)
+        } else {
+            writing_mode.is_block_flow_reversed()
+        };
+        let base_cross_reversed = if main_axis_is_inline {
+            writing_mode.is_block_flow_reversed()
+        } else {
+            writing_mode.is_inline_flow_reversed(inline_direction)
+        };
+
+        // Horizontal start-edge reversal is represented by `Direction`; a
+        // vertical start-edge reversal is represented by the normalized flex
+        // direction or cross-axis reversal flag.
+        let main_is_horizontal = main_axis == AbsoluteAxis::Horizontal;
+        let physical_main_reversed = authored_main_reversed ^ (!main_is_horizontal && base_main_reversed);
+        let direction = match (main_axis, physical_main_reversed) {
+            (AbsoluteAxis::Horizontal, false) => FlexDirection::Row,
+            (AbsoluteAxis::Horizontal, true) => FlexDirection::RowReverse,
+            (AbsoluteAxis::Vertical, false) => FlexDirection::Column,
+            (AbsoluteAxis::Vertical, true) => FlexDirection::ColumnReverse,
+        };
+        let horizontal_axis_reversed = if main_is_horizontal { base_main_reversed } else { base_cross_reversed };
+        let horizontal_direction = if horizontal_axis_reversed { Direction::Rtl } else { Direction::Ltr };
+        let cross_axis_reversed = authored_cross_reversed ^ (main_is_horizontal && base_cross_reversed);
+
+        Self {
+            direction,
+            horizontal_direction,
+            main_axis_is_inline,
+            main_axis_start_reversed: base_main_reversed,
+            cross_axis_start_reversed: base_cross_reversed,
+            main_axis_flex_start_reversed: base_main_reversed ^ authored_main_reversed,
+            cross_axis_flex_start_reversed: base_cross_reversed ^ authored_cross_reversed,
+            cross_axis_reversed,
+        }
     }
 }
 
@@ -177,16 +261,34 @@ struct FlexLine<'a> {
 struct AlgoConstants {
     /// The direction of the current segment being laid out
     dir: FlexDirection,
-    /// The layout direction of the current segment being laid out
-    layout_direction: Direction,
-    /// Is this segment a row
+    /// The CSS inline direction inherited by the container.
+    inline_direction: Direction,
+    /// The direction of the physical horizontal axis.
+    horizontal_direction: Direction,
+    /// Is the physical main axis horizontal?
     is_row: bool,
-    /// Is this segment a column
+    /// Is the physical main axis vertical?
     is_column: bool,
+    /// Does the main axis use the container's logical inline axis?
+    main_axis_is_inline: bool,
+    /// Does the main axis use the container's logical block axis?
+    main_axis_is_block: bool,
+    /// Whether logical main-start is the physical high edge.
+    main_axis_start_reversed: bool,
+    /// Whether logical cross-start is the physical high edge.
+    cross_axis_start_reversed: bool,
+    /// Whether flex main-start is the physical high edge.
+    main_axis_flex_start_reversed: bool,
+    /// Whether flex cross-start is the physical high edge.
+    cross_axis_flex_start_reversed: bool,
     /// Is wrapping enabled (in either direction)
     is_wrap: bool,
-    /// Is the wrap direction inverted
+    /// Whether physical cross-start is the axis's high coordinate. Horizontal
+    /// reversal remains represented by `horizontal_direction`.
     is_wrap_reverse: bool,
+
+    /// Writing mode that owns the container's logical axes.
+    writing_mode: WritingMode,
 
     /// The item's min_size style
     min_size: Size<Option<f32>>,
@@ -250,6 +352,8 @@ pub fn compute_flexbox_layout(
     node: NodeId,
     inputs: LayoutInput,
 ) -> LayoutOutput {
+    let writing_mode = tree.get_writing_mode(node);
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let style = tree.get_flexbox_container_style(node);
@@ -260,8 +364,8 @@ pub fn compute_flexbox_layout(
     } else {
         resolved_aspect_ratio.disabled()
     };
-    let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-    let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
@@ -343,7 +447,7 @@ pub fn compute_flexbox_layout(
 
 /// Compute a preliminary size for an item
 fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
-    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, sizing_mode, .. } = inputs;
+    let writing_mode = tree.get_writing_mode(node);
 
     // Define some general constants we will need for the remainder of the algorithm.
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
@@ -352,11 +456,11 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
         tree,
         tree.get_flexbox_container_style(node),
         scrollbar_insets,
-        known_dimensions,
-        parent_size,
-        sizing_mode,
+        inputs,
         aspect_ratio,
+        writing_mode,
     );
+    let LayoutInput { known_dimensions, available_space, run_mode, .. } = inputs;
 
     // 9. Flex Layout Algorithm
 
@@ -416,11 +520,10 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
         // Re-resolve percentage gaps
         let style = tree.get_flexbox_container_style(node);
         let inner_container_size = constants.inner_container_size.main(constants.dir);
-        let new_gap = style
-            .gap()
-            .main(constants.dir)
-            .maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis))
-            .unwrap_or(0.0);
+        let raw_gap = style.gap();
+        let logical_main_gap = if constants.main_axis_is_inline { raw_gap.width } else { raw_gap.height };
+        let new_gap =
+            logical_main_gap.maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis)).unwrap_or(0.0);
         constants.gap.set_main(constants.dir, new_gap);
     }
 
@@ -492,7 +595,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
         // A wrapped column flex container can change its intrinsic inline size
         // when its block constraint changes even if no individual item reports
         // a dependency (the number of columns itself may change).
-        let depends_on_block_constraints = (constants.is_column && constants.is_wrap)
+        let depends_on_block_constraints = (constants.main_axis_is_block && constants.is_wrap)
             || flex_lines.iter().flat_map(|line| line.items.iter()).any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(constants.container_size)
             .with_block_constraint_dependency(depends_on_block_constraints);
@@ -518,11 +621,14 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
             tree.set_unrounded_layout(child, &Layout::with_order(order as u32));
             tree.perform_child_layout(
                 child,
-                Size::NONE,
-                Size::NONE,
-                Size::MAX_CONTENT,
-                SizingMode::InherentSize,
-                Line::FALSE,
+                ChildLayoutInput::new(
+                    Size::NONE,
+                    Size::NONE,
+                    writing_mode,
+                    Size::MAX_CONTENT,
+                    SizingMode::InherentSize,
+                    Line::FALSE,
+                ),
             );
         }
     }
@@ -537,12 +643,12 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     let first_vertical_baseline = first_line.and_then(|line| {
         line.items
             .iter()
-            .find(|item| constants.is_column || item.align_self == AlignSelf::BASELINE)
+            .find(|item| constants.main_axis_is_block || item.align_self == AlignSelf::BASELINE)
             .or_else(|| line.items.iter().next())
             .map(|child| child.first_baseline)
     });
     let last_vertical_baseline = last_line.and_then(|line| {
-        if constants.is_row {
+        if constants.main_axis_is_inline {
             // Taffy currently supports major (first) baseline-sharing groups.
             // Such a group in the last line takes priority over the fallback
             // last baseline, matching Blink's BaselineAccumulator ordering.
@@ -570,22 +676,29 @@ fn compute_constants(
     tree: &impl LayoutFlexboxContainer,
     style: impl FlexboxContainerStyle,
     scrollbar_insets: Rect<f32>,
-    known_dimensions: Size<Option<f32>>,
-    parent_size: Size<Option<f32>>,
-    sizing_mode: SizingMode,
+    inputs: LayoutInput,
     resolved_aspect_ratio: ResolvedAspectRatio,
+    writing_mode: WritingMode,
 ) -> AlgoConstants {
-    let dir = style.flex_direction();
+    let LayoutInput { known_dimensions, parent_size, sizing_mode, .. } = inputs;
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
+    let authored_direction = style.flex_direction();
+    let flex_wrap = style.flex_wrap();
+    let inline_direction = style.direction();
+    let flow = FlexFlow::resolve(authored_direction, flex_wrap, writing_mode, inline_direction);
+    let dir = flow.direction;
     let is_row = dir.is_row();
     let is_column = dir.is_column();
-    let is_wrap = matches!(style.flex_wrap(), FlexWrap::Wrap | FlexWrap::WrapReverse);
-    let is_wrap_reverse = style.flex_wrap() == FlexWrap::WrapReverse;
+    let main_axis_is_inline = flow.main_axis_is_inline;
+    let main_axis_is_block = !main_axis_is_inline;
+    let is_wrap = matches!(flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
+    let is_wrap_reverse = flow.cross_axis_reversed;
 
     let aspect_ratio =
         if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { resolved_aspect_ratio.disabled() };
-    let margin = style.margin().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-    let padding = style.padding().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-    let border = style.border().resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+    let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
@@ -593,13 +706,25 @@ fn compute_constants(
     let align_items = style.align_items().unwrap_or(AlignItems::STRETCH);
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
     let justify_content = style.justify_content();
-    let layout_direction = style.direction();
+    let horizontal_direction = flow.horizontal_direction;
 
     let content_box_inset = padding + border + scrollbar_insets;
 
     let node_outer_size = known_dimensions;
     let node_inner_size = node_outer_size.maybe_sub(content_box_inset.sum_axes());
-    let gap = style.gap().resolve_or_zero(node_inner_size.or(Size::zero()), |val, basis| tree.calc(val, basis));
+    let logical_inner_size = writing_mode.to_logical(node_inner_size.or(Size::zero()));
+    let raw_gap = style.gap();
+    let logical_gap = LogicalSize {
+        inline_size: raw_gap
+            .width
+            .maybe_resolve(logical_inner_size.inline_size, |val, basis| tree.calc(val, basis))
+            .unwrap_or(0.0),
+        block_size: raw_gap
+            .height
+            .maybe_resolve(logical_inner_size.block_size, |val, basis| tree.calc(val, basis))
+            .unwrap_or(0.0),
+    };
+    let gap = writing_mode.to_physical(logical_gap);
 
     let container_size = Size::zero();
     let inner_container_size = Size::zero();
@@ -622,11 +747,19 @@ fn compute_constants(
 
     AlgoConstants {
         dir,
-        layout_direction,
+        inline_direction,
+        horizontal_direction,
         is_row,
         is_column,
+        main_axis_is_inline,
+        main_axis_is_block,
+        main_axis_start_reversed: flow.main_axis_start_reversed,
+        cross_axis_start_reversed: flow.cross_axis_start_reversed,
+        main_axis_flex_start_reversed: flow.main_axis_flex_start_reversed,
+        cross_axis_flex_start_reversed: flow.cross_axis_flex_start_reversed,
         is_wrap,
         is_wrap_reverse,
+        writing_mode,
         min_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.min_size } else { Size::NONE },
         max_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.max_size } else { Size::NONE },
         margin,
@@ -663,18 +796,18 @@ fn generate_anonymous_flex_items(
         .filter_map(|(index, child)| {
             let aspect_ratio = tree.get_resolved_aspect_ratio(child);
             let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
+            let child_writing_mode = tree.get_writing_mode(child);
             let child_style = tree.get_flexbox_child_style(child);
             if child_style.position() == Position::Absolute
                 || child_style.box_generation_mode() == BoxGenerationMode::None
             {
                 return None;
             }
-            let padding = child_style
-                .padding()
-                .resolve_or_zero(constants.node_inner_size.width, |val, basis| tree.calc(val, basis));
-            let border = child_style
-                .border()
-                .resolve_or_zero(constants.node_inner_size.width, |val, basis| tree.calc(val, basis));
+            // CSS box-model percentages use the containing block's logical
+            // inline-size, including when that inline axis is vertical.
+            let percentage_basis = constants.writing_mode.to_logical(constants.node_inner_size).inline_size;
+            let padding = child_style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let border = child_style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let pb_sum = (padding + border).sum_axes();
             let box_sizing = child_style.box_sizing();
             let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
@@ -713,13 +846,14 @@ fn generate_anonymous_flex_items(
                 .inset()
                 .zip_size(constants.node_inner_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
             let raw_margin = child_style.margin();
-            let margin =
-                raw_margin.resolve_or_zero(constants.node_inner_size.width, |val, basis| tree.calc(val, basis));
+            let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
             let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
+                child_writing_mode,
                 child_style.direction(),
-                constants.layout_direction,
-                constants.is_column,
+                constants.writing_mode,
+                constants.inline_direction,
+                constants.dir.cross_axis(),
             );
             let overflow = child_style.overflow();
             let flex_grow = child_style.flex_grow();
@@ -743,6 +877,7 @@ fn generate_anonymous_flex_items(
                 known_dimensions: Size::NONE,
                 definite_dimensions: Size::NONE,
                 parent_size: constants.node_inner_size,
+                parent_writing_mode: constants.writing_mode,
                 available_space: child_available_space,
                 vertical_margins_are_collapsible: Line::FALSE,
             };
@@ -1009,7 +1144,8 @@ fn determine_flex_base_size(
             //    for a box in an orthogonal flow [CSS3-WRITING-MODES]. The flex base size
             //    is the item’s max-content main size.
 
-            // TODO if/when vertical writing modes are supported
+            // TODO: implement this orthogonal-flow branch by deriving the
+            // child's fit-content cross constraint from its ConstraintSpace.
 
             // E. Otherwise, size the item into the available space using its used flex basis
             //    in place of its main size, treating a value of content as max-content.
@@ -1033,12 +1169,15 @@ fn determine_flex_base_size(
             debug_log!("COMPUTE CHILD BASE SIZE:");
             let measured = tree.measure_child_size_with_metadata(
                 child.node,
-                child_known_dimensions,
-                child_parent_size,
-                child_available_space,
-                SizingMode::ContentSize,
+                ChildLayoutInput::new(
+                    child_known_dimensions,
+                    child_parent_size,
+                    constants.writing_mode,
+                    child_available_space,
+                    SizingMode::ContentSize,
+                    Line::FALSE,
+                ),
                 dir.main_axis().into(),
-                Line::FALSE,
             );
             child.depends_on_block_constraints |= measured.depends_on_block_constraints;
             break 'flex_basis measured.size.get_abs(dir.main_axis());
@@ -1078,12 +1217,15 @@ fn determine_flex_base_size(
                 debug_log!("COMPUTE CHILD MIN SIZE:");
                 let measured = tree.measure_child_size_with_metadata(
                     child.node,
-                    child_known_dimensions,
-                    child_parent_size,
-                    child_available_space,
-                    SizingMode::ContentSize,
+                    ChildLayoutInput::new(
+                        child_known_dimensions,
+                        child_parent_size,
+                        constants.writing_mode,
+                        child_available_space,
+                        SizingMode::ContentSize,
+                        Line::FALSE,
+                    ),
                     dir.main_axis().into(),
-                    Line::FALSE,
                 );
                 child.depends_on_block_constraints |= measured.depends_on_block_constraints;
                 measured.size.get_abs(dir.main_axis())
@@ -1343,12 +1485,15 @@ fn determine_container_main_size(
                                 debug_log!("COMPUTE CHILD BASE SIZE (for intrinsic main size):");
                                 let measured = tree.measure_child_size_with_metadata(
                                     item.node,
-                                    child_known_dimensions,
-                                    constants.node_inner_size,
-                                    child_available_space,
-                                    SizingMode::InherentSize,
+                                    ChildLayoutInput::new(
+                                        child_known_dimensions,
+                                        constants.node_inner_size,
+                                        constants.writing_mode,
+                                        child_available_space,
+                                        SizingMode::InherentSize,
+                                        Line::FALSE,
+                                    ),
                                     dir.main_axis().into(),
-                                    Line::FALSE,
                                 );
                                 item.depends_on_block_constraints |= measured.depends_on_block_constraints;
                                 let content_main_size =
@@ -1366,7 +1511,7 @@ fn determine_container_main_size(
                                 //
                                 // Ultimately, this was not found by reading the spec, but by trial and error fixing tests to align with Webkit/Firefox output.
                                 // (see the `flex_basis_unconstraint_row` and `flex_basis_uncontraint_column` generated tests which demonstrate this)
-                                if constants.is_row {
+                                if constants.main_axis_is_inline {
                                     content_main_size.maybe_clamp(style_min, style_max)
                                 } else {
                                     content_main_size.max(item.flex_basis).maybe_clamp(style_min, style_max)
@@ -1687,18 +1832,21 @@ fn determine_hypothetical_cross_size(
         let child_inner_cross = child_cross.unwrap_or_else(|| {
             let measured = tree.measure_child_size_with_metadata(
                 child.node,
-                Size {
-                    width: if constants.is_row { child.target_size.width.into() } else { child_cross },
-                    height: if constants.is_row { child_cross } else { child.target_size.height.into() },
-                },
-                constants.node_inner_size,
-                Size {
-                    width: if constants.is_row { child_known_main } else { child_available_cross },
-                    height: if constants.is_row { child_available_cross } else { child_known_main },
-                },
-                SizingMode::ContentSize,
+                ChildLayoutInput::new(
+                    Size {
+                        width: if constants.is_row { child.target_size.width.into() } else { child_cross },
+                        height: if constants.is_row { child_cross } else { child.target_size.height.into() },
+                    },
+                    constants.node_inner_size,
+                    constants.writing_mode,
+                    Size {
+                        width: if constants.is_row { child_known_main } else { child_available_cross },
+                        height: if constants.is_row { child_available_cross } else { child_known_main },
+                    },
+                    SizingMode::ContentSize,
+                    Line::FALSE,
+                ),
                 constants.dir.cross_axis().into(),
-                Line::FALSE,
             );
             child.depends_on_block_constraints |= measured.depends_on_block_constraints;
             measured
@@ -1723,10 +1871,10 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
-    // Only compute baselines for flex rows because we only support baseline alignment in the cross axis
-    // where that axis is also the inline axis
-    // TODO: this may need revisiting if/when we support vertical writing modes
-    if !constants.is_row {
+    // Baseline sharing currently consumes the physical y baseline synthesized
+    // by leaf/block layout. A vertical inline axis needs physical x-baseline
+    // propagation before it can participate here.
+    if !constants.main_axis_is_inline || !constants.is_row {
         return;
     }
 
@@ -1746,33 +1894,36 @@ fn calculate_children_base_lines(
 
             let measured_size_and_baselines = tree.perform_child_layout(
                 child.node,
-                Size {
-                    width: if constants.is_row {
-                        child.target_size.width.into()
-                    } else {
-                        child.hypothetical_inner_size.width.into()
+                ChildLayoutInput::new(
+                    Size {
+                        width: if constants.is_row {
+                            child.target_size.width.into()
+                        } else {
+                            child.hypothetical_inner_size.width.into()
+                        },
+                        height: if constants.is_row {
+                            child.hypothetical_inner_size.height.into()
+                        } else {
+                            child.target_size.height.into()
+                        },
                     },
-                    height: if constants.is_row {
-                        child.hypothetical_inner_size.height.into()
-                    } else {
-                        child.target_size.height.into()
+                    constants.node_inner_size,
+                    constants.writing_mode,
+                    Size {
+                        width: if constants.is_row {
+                            constants.container_size.width.into()
+                        } else {
+                            available_space.width.maybe_set(node_size.width)
+                        },
+                        height: if constants.is_row {
+                            available_space.height.maybe_set(node_size.height)
+                        } else {
+                            constants.container_size.height.into()
+                        },
                     },
-                },
-                constants.node_inner_size,
-                Size {
-                    width: if constants.is_row {
-                        constants.container_size.width.into()
-                    } else {
-                        available_space.width.maybe_set(node_size.width)
-                    },
-                    height: if constants.is_row {
-                        available_space.height.maybe_set(node_size.height)
-                    } else {
-                        constants.container_size.height.into()
-                    },
-                },
-                SizingMode::ContentSize,
-                Line::FALSE,
+                    SizingMode::ContentSize,
+                    Line::FALSE,
+                ),
             );
 
             let baseline = measured_size_and_baselines.first_baselines.y;
@@ -1922,12 +2073,11 @@ fn determine_used_cross_size(
                     // For some reason this particular usage of max_width is an exception to the rule that max_width's transfer
                     // using the aspect_ratio (if set). Both Chrome and Firefox agree on this. And reading the spec, it seems like
                     // a reasonable interpretation. Although it seems to me that the spec *should* apply aspect_ratio here.
-                    let padding = child_style
-                        .padding()
-                        .resolve_or_zero(constants.node_inner_size, |val, basis| tree.calc(val, basis));
-                    let border = child_style
-                        .border()
-                        .resolve_or_zero(constants.node_inner_size, |val, basis| tree.calc(val, basis));
+                    let percentage_basis = constants.writing_mode.to_logical(constants.node_inner_size).inline_size;
+                    let padding =
+                        child_style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+                    let border =
+                        child_style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
                     let pb_sum = (padding + border).sum_axes();
                     let box_sizing_adjustment =
                         if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
@@ -2110,8 +2260,6 @@ fn align_flex_items_along_cross_axis(
     max_baseline_to_bottom_distance: f32,
     constants: &AlgoConstants,
 ) -> f32 {
-    let cross_axis_should_reverse = constants.is_column && matches!(constants.layout_direction, Direction::Rtl);
-
     // If align-self uses a "safe" overflow-position keyword and the item would overflow its
     // line cross size, fall back to logical Start to avoid data loss. See CSS Box Alignment 3
     // §4.3 <https://www.w3.org/TR/css-align-3/#overflow-values>. Otherwise, drop the safety
@@ -2124,28 +2272,28 @@ fn align_flex_items_along_cross_axis(
 
     match align_keyword {
         AlignItemsKeyword::Start => {
-            if cross_axis_should_reverse {
+            if constants.cross_axis_start_reversed {
                 free_space
             } else {
                 0.0
             }
         }
         AlignItemsKeyword::FlexStart => {
-            if constants.is_wrap_reverse ^ cross_axis_should_reverse {
+            if constants.cross_axis_flex_start_reversed {
                 free_space
             } else {
                 0.0
             }
         }
         AlignItemsKeyword::End => {
-            if cross_axis_should_reverse {
+            if constants.cross_axis_start_reversed {
                 0.0
             } else {
                 free_space
             }
         }
         AlignItemsKeyword::FlexEnd => {
-            if constants.is_wrap_reverse ^ cross_axis_should_reverse {
+            if constants.cross_axis_flex_start_reversed {
                 0.0
             } else {
                 free_space
@@ -2163,10 +2311,9 @@ fn align_flex_items_along_cross_axis(
                     max_baseline - child.alignment_baseline
                 }
             } else {
-                // Until we support vertical writing modes, baseline alignment only makes sense if
-                // the constants.direction is row, so we treat it as flex-start alignment in columns.
-                let baseline_column_should_reverse = cross_axis_should_reverse && !constants.is_wrap;
-                if constants.is_wrap_reverse ^ baseline_column_should_reverse {
+                // Taffy does not yet synthesize vertical baselines, so use the
+                // flex-start fallback on a vertical cross axis.
+                if constants.cross_axis_flex_start_reversed {
                     free_space
                 } else {
                     0.0
@@ -2174,7 +2321,7 @@ fn align_flex_items_along_cross_axis(
             }
         }
         AlignItemsKeyword::Stretch => {
-            if constants.is_wrap_reverse ^ cross_axis_should_reverse {
+            if constants.cross_axis_flex_start_reversed {
                 free_space
             } else {
                 0.0
@@ -2248,8 +2395,7 @@ fn align_flex_lines_per_align_content(flex_lines: &mut [FlexLine], constants: &A
     }
 }
 
-/// Calculates the layout for a flex-item
-#[allow(clippy::too_many_arguments)]
+/// Calculates the layout for a flex-item.
 fn calculate_flex_item(
     tree: &mut impl LayoutFlexboxContainer,
     item: &mut FlexItem,
@@ -2257,20 +2403,20 @@ fn calculate_flex_item(
     total_offset_cross: f32,
     line_offset_cross: f32,
     #[cfg(feature = "content_size")] total_content_size: &mut Size<f32>,
-    #[cfg(feature = "content_size")] border: Rect<f32>,
-    #[cfg(feature = "content_size")] scrollbar_insets: Rect<f32>,
-    container_size: Size<f32>,
-    node_inner_size: Size<Option<f32>>,
-    direction: FlexDirection,
-    layout_direction: Direction,
+    constants: &AlgoConstants,
 ) {
+    let direction = constants.dir;
+    let horizontal_direction = constants.horizontal_direction;
     let layout_output = tree.perform_child_layout(
         item.node,
-        item.target_size.map(|s| s.into()),
-        node_inner_size,
-        container_size.map(|s| s.into()),
-        SizingMode::ContentSize,
-        Line::FALSE,
+        ChildLayoutInput::new(
+            item.target_size.map(|s| s.into()),
+            constants.node_inner_size,
+            constants.writing_mode,
+            constants.container_size.map(|s| s.into()),
+            SizingMode::ContentSize,
+            Line::FALSE,
+        ),
     );
     let LayoutOutput {
         size,
@@ -2279,8 +2425,8 @@ fn calculate_flex_item(
         ..
     } = layout_output;
 
-    let is_rtl_row = direction.is_row() && layout_direction.is_rtl();
-    let is_rtl_column = direction.is_column() && layout_direction.is_rtl();
+    let is_rtl_row = direction.is_row() && horizontal_direction.is_rtl();
+    let is_rtl_column = direction.is_column() && horizontal_direction.is_rtl();
     let main_relative_inset = if is_rtl_row {
         item.inset.main_end(direction).or(item.inset.main_start(direction).map(|pos| -pos)).unwrap_or(0.0)
     } else {
@@ -2366,10 +2512,10 @@ fn calculate_flex_item(
         let contribution_location = content_size_contribution_location(
             location,
             size,
-            container_size.width,
-            border,
-            scrollbar_insets,
-            layout_direction,
+            constants.container_size.width,
+            constants.border,
+            constants.scrollbar_insets,
+            horizontal_direction,
         );
         *total_content_size = total_content_size.f32_max(compute_content_size_contribution(
             contribution_location,
@@ -2380,29 +2526,24 @@ fn calculate_flex_item(
     }
 }
 
-/// Calculates the layout line
-#[allow(clippy::too_many_arguments)]
+/// Calculates the layout line.
 fn calculate_layout_line(
     tree: &mut impl LayoutFlexboxContainer,
     line: &mut FlexLine,
     total_offset_cross: &mut f32,
     #[cfg(feature = "content_size")] content_size: &mut Size<f32>,
-    #[cfg(feature = "content_size")] border: Rect<f32>,
-    #[cfg(feature = "content_size")] scrollbar_insets: Rect<f32>,
-    container_size: Size<f32>,
-    node_inner_size: Size<Option<f32>>,
-    padding_border: Rect<f32>,
-    direction: FlexDirection,
-    layout_direction: Direction,
+    constants: &AlgoConstants,
 ) {
-    let mut total_offset_main = if layout_direction.is_rtl() && direction.is_row() {
-        container_size.width - padding_border.main_end(direction)
+    let direction = constants.dir;
+    let horizontal_direction = constants.horizontal_direction;
+    let mut total_offset_main = if horizontal_direction.is_rtl() && direction.is_row() {
+        constants.container_size.width - constants.content_box_inset.main_end(direction)
     } else {
-        padding_border.main_start(direction)
+        constants.content_box_inset.main_start(direction)
     };
     let line_offset_cross = line.offset_cross;
 
-    let is_rtl_column = layout_direction.is_rtl() && direction.is_column();
+    let is_rtl_column = horizontal_direction.is_rtl() && direction.is_column();
     if is_rtl_column {
         *total_offset_cross -= line_offset_cross + line.cross_size;
     }
@@ -2417,14 +2558,7 @@ fn calculate_layout_line(
                 line_offset_cross,
                 #[cfg(feature = "content_size")]
                 content_size,
-                #[cfg(feature = "content_size")]
-                border,
-                #[cfg(feature = "content_size")]
-                scrollbar_insets,
-                container_size,
-                node_inner_size,
-                direction,
-                layout_direction,
+                constants,
             );
         }
     } else {
@@ -2437,14 +2571,7 @@ fn calculate_layout_line(
                 line_offset_cross,
                 #[cfg(feature = "content_size")]
                 content_size,
-                #[cfg(feature = "content_size")]
-                border,
-                #[cfg(feature = "content_size")]
-                scrollbar_insets,
-                container_size,
-                node_inner_size,
-                direction,
-                layout_direction,
+                constants,
             );
         }
     }
@@ -2461,7 +2588,7 @@ fn final_layout_pass(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) -> Size<f32> {
-    let mut total_offset_cross = if constants.is_column && constants.layout_direction.is_rtl() {
+    let mut total_offset_cross = if constants.is_column && constants.horizontal_direction.is_rtl() {
         constants.container_size.width - constants.content_box_inset.cross_end(constants.dir)
     } else {
         constants.content_box_inset.cross_start(constants.dir)
@@ -2478,15 +2605,7 @@ fn final_layout_pass(
                 &mut total_offset_cross,
                 #[cfg(feature = "content_size")]
                 &mut content_size,
-                #[cfg(feature = "content_size")]
-                constants.border,
-                #[cfg(feature = "content_size")]
-                constants.scrollbar_insets,
-                constants.container_size,
-                constants.node_inner_size,
-                constants.content_box_inset,
-                constants.dir,
-                constants.layout_direction,
+                constants,
             );
         }
     } else {
@@ -2497,20 +2616,12 @@ fn final_layout_pass(
                 &mut total_offset_cross,
                 #[cfg(feature = "content_size")]
                 &mut content_size,
-                #[cfg(feature = "content_size")]
-                constants.border,
-                #[cfg(feature = "content_size")]
-                constants.scrollbar_insets,
-                constants.container_size,
-                constants.node_inner_size,
-                constants.content_box_inset,
-                constants.dir,
-                constants.layout_direction,
+                constants,
             );
         }
     }
 
-    content_size.width += if constants.layout_direction.is_rtl() {
+    content_size.width += if constants.horizontal_direction.is_rtl() {
         constants.content_box_inset.left - constants.border.left - constants.scrollbar_insets.left
     } else {
         constants.content_box_inset.right - constants.border.right - constants.scrollbar_insets.right
@@ -2532,6 +2643,7 @@ fn perform_absolute_layout_on_absolute_children(
     let container_height = constants.container_size.height;
     let inset_relative_size =
         constants.container_size - constants.border.sum_axes() - constants.scrollbar_insets.sum_axes();
+    let percentage_basis = constants.writing_mode.to_logical(inset_relative_size).inline_size;
 
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
     let mut content_size = Size::ZERO;
@@ -2540,6 +2652,7 @@ fn perform_absolute_layout_on_absolute_children(
         let child = tree.get_child_id(node, order);
         let aspect_ratio = tree.get_resolved_aspect_ratio(child);
         let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
+        let child_writing_mode = tree.get_writing_mode(child);
         let child_style = tree.get_flexbox_child_style(child);
 
         // Skip items that are display:none or are not position:absolute
@@ -2550,17 +2663,17 @@ fn perform_absolute_layout_on_absolute_children(
 
         let overflow = child_style.overflow();
         let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
+            child_writing_mode,
             child_style.direction(),
-            constants.layout_direction,
-            constants.is_column,
+            constants.writing_mode,
+            constants.inline_direction,
+            constants.dir.cross_axis(),
         );
         let margin = child_style
             .margin()
-            .map(|margin| margin.resolve_to_option(inset_relative_size.width, |val, basis| tree.calc(val, basis)));
-        let padding =
-            child_style.padding().resolve_or_zero(Some(inset_relative_size.width), |val, basis| tree.calc(val, basis));
-        let border =
-            child_style.border().resolve_or_zero(Some(inset_relative_size.width), |val, basis| tree.calc(val, basis));
+            .map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
+        let padding = child_style.padding().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
+        let border = child_style.border().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
         let padding_border_sum = (padding + border).sum_axes();
         let box_sizing = child_style.box_sizing();
         let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
@@ -2607,6 +2720,7 @@ fn perform_absolute_layout_on_absolute_children(
             known_dimensions: Size { width: None, height: style_size.height },
             definite_dimensions: Size::NONE,
             parent_size: constants.node_inner_size,
+            parent_writing_mode: constants.writing_mode,
             available_space: Size {
                 width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
                 height: AvailableSpace::Definite(container_height),
@@ -2665,11 +2779,20 @@ fn perform_absolute_layout_on_absolute_children(
             known_dimensions.width = Some(fit_content_width(
                 tree,
                 child,
-                known_dimensions,
-                constants.node_inner_size,
-                AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                ChildLayoutInput::new(
+                    known_dimensions,
+                    constants.node_inner_size,
+                    constants.writing_mode,
+                    Size {
+                        width: AvailableSpace::Definite(available_width),
+                        height: AvailableSpace::Definite(
+                            container_height.maybe_clamp(min_size.height, max_size.height),
+                        ),
+                    },
+                    SizingMode::InherentSize,
+                    Line::FALSE,
+                ),
                 available_width,
-                SizingMode::InherentSize,
             ));
             known_dimensions = known_dimensions
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
@@ -2677,27 +2800,33 @@ fn perform_absolute_layout_on_absolute_children(
         }
         let measured_size = tree.measure_child_size_both(
             child,
-            known_dimensions,
-            constants.node_inner_size,
-            Size {
-                width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
-            },
-            SizingMode::InherentSize,
-            Line::FALSE,
+            ChildLayoutInput::new(
+                known_dimensions,
+                constants.node_inner_size,
+                constants.writing_mode,
+                Size {
+                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                },
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
         );
         let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
 
         let layout_output = tree.perform_child_layout(
             child,
-            final_size.map(Some),
-            constants.node_inner_size,
-            Size {
-                width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
-            },
-            SizingMode::InherentSize,
-            Line::FALSE,
+            ChildLayoutInput::new(
+                final_size.map(Some),
+                constants.node_inner_size,
+                constants.writing_mode,
+                Size {
+                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                },
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
         );
 
         let non_auto_margin = margin.map(|m| m.unwrap_or(0.0));
@@ -2744,14 +2873,30 @@ fn perform_absolute_layout_on_absolute_children(
         let (start_cross, end_cross) = if constants.is_row { (top, bottom) } else { (left, right) };
         let main_axis_is_horizontal = constants.is_row;
         let cross_axis_is_horizontal = !constants.is_row;
-        let main_is_rtl = main_axis_is_horizontal && constants.layout_direction.is_rtl();
-        let cross_is_rtl = cross_axis_is_horizontal && constants.layout_direction.is_rtl();
-        let main_axis_flex_start_reversed = constants.dir.is_reverse() ^ main_is_rtl;
-        let cross_axis_flex_start_reversed = constants.is_wrap_reverse ^ cross_is_rtl;
-        let main_start_scrollbar_offset = constants.scrollbar_insets.main_start(constants.dir);
-        let cross_start_scrollbar_offset = constants.scrollbar_insets.cross_start(constants.dir);
-        let main_end_scrollbar_offset = constants.scrollbar_insets.main_end(constants.dir);
-        let cross_end_scrollbar_offset = constants.scrollbar_insets.cross_end(constants.dir);
+        let main_is_rtl = main_axis_is_horizontal && constants.horizontal_direction.is_rtl();
+        let cross_is_rtl = cross_axis_is_horizontal && constants.horizontal_direction.is_rtl();
+        let main_axis_flex_start_reversed = constants.main_axis_flex_start_reversed;
+        let cross_axis_flex_start_reversed = constants.cross_axis_flex_start_reversed;
+        let main_start_scrollbar_offset = if main_axis_flex_start_reversed {
+            constants.scrollbar_insets.main_end(constants.dir)
+        } else {
+            constants.scrollbar_insets.main_start(constants.dir)
+        };
+        let cross_start_scrollbar_offset = if cross_axis_flex_start_reversed {
+            constants.scrollbar_insets.cross_end(constants.dir)
+        } else {
+            constants.scrollbar_insets.cross_start(constants.dir)
+        };
+        let main_end_scrollbar_offset = if main_axis_flex_start_reversed {
+            constants.scrollbar_insets.main_start(constants.dir)
+        } else {
+            constants.scrollbar_insets.main_end(constants.dir)
+        };
+        let cross_end_scrollbar_offset = if cross_axis_flex_start_reversed {
+            constants.scrollbar_insets.cross_start(constants.dir)
+        } else {
+            constants.scrollbar_insets.cross_end(constants.dir)
+        };
 
         // Apply main-axis alignment
         // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
@@ -2789,8 +2934,8 @@ fn perform_absolute_layout_on_absolute_children(
             // reversed flex-directions), whereas `flex-start`/`flex-end` and the
             // distributed keywords' fallbacks are flex-relative.
             let start_position = match constants.justify_content.unwrap_or(JustifyContent::FLEX_START).keyword() {
-                AlignContentKeyword::Start => !main_is_rtl,
-                AlignContentKeyword::End => main_is_rtl,
+                AlignContentKeyword::Start => !constants.main_axis_start_reversed,
+                AlignContentKeyword::End => constants.main_axis_start_reversed,
                 _ => true,
             };
             match (
@@ -2869,8 +3014,8 @@ fn perform_absolute_layout_on_absolute_children(
             // writing-mode relative: they flip for RTL but not for `wrap-reverse`.
             // `flex-start`/`flex-end` and the `stretch` fallback are flex-relative.
             let start_position = match cross_keyword {
-                AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => !cross_is_rtl,
-                AlignItemsKeyword::End => cross_is_rtl,
+                AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => !constants.cross_axis_start_reversed,
+                AlignItemsKeyword::End => constants.cross_axis_start_reversed,
                 _ => true,
             };
             match (cross_keyword, cross_axis_flex_start_reversed) {
@@ -2953,7 +3098,7 @@ fn perform_absolute_layout_on_absolute_children(
                 let relative_location =
                     Point { x: location.x - absolute_area_offset.x, y: location.y - absolute_area_offset.y };
                 let content_size_contribution = Size {
-                    width: if constants.layout_direction.is_rtl() {
+                    width: if constants.horizontal_direction.is_rtl() {
                         let overflow_extra_width =
                             f32_max(size_content_size_contribution.width - final_size.width, 0.0);
                         f32_max(inset_relative_size.width - relative_location.x, 0.0) + overflow_extra_width

@@ -2,7 +2,7 @@
 
 #![allow(clippy::unusual_byte_groupings)]
 
-use crate::geometry::Size;
+use crate::geometry::{LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{IntrinsicSizeResult, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
 use crate::RequestedAxis;
@@ -48,10 +48,10 @@ fn option_cache_key(input: Option<f32>) -> u32 {
     }
 }
 
-/// Pack `Size<Option<f32>>` into `u64`
+/// Pack a logical optional size into a cache key with inline-size first.
 #[inline(always)]
-fn size_option_cache_key(input: Size<Option<f32>>) -> u64 {
-    (option_cache_key(input.width) as u64) << 32 | option_cache_key(input.height) as u64
+fn logical_size_option_cache_key(input: LogicalSize<Option<f32>>) -> u64 {
+    (option_cache_key(input.inline_size) as u64) << 32 | option_cache_key(input.block_size) as u64
 }
 
 /// Pack `AvailableSpace` into `u32`
@@ -91,8 +91,10 @@ fn size_mixed_cache_key(kd: Size<Option<f32>>, avs: Size<AvailableSpace>) -> u64
 struct CacheKey {
     /// The initial cached size of the node itself
     kd_available_space: u64,
-    /// The initial cached size of the parent's node
-    parent_size: u64,
+    /// The containing block size in its own logical axes.
+    logical_parent_size: u64,
+    /// Writing mode that owns the containing block size.
+    parent_writing_mode: WritingMode,
     /// Whether inherent size styles participate in this computation.
     sizing_mode: SizingMode,
     /// Whether this result is final layout or an intrinsic contribution.
@@ -103,7 +105,7 @@ impl CacheKey {
     #[inline(always)]
     /// Return the inline parent size together with the requested-axis bits.
     fn inline_parent_size_and_axis(&self) -> u64 {
-        self.parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
+        self.logical_parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
     }
 }
 
@@ -118,7 +120,11 @@ impl From<&LayoutInput> for CacheKey {
 
         Self {
             kd_available_space: size_mixed_cache_key(input.known_dimensions, input.available_space),
-            parent_size: (size_option_cache_key(input.parent_size) & NON_SIGN_BITS_MASK) | extra_bits,
+            logical_parent_size: (logical_size_option_cache_key(
+                input.parent_writing_mode.to_logical(input.parent_size),
+            ) & NON_SIGN_BITS_MASK)
+                | extra_bits,
+            parent_writing_mode: input.parent_writing_mode,
             sizing_mode: input.sizing_mode,
             sizing_purpose: input.sizing_purpose,
         }
@@ -270,6 +276,7 @@ impl Cache {
         for entry in self.measure_entries.iter().flatten() {
             if entry.key.kd_available_space == key.kd_available_space
                 && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
+                && entry.key.parent_writing_mode == key.parent_writing_mode
                 && entry.key.sizing_mode == key.sizing_mode
                 && entry.key.sizing_purpose == key.sizing_purpose
             {
@@ -376,7 +383,7 @@ pub enum ClearState {
 #[cfg(test)]
 mod tests {
     use super::Cache;
-    use crate::geometry::{Line, Size};
+    use crate::geometry::{Line, Size, WritingMode};
     use crate::style::AvailableSpace;
     use crate::tree::{
         IntrinsicSizeResult, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose,
@@ -391,6 +398,7 @@ mod tests {
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size::NONE,
+            parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
             vertical_margins_are_collapsible: Line::FALSE,
         }
@@ -469,5 +477,35 @@ mod tests {
         assert_eq!(cache.get(&input).unwrap().size.width, 100.0);
         input.parent_size.height = Some(50.0);
         assert_eq!(cache.get(&input).unwrap().size.width, 50.0);
+    }
+
+    #[test]
+    fn vertical_measurements_key_the_parent_inline_axis_in_logical_space() {
+        let mut cache = Cache::new();
+        let mut initial = input(SizingPurpose::IntrinsicContribution);
+        initial.parent_writing_mode = WritingMode::VerticalRl;
+        initial.parent_size = Size { width: Some(100.0), height: Some(200.0) };
+        cache.store(&initial, LayoutOutput::from_outer_size(Size { width: 80.0, height: 20.0 }));
+
+        let mut changed_block_constraint = initial;
+        changed_block_constraint.parent_size.width = Some(50.0);
+        assert_eq!(cache.get(&changed_block_constraint).unwrap().size.width, 80.0);
+
+        let mut changed_inline_constraint = initial;
+        changed_inline_constraint.parent_size.height = Some(150.0);
+        assert!(cache.get(&changed_inline_constraint).is_none());
+    }
+
+    #[test]
+    fn measurements_from_different_parent_writing_modes_do_not_alias() {
+        let mut cache = Cache::new();
+        let mut horizontal = input(SizingPurpose::IntrinsicContribution);
+        horizontal.parent_size = Size { width: Some(100.0), height: Some(100.0) };
+        cache.store(&horizontal, LayoutOutput::from_outer_size(Size { width: 80.0, height: 20.0 }));
+
+        let mut vertical = horizontal;
+        vertical.parent_writing_mode = WritingMode::VerticalRl;
+
+        assert!(cache.get(&vertical).is_none());
     }
 }

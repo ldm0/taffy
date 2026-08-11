@@ -10,6 +10,7 @@ mod node;
 pub mod traits;
 
 pub use cache::{Cache, ClearState};
+pub(crate) use layout::ChildLayoutInput;
 pub use layout::{
     CollapsibleMarginSet, ConstraintSpace, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, RequestedAxis,
     RunMode, SizingMode, SizingPurpose,
