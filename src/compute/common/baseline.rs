@@ -1,7 +1,84 @@
-//! Conversion between physical baseline sets and a formatting context's
-//! logical block axis.
+//! Baseline projection, synthesis, and baseline-sharing group selection.
 
 use crate::geometry::{Point, Size, WritingDirection};
+use crate::{Direction, WritingMode};
+
+/// One of the two baseline-sharing groups that may occupy an alignment axis.
+/// The major group is placed toward the axis start and the minor group toward
+/// its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaselineGroup {
+    /// Baselines aligned toward the alignment axis start.
+    Major,
+    /// Baselines aligned toward the alignment axis end.
+    Minor,
+}
+
+/// Select the writing mode in which a child's baseline participates in an
+/// alignment context.
+///
+/// This implements CSS Box Alignment's baseline-generation rules. A flex row
+/// establishes a parallel alignment context; a flex column establishes a
+/// perpendicular one.
+pub(crate) fn determine_baseline_writing_mode(
+    container: WritingDirection,
+    child: WritingMode,
+    is_parallel_context: bool,
+) -> WritingMode {
+    let orthogonal_mode = if is_parallel_context {
+        container.mode
+    } else if child.is_horizontal() {
+        if container.direction == Direction::Ltr {
+            WritingMode::VerticalLr
+        } else {
+            WritingMode::VerticalRl
+        }
+    } else {
+        WritingMode::HorizontalTb
+    };
+    let child_is_parallel = !container.mode.is_orthogonal_to(child);
+
+    match (is_parallel_context, child_is_parallel) {
+        (true, true) | (false, false) => child,
+        (true, false) | (false, true) => orthogonal_mode,
+    }
+}
+
+/// Select the first-baseline sharing group for a baseline writing mode.
+pub(crate) fn determine_first_baseline_group(
+    container: WritingDirection,
+    baseline_writing_mode: WritingMode,
+    is_parallel_context: bool,
+    is_flipped: bool,
+) -> BaselineGroup {
+    let (start_group, end_group) = if is_flipped {
+        (BaselineGroup::Minor, BaselineGroup::Major)
+    } else {
+        (BaselineGroup::Major, BaselineGroup::Minor)
+    };
+
+    if is_parallel_context {
+        debug_assert!(!container.mode.is_orthogonal_to(baseline_writing_mode));
+        return if baseline_writing_mode == container.mode { start_group } else { end_group };
+    }
+
+    match baseline_writing_mode {
+        WritingMode::HorizontalTb | WritingMode::VerticalLr | WritingMode::SidewaysLr => {
+            if container.direction == Direction::Ltr {
+                start_group
+            } else {
+                end_group
+            }
+        }
+        WritingMode::VerticalRl | WritingMode::SidewaysRl => {
+            if container.direction == Direction::Ltr {
+                end_group
+            } else {
+                start_group
+            }
+        }
+    }
+}
 
 /// Project a child's physical baseline into its parent's logical block axis.
 pub(crate) fn logical_block_baseline(
@@ -75,7 +152,6 @@ pub(crate) fn physical_baseline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Direction, WritingMode};
 
     #[test]
     fn baseline_round_trips_through_reversed_vertical_block_flow() {
@@ -99,6 +175,48 @@ mod tests {
         assert_eq!(
             synthesized_logical_baseline(40.0, WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr)),
             40.0,
+        );
+    }
+
+    #[test]
+    fn perpendicular_baseline_modes_follow_the_container_inline_direction() {
+        assert_eq!(
+            determine_baseline_writing_mode(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+                WritingMode::HorizontalTb,
+                false,
+            ),
+            WritingMode::VerticalLr,
+        );
+        assert_eq!(
+            determine_baseline_writing_mode(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
+                WritingMode::HorizontalTb,
+                false,
+            ),
+            WritingMode::VerticalRl,
+        );
+    }
+
+    #[test]
+    fn baseline_groups_keep_perpendicular_ltr_and_rtl_items_in_the_major_group() {
+        assert_eq!(
+            determine_first_baseline_group(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+                WritingMode::VerticalLr,
+                false,
+                false,
+            ),
+            BaselineGroup::Major,
+        );
+        assert_eq!(
+            determine_first_baseline_group(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
+                WritingMode::VerticalRl,
+                false,
+                false,
+            ),
+            BaselineGroup::Major,
         );
     }
 }
