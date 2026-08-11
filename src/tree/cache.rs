@@ -4,7 +4,7 @@
 
 use crate::geometry::Size;
 use crate::style::AvailableSpace;
-use crate::tree::{LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
+use crate::tree::{IntrinsicSizeResult, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
 use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
@@ -143,6 +143,9 @@ struct CachedMeasurement {
     size: Size<f32>,
     /// Whether the result must be keyed by parent block-size.
     depends_on_block_constraints: bool,
+    /// Whether this probe obtained its inline contribution by applying the
+    /// preferred aspect ratio.
+    applied_aspect_ratio: bool,
 }
 
 /// A cache for caching the results of a sizing a Grid Item or Flexbox Item
@@ -253,32 +256,42 @@ impl Cache {
         let key = CacheKey::from(input);
         match input.run_mode {
             RunMode::PerformLayout => self.final_layout_entry.filter(|entry| entry.key == key).map(|e| e.content),
-            RunMode::ComputeSize => {
-                for entry in self.measure_entries.iter().flatten() {
-                    if entry.key.kd_available_space == key.kd_available_space
-                        && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
-                        && entry.key.sizing_mode == key.sizing_mode
-                        && entry.key.sizing_purpose == key.sizing_purpose
-                    {
-                        return Some(
-                            LayoutOutput::from_outer_size(entry.content.size)
-                                .with_block_constraint_dependency(entry.content.depends_on_block_constraints),
-                        );
-                    }
-                }
-
-                for entry in self.block_constraint_entries.iter().flatten() {
-                    if entry.key == key {
-                        return Some(
-                            LayoutOutput::from_outer_size(entry.content.size).with_block_constraint_dependency(true),
-                        );
-                    }
-                }
-
-                None
-            }
+            RunMode::ComputeSize => self.get_size(input).map(LayoutOutput::from_intrinsic_size_result),
             RunMode::PerformHiddenLayout => None,
         }
+    }
+
+    /// Try to retrieve a dedicated intrinsic size result from the measurement
+    /// caches.
+    #[inline]
+    pub fn get_size(&self, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
+        debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
+        let key = CacheKey::from(input);
+        for entry in self.measure_entries.iter().flatten() {
+            if entry.key.kd_available_space == key.kd_available_space
+                && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
+                && entry.key.sizing_mode == key.sizing_mode
+                && entry.key.sizing_purpose == key.sizing_purpose
+            {
+                return Some(IntrinsicSizeResult {
+                    size: entry.content.size,
+                    depends_on_block_constraints: entry.content.depends_on_block_constraints,
+                    applied_aspect_ratio: entry.content.applied_aspect_ratio,
+                });
+            }
+        }
+
+        for entry in self.block_constraint_entries.iter().flatten() {
+            if entry.key == key {
+                return Some(IntrinsicSizeResult {
+                    size: entry.content.size,
+                    depends_on_block_constraints: entry.content.depends_on_block_constraints,
+                    applied_aspect_ratio: entry.content.applied_aspect_ratio,
+                });
+            }
+        }
+
+        None
     }
 
     /// Store a computed size in the cache
@@ -290,37 +303,44 @@ impl Cache {
                 self.final_layout_entry = Some(CacheEntry { key, content: layout_output })
             }
             RunMode::ComputeSize => {
-                self.is_empty = false;
-                let entry = CacheEntry {
-                    key,
-                    content: CachedMeasurement {
-                        size: layout_output.size,
-                        depends_on_block_constraints: layout_output.block_constraint_dependency(),
-                    },
-                };
-                if layout_output.block_constraint_dependency() {
-                    if let Some(existing_index) =
-                        self.block_constraint_entries.iter().position(|existing| match existing {
-                            Some(existing) => existing.key == key,
-                            None => false,
-                        })
-                    {
-                        self.block_constraint_entries[existing_index] = Some(entry);
-                        return;
-                    }
-                    let cache_slot = self
-                        .block_constraint_entries
-                        .iter()
-                        .position(Option::is_none)
-                        .unwrap_or(self.next_block_constraint_entry as usize);
-                    self.block_constraint_entries[cache_slot] = Some(entry);
-                    self.next_block_constraint_entry = ((cache_slot + 1) % BLOCK_CONSTRAINT_CACHE_SIZE) as u8;
-                } else {
-                    let cache_slot = Self::compute_cache_slot(input.known_dimensions, input.available_space);
-                    self.measure_entries[cache_slot] = Some(entry);
-                }
+                self.store_size(input, layout_output.intrinsic_size_result());
             }
             RunMode::PerformHiddenLayout => {}
+        }
+    }
+
+    /// Store a dedicated intrinsic size result in the appropriate measurement
+    /// cache.
+    pub fn store_size(&mut self, input: &LayoutInput, result: IntrinsicSizeResult) {
+        debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
+        self.is_empty = false;
+        let key = CacheKey::from(input);
+        let entry = CacheEntry {
+            key,
+            content: CachedMeasurement {
+                size: result.size,
+                depends_on_block_constraints: result.depends_on_block_constraints,
+                applied_aspect_ratio: result.applied_aspect_ratio,
+            },
+        };
+        if result.depends_on_block_constraints {
+            if let Some(existing_index) = self.block_constraint_entries.iter().position(|existing| match existing {
+                Some(existing) => existing.key == key,
+                None => false,
+            }) {
+                self.block_constraint_entries[existing_index] = Some(entry);
+                return;
+            }
+            let cache_slot = self
+                .block_constraint_entries
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or(self.next_block_constraint_entry as usize);
+            self.block_constraint_entries[cache_slot] = Some(entry);
+            self.next_block_constraint_entry = ((cache_slot + 1) % BLOCK_CONSTRAINT_CACHE_SIZE) as u8;
+        } else {
+            let cache_slot = Self::compute_cache_slot(input.known_dimensions, input.available_space);
+            self.measure_entries[cache_slot] = Some(entry);
         }
     }
 
@@ -358,7 +378,9 @@ mod tests {
     use super::Cache;
     use crate::geometry::{Line, Size};
     use crate::style::AvailableSpace;
-    use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose};
+    use crate::tree::{
+        IntrinsicSizeResult, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose,
+    };
 
     fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
         LayoutInput {
@@ -383,6 +405,21 @@ mod tests {
 
         assert!(cache.get(&layout).is_none());
         assert_eq!(cache.get(&contribution).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_cache_preserves_operation_provenance() {
+        let mut cache = Cache::new();
+        let input = input(SizingPurpose::IntrinsicContribution);
+        let expected = IntrinsicSizeResult {
+            size: Size { width: 60.0, height: 30.0 },
+            depends_on_block_constraints: false,
+            applied_aspect_ratio: true,
+        };
+
+        cache.store_size(&input, expected);
+
+        assert_eq!(cache.get_size(&input), Some(expected));
     }
 
     #[test]
