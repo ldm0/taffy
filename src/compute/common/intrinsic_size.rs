@@ -30,7 +30,7 @@ fn measure_intrinsic_width(
             inputs.parent_writing_mode,
             Size { width: constraint, height: inputs.available_space.height },
             SizingMode::ContentSize,
-            inputs.vertical_margins_are_collapsible,
+            inputs.block_margins_are_collapsible,
         ),
         RequestedAxis::Horizontal,
     )

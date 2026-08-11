@@ -473,7 +473,7 @@ fn compute_inner(
         available_space,
         run_mode,
         sizing_mode,
-        vertical_margins_are_collapsible,
+        block_margins_are_collapsible,
         ..
     } = inputs;
 
@@ -554,12 +554,12 @@ fn compute_inner(
 
     // Determine margin collapsing behaviour
     let own_margins_collapse_with_children = Line {
-        start: vertical_margins_are_collapsible.start
+        start: block_margins_are_collapsible.start
             && !is_scroll_container
             && style.position() == Position::Relative
             && padding.top == 0.0
             && border.top == 0.0,
-        end: vertical_margins_are_collapsible.end
+        end: block_margins_are_collapsible.end
             && !is_scroll_container
             && style.position() == Position::Relative
             && padding.bottom == 0.0
@@ -910,7 +910,7 @@ fn generate_item_list(
                     parent_size: node_inner_size,
                     parent_writing_mode: writing_mode,
                     available_space: child_available_space,
-                    vertical_margins_are_collapsible: Line::TRUE,
+                    block_margins_are_collapsible: Line::TRUE,
                 };
                 let intrinsic = resolve_intrinsic_width_constraints(
                     tree,
@@ -1421,7 +1421,7 @@ fn perform_final_layout_on_in_flow_children(
                 parent_size,
                 parent_writing_mode: writing_mode,
                 available_space: available_space.map_width(|_| AvailableSpace::Definite(stretch_width)),
-                vertical_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
+                block_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
             };
 
             #[cfg(feature = "float_layout")]
@@ -1882,7 +1882,7 @@ fn perform_absolute_layout_on_absolute_children(
                 width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
                 height: AvailableSpace::Definite(area_height),
             },
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
         let intrinsic = resolve_intrinsic_width_constraints(
             tree,
@@ -1990,7 +1990,7 @@ fn perform_absolute_layout_on_absolute_children(
                 sizing_purpose: SizingPurpose::Layout,
                 axis: RequestedAxis::Both,
                 run_mode: RunMode::PerformLayout,
-                vertical_margins_are_collapsible: Line::FALSE,
+                block_margins_are_collapsible: Line::FALSE,
             },
         );
 
