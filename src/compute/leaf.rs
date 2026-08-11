@@ -8,7 +8,7 @@ use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
+use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
 use core::unreachable;
 
 use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
@@ -47,7 +47,34 @@ pub fn compute_leaf_layout_with_aspect_ratio<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    let percentage_basis = inputs.constraint_space(style.writing_mode()).margin_padding_percentage_basis();
+    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+        inputs,
+        style,
+        style.writing_mode(),
+        resolved_aspect_ratio,
+        resolve_calc_value,
+        measure_function,
+    )
+}
+
+/// Compute a leaf layout using an explicit node writing mode.
+///
+/// This is the browser-adapter seam for integrations that retain inherited
+/// properties outside their numeric [`CoreStyle`] projection. The supplied
+/// mode must match [`LayoutPartialTree::get_writing_mode`](crate::LayoutPartialTree::get_writing_mode)
+/// for the same node.
+pub fn compute_leaf_layout_with_aspect_ratio_and_writing_mode<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    writing_mode: WritingMode,
+    resolved_aspect_ratio: ResolvedAspectRatio,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
     let margin = style.margin().resolve_or_zero(percentage_basis, &resolve_calc_value);
