@@ -6,7 +6,7 @@ use crate::style::{AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyw
 /// code: a layout context either performs baseline sharing before this point
 /// or resolves them to their spec-defined safe start/end fallback.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) enum ResolvedAlignContentKeyword {
+pub enum ResolvedAlignContentKeyword {
     /// Logical start-edge positioning.
     Start,
     /// Logical end-edge positioning.
@@ -61,7 +61,7 @@ pub(crate) fn resolve_self_alignment_safety(alignment: AlignItems, overflows: bo
 ///
 /// In addition to the spec at <https://www.w3.org/TR/css-align-3/> this implementation follows
 /// the resolution of <https://github.com/w3c/csswg-drafts/issues/10154>.
-pub(crate) fn apply_alignment_fallback(
+pub fn apply_alignment_fallback(
     free_space: f32,
     num_items: usize,
     alignment_mode: AlignContent,
@@ -123,7 +123,7 @@ pub(crate) fn apply_alignment_fallback(
 ///
 /// CSS Grid does not apply gaps as part of alignment, so the gap parameter should
 /// always be set to zero for CSS Grid.
-pub(crate) fn compute_alignment_offset(
+pub fn compute_alignment_offset(
     free_space: f32,
     num_items: usize,
     gap: f32,
