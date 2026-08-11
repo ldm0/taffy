@@ -51,8 +51,10 @@ pub enum AlignItemsKeyword {
     SelfEnd,
     /// Items are packed along the center of the cross axis.
     Center,
-    /// Items are aligned such as their baselines align.
+    /// Items are aligned such that their first baselines align.
     Baseline,
+    /// Items are aligned such that their last baselines align.
+    LastBaseline,
     /// Stretch to fill the container.
     Stretch,
 }
@@ -117,7 +119,7 @@ impl AlignContentKeyword {
 /// `flex-start`, `flex-end`, `center`. The struct shape does not enforce that
 /// constraint at the type level — the parser rejects invalid combinations, and
 /// the compute pass treats `Safe` paired with a non-position keyword (`Stretch`,
-/// `Baseline`, `Space*`) the same as `Unsafe`.
+/// first/last baseline, `Space*`) the same as `Unsafe`.
 ///
 /// [css-align-overflow]: https://www.w3.org/TR/css-align-3/#overflow-values
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -160,8 +162,10 @@ impl AlignItems {
     pub const SELF_END: Self = Self { keyword: AlignItemsKeyword::SelfEnd, safety: AlignmentSafety::Unsafe };
     /// Items are packed along the center of the cross axis.
     pub const CENTER: Self = Self { keyword: AlignItemsKeyword::Center, safety: AlignmentSafety::Unsafe };
-    /// Items are aligned such as their baselines align.
+    /// Items are aligned such that their first baselines align.
     pub const BASELINE: Self = Self { keyword: AlignItemsKeyword::Baseline, safety: AlignmentSafety::Unsafe };
+    /// Items are aligned such that their last baselines align.
+    pub const LAST_BASELINE: Self = Self { keyword: AlignItemsKeyword::LastBaseline, safety: AlignmentSafety::Unsafe };
     /// Stretch to fill the container.
     pub const STRETCH: Self = Self { keyword: AlignItemsKeyword::Stretch, safety: AlignmentSafety::Unsafe };
     /// Like [`AlignItems::START`], but falls back to [`AlignItems::START`] when the
@@ -196,6 +200,18 @@ impl AlignItems {
     #[inline]
     pub const fn keyword(self) -> AlignItemsKeyword {
         self.keyword
+    }
+
+    /// Returns `true` for either first- or last-baseline alignment.
+    #[inline]
+    pub const fn is_baseline(self) -> bool {
+        matches!(self.keyword, AlignItemsKeyword::Baseline | AlignItemsKeyword::LastBaseline)
+    }
+
+    /// Returns `true` only for last-baseline alignment.
+    #[inline]
+    pub const fn is_last_baseline(self) -> bool {
+        matches!(self.keyword, AlignItemsKeyword::LastBaseline)
     }
 
     /// Resolve the writing-mode-relative `SelfStart`/`SelfEnd` keywords to
@@ -277,7 +293,32 @@ impl FromCss for AlignItems {
             "self-start" => Ok(Self::SELF_START),
             "self-end" => Ok(Self::SELF_END),
             "center" => Ok(Self::CENTER),
-            "baseline" => Ok(Self::BASELINE),
+            "baseline" => {
+                if input.is_exhausted() {
+                    Ok(Self::BASELINE)
+                } else {
+                    let preference = input.expect_ident()?.clone();
+                    cssparser::match_ignore_ascii_case! { &*preference,
+                        "first" => Ok(Self::BASELINE),
+                        "last" => Ok(Self::LAST_BASELINE),
+                        _ => Err(input.new_unexpected_token_error(Token::Ident(preference))),
+                    }
+                }
+            },
+            "first" => {
+                let baseline = input.expect_ident()?.clone();
+                cssparser::match_ignore_ascii_case! { &*baseline,
+                    "baseline" => Ok(Self::BASELINE),
+                    _ => Err(input.new_unexpected_token_error(Token::Ident(baseline))),
+                }
+            },
+            "last" => {
+                let baseline = input.expect_ident()?.clone();
+                cssparser::match_ignore_ascii_case! { &*baseline,
+                    "baseline" => Ok(Self::LAST_BASELINE),
+                    _ => Err(input.new_unexpected_token_error(Token::Ident(baseline))),
+                }
+            },
             "stretch" => Ok(Self::STRETCH),
             _ => Err(input.new_unexpected_token_error(Token::Ident(first))),
         }
@@ -441,6 +482,7 @@ const ALIGN_ITEMS_NAMES: &[&str] = &[
     "SelfEnd",
     "Center",
     "Baseline",
+    "LastBaseline",
     "Stretch",
     "SafeStart",
     "SafeEnd",
@@ -463,6 +505,7 @@ impl serde::Serialize for AlignItems {
             (AlignItemsKeyword::SelfEnd, AlignmentSafety::Unsafe) => "SelfEnd",
             (AlignItemsKeyword::Center, AlignmentSafety::Unsafe) => "Center",
             (AlignItemsKeyword::Baseline, _) => "Baseline",
+            (AlignItemsKeyword::LastBaseline, _) => "LastBaseline",
             (AlignItemsKeyword::Stretch, _) => "Stretch",
             (AlignItemsKeyword::Start, AlignmentSafety::Safe) => "SafeStart",
             (AlignItemsKeyword::End, AlignmentSafety::Safe) => "SafeEnd",
@@ -495,6 +538,7 @@ impl<'de> serde::Deserialize<'de> for AlignItems {
                     "SelfEnd" => AlignItems::SELF_END,
                     "Center" => AlignItems::CENTER,
                     "Baseline" => AlignItems::BASELINE,
+                    "LastBaseline" => AlignItems::LAST_BASELINE,
                     "Stretch" => AlignItems::STRETCH,
                     "SafeStart" => AlignItems::SAFE_START,
                     "SafeEnd" => AlignItems::SAFE_END,
@@ -615,6 +659,7 @@ mod tests {
         assert!(!AlignItems::FLEX_END.is_safe());
         assert!(!AlignItems::CENTER.is_safe());
         assert!(!AlignItems::BASELINE.is_safe());
+        assert!(!AlignItems::LAST_BASELINE.is_safe());
         assert!(!AlignItems::STRETCH.is_safe());
         assert!(AlignItems::SAFE_SELF_START.is_safe());
         assert!(AlignItems::SAFE_SELF_END.is_safe());
@@ -638,7 +683,17 @@ mod tests {
         assert_eq!(AlignItems::START.keyword(), AlignItemsKeyword::Start);
         assert_eq!(AlignItems::STRETCH.keyword(), AlignItemsKeyword::Stretch);
         assert_eq!(AlignItems::BASELINE.keyword(), AlignItemsKeyword::Baseline);
+        assert_eq!(AlignItems::LAST_BASELINE.keyword(), AlignItemsKeyword::LastBaseline);
         assert_eq!(AlignItems::FLEX_START.keyword(), AlignItemsKeyword::FlexStart);
+    }
+
+    #[test]
+    fn align_items_identifies_baseline_preference() {
+        assert!(AlignItems::BASELINE.is_baseline());
+        assert!(AlignItems::LAST_BASELINE.is_baseline());
+        assert!(!AlignItems::START.is_baseline());
+        assert!(!AlignItems::BASELINE.is_last_baseline());
+        assert!(AlignItems::LAST_BASELINE.is_last_baseline());
     }
 
     #[test]
@@ -745,6 +800,10 @@ mod tests {
         assert_eq!("self-start".parse::<AlignItems>().unwrap(), AlignItems::SELF_START);
         assert_eq!("self-end".parse::<AlignItems>().unwrap(), AlignItems::SELF_END);
         assert_eq!("baseline".parse::<AlignItems>().unwrap(), AlignItems::BASELINE);
+        assert_eq!("first baseline".parse::<AlignItems>().unwrap(), AlignItems::BASELINE);
+        assert_eq!("baseline first".parse::<AlignItems>().unwrap(), AlignItems::BASELINE);
+        assert_eq!("last baseline".parse::<AlignItems>().unwrap(), AlignItems::LAST_BASELINE);
+        assert_eq!("baseline last".parse::<AlignItems>().unwrap(), AlignItems::LAST_BASELINE);
         assert_eq!("stretch".parse::<AlignItems>().unwrap(), AlignItems::STRETCH);
     }
 
@@ -838,6 +897,7 @@ mod tests {
             (AlignItems::FLEX_END, "\"FlexEnd\""),
             (AlignItems::CENTER, "\"Center\""),
             (AlignItems::BASELINE, "\"Baseline\""),
+            (AlignItems::LAST_BASELINE, "\"LastBaseline\""),
             (AlignItems::STRETCH, "\"Stretch\""),
             (AlignItems::SAFE_START, "\"SafeStart\""),
             (AlignItems::SAFE_END, "\"SafeEnd\""),

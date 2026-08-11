@@ -29,9 +29,15 @@ pub(in crate::compute::grid) struct GridBaselineContext {
 impl GridBaselineContext {
     /// Resolve one grid-axis baseline context from the container and child
     /// writing modes.
-    fn resolve(container: WritingDirection, child_writing_mode: WritingMode, is_parallel_context: bool) -> Self {
+    fn resolve(
+        container: WritingDirection,
+        child_writing_mode: WritingMode,
+        is_parallel_context: bool,
+        alignment: AlignSelf,
+    ) -> Self {
         let writing_mode = determine_baseline_writing_mode(container, child_writing_mode, is_parallel_context);
-        let group = determine_baseline_group(container, writing_mode, is_parallel_context, false, false);
+        let group =
+            determine_baseline_group(container, writing_mode, is_parallel_context, alignment.is_last_baseline(), false);
         Self { writing_mode, group }
     }
 }
@@ -144,6 +150,8 @@ impl GridItem {
         parent_alignment: InBothAbstractAxis<AlignItems>,
         source_order: u16,
     ) -> Self {
+        let align_self = style.align_self().unwrap_or(parent_alignment.block);
+        let justify_self = style.justify_self().unwrap_or(parent_alignment.inline);
         GridItem {
             node,
             parent_writing_direction,
@@ -163,11 +171,21 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_alignment.block),
-            justify_self: style.justify_self().unwrap_or(parent_alignment.inline),
+            align_self,
+            justify_self,
             baseline_context: InBothAbstractAxis {
-                inline: GridBaselineContext::resolve(parent_writing_direction, parent_writing_direction.mode, false),
-                block: GridBaselineContext::resolve(parent_writing_direction, parent_writing_direction.mode, true),
+                inline: GridBaselineContext::resolve(
+                    parent_writing_direction,
+                    parent_writing_direction.mode,
+                    false,
+                    justify_self,
+                ),
+                block: GridBaselineContext::resolve(
+                    parent_writing_direction,
+                    parent_writing_direction.mode,
+                    true,
+                    align_self,
+                ),
             },
             alignment_baseline: InBothAbstractAxis { inline: None, block: None },
             baseline_shim: InBothAbstractAxis { inline: 0.0, block: 0.0 },
@@ -195,8 +213,18 @@ impl GridItem {
     /// authoritative source rather than the numeric grid style projection.
     pub fn resolve_baseline_context(&mut self, child_writing_mode: WritingMode) {
         self.baseline_context = InBothAbstractAxis {
-            inline: GridBaselineContext::resolve(self.parent_writing_direction, child_writing_mode, false),
-            block: GridBaselineContext::resolve(self.parent_writing_direction, child_writing_mode, true),
+            inline: GridBaselineContext::resolve(
+                self.parent_writing_direction,
+                child_writing_mode,
+                false,
+                self.justify_self,
+            ),
+            block: GridBaselineContext::resolve(
+                self.parent_writing_direction,
+                child_writing_mode,
+                true,
+                self.align_self,
+            ),
         };
     }
 

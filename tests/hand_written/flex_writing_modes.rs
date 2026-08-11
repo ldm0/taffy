@@ -336,6 +336,145 @@ fn vertical_row_aligns_synthesized_baselines_on_the_logical_block_axis() {
 }
 
 #[test]
+fn flex_last_baseline_uses_each_items_last_fragment_baseline() {
+    let mut tree = TaffyTree::<()>::new();
+    let first_line =
+        tree.new_leaf(Style { size: Size { width: length(10.0), height: length(10.0) }, ..Style::default() }).unwrap();
+    let last_line =
+        tree.new_leaf(Style { size: Size { width: length(10.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    let tall = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size { width: length(40.0), height: auto() },
+                padding: Rect { bottom: length(10.0), ..Rect::zero() },
+                ..Style::default()
+            },
+            &[first_line, last_line],
+        )
+        .unwrap();
+    let short_line =
+        tree.new_leaf(Style { size: Size { width: length(10.0), height: length(10.0) }, ..Style::default() }).unwrap();
+    let short = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size { width: length(40.0), height: auto() },
+                ..Style::default()
+            },
+            &[short_line],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                align_items: Some(AlignItems::LAST_BASELINE),
+                size: Size { width: length(200.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[tall, short],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(tall).size, Size { width: 40.0, height: 40.0 });
+    assert_eq!(tree.unrounded_layout(short).size, Size { width: 40.0, height: 10.0 });
+    assert_eq!(tree.unrounded_layout(tall).location, Point { x: 0.0, y: 60.0 });
+    assert_eq!(tree.unrounded_layout(short).location, Point { x: 40.0, y: 80.0 });
+}
+
+#[test]
+fn flex_first_and_last_baselines_use_distinct_sharing_groups() {
+    let mut tree = TaffyTree::<()>::new();
+    let first = tree
+        .new_leaf(Style {
+            align_self: Some(AlignSelf::BASELINE),
+            size: Size { width: length(40.0), height: length(40.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let last = tree
+        .new_leaf(Style {
+            align_self: Some(AlignSelf::LAST_BASELINE),
+            size: Size { width: length(40.0), height: length(10.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: length(200.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[first, last],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(first).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(last).location, Point { x: 40.0, y: 90.0 });
+}
+
+#[test]
+fn flex_wrap_reverse_flips_the_last_baseline_group_once() {
+    let mut tree = TaffyTree::<()>::new();
+    let tall =
+        tree.new_leaf(Style { size: Size { width: length(40.0), height: length(40.0) }, ..Style::default() }).unwrap();
+    let short =
+        tree.new_leaf(Style { size: Size { width: length(40.0), height: length(10.0) }, ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_wrap: FlexWrap::WrapReverse,
+                align_items: Some(AlignItems::LAST_BASELINE),
+                size: Size { width: length(200.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[tall, short],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(tall).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(short).location, Point { x: 40.0, y: 30.0 });
+}
+
+#[test]
+fn absolute_flex_last_baseline_uses_its_end_fallback() {
+    let mut tree = TaffyTree::<()>::new();
+    let child = tree
+        .new_leaf(Style {
+            position: Position::Absolute,
+            align_self: Some(AlignSelf::LAST_BASELINE),
+            size: Size { width: length(20.0), height: length(10.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: length(100.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[child],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(child).location, Point { x: 0.0, y: 90.0 });
+}
+
+#[test]
 fn absolute_start_remains_logical_when_wrap_reverse_moves_flex_start() {
     let mut tree = TaffyTree::<()>::new();
     let start = tree

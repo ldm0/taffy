@@ -3,7 +3,7 @@
 use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Size};
-use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
+use crate::style::{AlignItems, AvailableSpace, Overflow, Position};
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
 };
@@ -334,8 +334,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Baseline alignment is independent in the grid's inline and block axes.
     // Each track-sizing pass resolves the shim that contributes in that axis.
-    let has_block_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
-    let has_inline_baseline_aligned_item = items.iter().any(|item| item.justify_self == AlignSelf::BASELINE);
+    let has_block_baseline_aligned_item = items.iter().any(|item| item.align_self.is_baseline());
+    let has_inline_baseline_aligned_item = items.iter().any(|item| item.justify_self.is_baseline());
 
     // Run track sizing algorithm for Inline axis
     track_sizing_algorithm(
@@ -904,6 +904,13 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
             FontBaseline::for_writing_mode(flow.writing_direction().mode),
         )
     };
+    let aligned_baseline = |item: &GridItem| {
+        if item.align_self.is_last_baseline() {
+            item.last_baseline
+        } else {
+            item.first_baseline
+        }
+    };
 
     let compare_in_flow_order = |axis: AbstractAxis, a: u16, b: u16| {
         if flow.axis_is_reversed(axis) {
@@ -946,7 +953,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         items
             .iter()
             .filter(|item| {
-                item.used_alignment(AbstractAxis::Block) == AlignSelf::BASELINE
+                item.used_alignment(AbstractAxis::Block).is_baseline()
                     && item.baseline_context.block.group == group
                     && match group {
                         BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == first_occupied_row,
@@ -955,16 +962,22 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
             })
             .min_by(inline_first)
     };
-    let first_item = first_baseline_item(BaselineGroup::Major)
+    let (first_item, first_uses_shared_baseline) = first_baseline_item(BaselineGroup::Major)
         .or_else(|| first_baseline_item(BaselineGroup::Minor))
+        .map(|item| (item, true))
         .unwrap_or_else(|| {
-            items
+            let item = items
                 .iter()
                 .filter(|item| first_occupied_track(item, AbstractAxis::Block) == first_occupied_row)
                 .min_by(inline_first)
-                .unwrap()
+                .unwrap();
+            (item, false)
         });
-    let first_item_baseline = first_item.first_baseline.unwrap_or_else(|| synthesize(first_item));
+    let first_item_baseline = if first_uses_shared_baseline {
+        aligned_baseline(first_item).unwrap_or_else(|| synthesize(first_item))
+    } else {
+        first_item.first_baseline.unwrap_or_else(|| synthesize(first_item))
+    };
     let first_baseline = first_item.block_offset + first_item_baseline;
 
     let last_occupied_row = items
@@ -984,7 +997,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
         items
             .iter()
             .filter(|item| {
-                item.used_alignment(AbstractAxis::Block) == AlignSelf::BASELINE
+                item.used_alignment(AbstractAxis::Block).is_baseline()
                     && item.baseline_context.block.group == group
                     && match group {
                         BaselineGroup::Major => first_occupied_track(item, AbstractAxis::Block) == last_occupied_row,
@@ -1011,10 +1024,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
             (item, false)
         });
     let last_baseline = if last_uses_shared_baseline {
-        // Taffy currently exposes first-baseline alignment. A shared baseline
-        // in the last occupied row nevertheless becomes the grid's last
-        // baseline, with the minor group taking precedence over the major.
-        last_item.first_baseline.unwrap_or_else(|| synthesize(last_item))
+        aligned_baseline(last_item).unwrap_or_else(|| synthesize(last_item))
     } else {
         last_item.last_baseline.unwrap_or_else(|| synthesize(last_item))
     };
@@ -1206,8 +1216,10 @@ mod tests {
         first_baseline: Option<f32>,
         last_baseline: Option<f32>,
     ) -> GridItem {
-        let style: Style =
-            Style { align_self: participates_in_baseline_alignment.then_some(AlignSelf::BASELINE), ..Style::default() };
+        let style: Style = Style {
+            align_self: participates_in_baseline_alignment.then_some(AlignItems::BASELINE),
+            ..Style::default()
+        };
         let mut item = GridItem::new_with_placement_style_and_order(
             NodeId::new(u64::from(source_order)),
             crate::WritingDirection::new(crate::WritingMode::HorizontalTb, Direction::Ltr),

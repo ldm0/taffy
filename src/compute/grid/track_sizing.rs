@@ -3,7 +3,7 @@
 use super::types::{GridItem, GridTrack, TrackCounts};
 use crate::compute::common::baseline::{logical_block_baseline, synthesized_logical_baseline, FontBaseline};
 use crate::geometry::{AbstractAxis, Line, LogicalSize, Size, WritingDirection};
-use crate::style::{AlignContent, AlignContentKeyword, AlignSelf, AvailableSpace};
+use crate::style::{AlignContent, AlignContentKeyword, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::sys::{f32_max, f32_min, Vec};
@@ -466,7 +466,8 @@ fn resolve_item_baselines(
         *item.alignment_baseline.get_mut(alignment_axis) = None;
         *item.baseline_shim.get_mut(alignment_axis) = 0.0;
 
-        if item.alignment(alignment_axis) != AlignSelf::BASELINE {
+        let alignment = item.alignment(alignment_axis);
+        if !alignment.is_baseline() {
             continue;
         }
 
@@ -487,27 +488,33 @@ fn resolve_item_baselines(
 
         let child_writing_mode = tree.get_writing_mode(item.node);
         let baseline_block_size = baseline_context.writing_mode.to_logical(measured.size).block_size;
+        let fragment_baseline_set =
+            if alignment.is_last_baseline() { measured.last_baselines } else { measured.first_baselines };
         let fragment_baseline = if child_writing_mode == baseline_context.writing_mode {
-            logical_block_baseline(measured.first_baselines, measured.size, baseline_writing_direction)
+            logical_block_baseline(fragment_baseline_set, measured.size, baseline_writing_direction)
         } else {
             None
         };
         item.resolve_baseline_fallback(alignment_axis, child_writing_mode, fragment_baseline.is_none());
-        if item.used_alignment(alignment_axis) != AlignSelf::BASELINE {
+        if !item.used_alignment(alignment_axis).is_baseline() {
             continue;
         }
-        let baseline = fragment_baseline.unwrap_or_else(|| {
+        let baseline_from_start = fragment_baseline.unwrap_or_else(|| {
             synthesized_logical_baseline(
                 baseline_block_size,
                 baseline_writing_direction,
                 FontBaseline::for_writing_mode(parent_writing_direction.mode),
             )
         });
+        let baseline =
+            if alignment.is_last_baseline() { baseline_block_size - baseline_from_start } else { baseline_from_start };
 
         let percentage_basis = inner_node_size.inline_size;
         let margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-        let group_start_margin = baseline_writing_direction.to_logical_box_strut(margin).block_start;
-        *item.alignment_baseline.get_mut(alignment_axis) = Some(baseline + group_start_margin);
+        let logical_margin = baseline_writing_direction.to_logical_box_strut(margin);
+        let baseline_margin =
+            if alignment.is_last_baseline() { logical_margin.block_end } else { logical_margin.block_start };
+        *item.alignment_baseline.get_mut(alignment_axis) = Some(baseline + baseline_margin);
     }
 
     // Items share a baseline only when both their selected track and their
