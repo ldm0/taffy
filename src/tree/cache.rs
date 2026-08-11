@@ -303,7 +303,7 @@ impl Cache {
                 self.final_layout_entry = Some(CacheEntry { key, content: layout_output })
             }
             RunMode::ComputeSize => {
-                self.store_size(input, layout_output.intrinsic_size_result());
+                self.store_size(input, layout_output.into_intrinsic_size_result());
             }
             RunMode::PerformHiddenLayout => {}
         }
