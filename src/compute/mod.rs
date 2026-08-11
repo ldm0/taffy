@@ -62,7 +62,7 @@ use crate::util::sys::round;
 use crate::util::ResolveOrZero;
 use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
-use self::common::aspect_ratio::resolve_size_constraints;
+use self::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 pub use self::common::intrinsic_size::resolve_intrinsic_width_inputs;
 
 /// Compute layout for the root node in the tree
@@ -119,6 +119,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border_size,
             );

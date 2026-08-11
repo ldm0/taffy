@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::common::absolute::fit_content_width;
-use super::common::aspect_ratio::resolve_size_constraints;
+use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use super::common::intrinsic_size::resolve_intrinsic_width_constraints;
 
 #[cfg(feature = "float_layout")]
@@ -383,6 +383,7 @@ pub fn compute_block_layout(
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border_size,
             );
@@ -510,6 +511,7 @@ fn compute_inner(
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border_size,
             );
@@ -905,6 +907,7 @@ fn generate_item_list(
                 min_size,
                 max_size,
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 aspect_ratio,
                 pb_sum,
             );
@@ -1037,6 +1040,7 @@ fn resolve_block_item_final_style(
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
             raw_size.map(|dimension| dimension.is_auto()),
+            TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border_sum,
         );
@@ -1828,6 +1832,7 @@ fn perform_absolute_layout_on_absolute_children(
             min_size,
             max_size,
             raw_size.map(|dimension| dimension.is_auto()),
+            TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border_sum,
         );
