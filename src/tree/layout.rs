@@ -155,7 +155,7 @@ impl LayoutInput {
 /// A baseline is the line on which text sits. Your node likely has a baseline if it is a text node, or contains
 /// children that may be text nodes. See <https://www.w3.org/TR/css-writing-modes-3/#intro-baselines> for details.
 /// If your node does not have a baseline (or you are unsure how to compute it), then simply return `Point::NONE`
-/// for the first_baselines field
+/// for the baseline fields.
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct LayoutOutput {
@@ -166,6 +166,8 @@ pub struct LayoutOutput {
     pub content_size: Size<f32>,
     /// The first baseline of the node in each dimension, if any
     pub first_baselines: Point<Option<f32>>,
+    /// The last baseline of the node in each dimension, if any
+    pub last_baselines: Point<Option<f32>>,
     /// Top margin that can be collapsed with. This is used for CSS block layout and can be set to
     /// `CollapsibleMarginSet::ZERO` for other layout modes that don't support margin collapsing
     pub top_margin: CollapsibleMarginSet,
@@ -184,6 +186,7 @@ impl LayoutOutput {
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
         first_baselines: Point::NONE,
+        last_baselines: Point::NONE,
         top_margin: CollapsibleMarginSet::ZERO,
         bottom_margin: CollapsibleMarginSet::ZERO,
         margins_can_collapse_through: false,
@@ -198,11 +201,22 @@ impl LayoutOutput {
         #[cfg_attr(not(feature = "content_size"), allow(unused_variables))] content_size: Size<f32>,
         first_baselines: Point<Option<f32>>,
     ) -> Self {
+        Self::from_sizes_and_baseline_sets(size, content_size, first_baselines, first_baselines)
+    }
+
+    /// Constructor to create a `LayoutOutput` from the size and distinct first/last baselines
+    pub fn from_sizes_and_baseline_sets(
+        size: Size<f32>,
+        #[cfg_attr(not(feature = "content_size"), allow(unused_variables))] content_size: Size<f32>,
+        first_baselines: Point<Option<f32>>,
+        last_baselines: Point<Option<f32>>,
+    ) -> Self {
         Self {
             size,
             #[cfg(feature = "content_size")]
             content_size,
             first_baselines,
+            last_baselines,
             top_margin: CollapsibleMarginSet::ZERO,
             bottom_margin: CollapsibleMarginSet::ZERO,
             margins_can_collapse_through: false,
