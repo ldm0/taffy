@@ -294,5 +294,9 @@ mod tests {
             determine_baseline_group(container, WritingMode::VerticalRl, true, true, false),
             BaselineGroup::Minor,
         );
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, true, true),
+            BaselineGroup::Major,
+        );
     }
 }

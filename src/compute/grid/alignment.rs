@@ -529,6 +529,16 @@ pub(super) fn align_item_within_area(
             BaselineGroup::Major => resolved_margin.start,
             BaselineGroup::Minor => grid_area_size - resolved_size - resolved_margin.end,
         },
+        AlignItemsKeyword::LastBaseline => {
+            if position == Position::Absolute {
+                grid_area_size - resolved_size - resolved_margin.end
+            } else {
+                match baseline_group {
+                    BaselineGroup::Major => resolved_margin.start,
+                    BaselineGroup::Minor => grid_area_size - resolved_size - resolved_margin.end,
+                }
+            }
+        }
         AlignItemsKeyword::Center => {
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }

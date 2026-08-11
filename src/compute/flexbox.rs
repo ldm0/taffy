@@ -253,6 +253,16 @@ impl FlexItem {
     fn is_scroll_container(&self) -> bool {
         self.overflow.x.is_scroll_container() | self.overflow.y.is_scroll_container()
     }
+
+    /// Baseline selected by this item's first/last baseline preference,
+    /// measured from the flex container's logical block-start edge.
+    fn aligned_block_baseline(&self) -> f32 {
+        if self.align_self.is_last_baseline() {
+            self.last_block_baseline
+        } else {
+            self.first_block_baseline
+        }
+    }
 }
 
 /// A line of [`FlexItem`] used for intermediate computation
@@ -274,6 +284,46 @@ impl<'a> FlexLine<'a> {
     fn new(items: &'a mut [FlexItem]) -> Self {
         Self { items, cross_size: 0.0, offset_cross: 0.0, major_baseline: None, minor_baseline: None }
     }
+
+    /// Return the final shared baseline for one sharing group. All members of
+    /// a resolved group expose the same container-relative baseline, so source
+    /// order is immaterial here.
+    fn shared_block_baseline(&self, group: BaselineGroup) -> Option<f32> {
+        self.items
+            .iter()
+            .find(|item| item.align_self.is_baseline() && item.baseline_group == group)
+            .map(FlexItem::aligned_block_baseline)
+    }
+}
+
+/// Select the flex container's first and last baselines after final item
+/// layout. This mirrors Blink's `BaselineAccumulator`: major then minor for
+/// the first line, minor then major for the last line, followed by the normal
+/// first/last item fallback.
+fn flex_container_baselines(flex_lines: &[FlexLine<'_>], constants: &AlgoConstants) -> (Option<f32>, Option<f32>) {
+    let first_line = if constants.wrap_reverse { flex_lines.last() } else { flex_lines.first() };
+    let last_line = if constants.wrap_reverse { flex_lines.first() } else { flex_lines.last() };
+
+    let first = first_line.and_then(|line| {
+        if constants.main_axis_is_inline {
+            line.shared_block_baseline(BaselineGroup::Major)
+                .or_else(|| line.shared_block_baseline(BaselineGroup::Minor))
+                .or_else(|| line.items.first().map(|item| item.first_block_baseline))
+        } else {
+            line.items.first().map(|item| item.first_block_baseline)
+        }
+    });
+    let last = last_line.and_then(|line| {
+        if constants.main_axis_is_inline {
+            line.shared_block_baseline(BaselineGroup::Minor)
+                .or_else(|| line.shared_block_baseline(BaselineGroup::Major))
+                .or_else(|| line.items.last().map(|item| item.last_block_baseline))
+        } else {
+            line.items.last().map(|item| item.last_block_baseline)
+        }
+    });
+
+    (first, last)
 }
 
 /// Values that can be cached during the flexbox algorithm
@@ -669,31 +719,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // 8.5. Flex Container Baselines: calculate distinct first and last
     // baselines from the final child fragments.
     // See https://www.w3.org/TR/css-flexbox-1/#flex-baselines
-    // For wrap-reverse containers the cross-start-most line is the last line rather than the first,
-    // and it is that line which the container's first baseline is generated from.
-    let first_line = if constants.wrap_reverse { flex_lines.last() } else { flex_lines.first() };
-    let last_line = if constants.wrap_reverse { flex_lines.first() } else { flex_lines.last() };
-    let first_block_baseline = first_line.and_then(|line| {
-        line.items
-            .iter()
-            .find(|item| constants.main_axis_is_block || item.align_self == AlignSelf::BASELINE)
-            .or_else(|| line.items.iter().next())
-            .map(|child| child.first_block_baseline)
-    });
-    let last_block_baseline = last_line.and_then(|line| {
-        if constants.main_axis_is_inline {
-            // Taffy currently supports major (first) baseline-sharing groups.
-            // Such a group in the last line takes priority over the fallback
-            // last baseline, matching Blink's BaselineAccumulator ordering.
-            line.items
-                .iter()
-                .find(|item| item.align_self == AlignSelf::BASELINE)
-                .map(|child| child.first_block_baseline)
-                .or_else(|| line.items.last().map(|child| child.last_block_baseline))
-        } else {
-            line.items.last().map(|child| child.last_block_baseline)
-        }
-    });
+    let (first_block_baseline, last_block_baseline) = flex_container_baselines(&flex_lines, &constants);
 
     let writing_direction = constants.writing_direction();
 
@@ -912,7 +938,7 @@ fn generate_anonymous_flex_items(
                 constants.writing_direction(),
                 baseline_writing_mode,
                 constants.main_axis_is_inline,
-                false,
+                align_self.is_last_baseline(),
                 constants.wrap_reverse,
             );
             let overflow = child_style.overflow();
@@ -1938,8 +1964,8 @@ fn calculate_children_base_lines(
 
     for line in flex_lines {
         for child in line.items.iter_mut() {
-            // Only calculate baselines for children participating in baseline alignment
-            if child.align_self != AlignSelf::BASELINE {
+            // Only calculate baselines for children participating in baseline alignment.
+            if !child.align_self.is_baseline() {
                 continue;
             }
 
@@ -1981,13 +2007,13 @@ fn calculate_children_base_lines(
             let child_writing_mode = tree.get_writing_mode(child.node);
             let baseline_writing_direction = WritingDirection::new(child.baseline_writing_mode, Direction::Ltr);
             let baseline_block_size = child.baseline_writing_mode.to_logical(child_size).block_size;
+            let baseline_set = if child.align_self.is_last_baseline() {
+                measured_size_and_baselines.last_baselines
+            } else {
+                measured_size_and_baselines.first_baselines
+            };
             let baseline = if child.baseline_writing_mode == child_writing_mode {
-                logical_block_baseline(
-                    measured_size_and_baselines.first_baselines,
-                    child_size,
-                    baseline_writing_direction,
-                )
-                .unwrap_or_else(|| {
+                logical_block_baseline(baseline_set, child_size, baseline_writing_direction).unwrap_or_else(|| {
                     synthesized_logical_baseline(baseline_block_size, baseline_writing_direction, font_baseline)
                 })
             } else {
@@ -1999,7 +2025,14 @@ fn calculate_children_base_lines(
             // See https://github.com/w3c/csswg-drafts/issues/7660
             let baseline =
                 if child.is_scroll_container() { baseline.min(baseline_block_size).max(0.0) } else { baseline };
-            let baseline = if constants.wrap_reverse { baseline_block_size - baseline } else { baseline };
+            // Baseline metrics are measured from the sharing-group edge. First
+            // baselines use cross-start (unless wrap-reverse), while last
+            // baselines use cross-end.
+            let baseline = if constants.wrap_reverse != child.align_self.is_last_baseline() {
+                baseline_block_size - baseline
+            } else {
+                baseline
+            };
 
             let cross_margins = constants.cross_axis_margins(child.margin);
             child.alignment_baseline = match child.baseline_group {
@@ -2035,7 +2068,7 @@ fn collect_baseline_metrics(
     items
         .iter()
         .filter(|child| {
-            child.align_self == AlignSelf::BASELINE
+            child.align_self.is_baseline()
                 && child.baseline_group == group
                 && !child.margin_is_auto.cross_start(direction)
                 && !child.margin_is_auto.cross_end(direction)
@@ -2397,7 +2430,7 @@ fn align_flex_items_along_cross_axis(
             }
         }
         AlignItemsKeyword::Center => free_space / 2.0,
-        AlignItemsKeyword::Baseline => {
+        AlignItemsKeyword::Baseline | AlignItemsKeyword::LastBaseline => {
             let baseline_delta = shared_baseline.unwrap_or(child.alignment_baseline) - child.alignment_baseline;
             let logical_offset = match child.baseline_group {
                 BaselineGroup::Major => baseline_delta,
@@ -3108,6 +3141,7 @@ fn perform_absolute_layout_on_absolute_children(
             // `flex-start`/`flex-end` and the `stretch` fallback are flex-relative.
             let start_position = match cross_keyword {
                 AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => !constants.cross_axis_start_reversed,
+                AlignItemsKeyword::LastBaseline => constants.cross_axis_start_reversed,
                 AlignItemsKeyword::End => constants.cross_axis_start_reversed,
                 _ => true,
             };
@@ -3115,7 +3149,13 @@ fn perform_absolute_layout_on_absolute_children(
                 // Stretch alignment does not apply to absolutely positioned items
                 // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
                 // Note: Stretch should be FlexStart not Start when we support both
-                (AlignItemsKeyword::Start | AlignItemsKeyword::End | AlignItemsKeyword::Baseline, _) => {
+                (
+                    AlignItemsKeyword::Start
+                    | AlignItemsKeyword::End
+                    | AlignItemsKeyword::Baseline
+                    | AlignItemsKeyword::LastBaseline,
+                    _,
+                ) => {
                     if start_position {
                         constants.content_box_inset.cross_start(constants.dir)
                             + resolved_margin.cross_start(constants.dir)
