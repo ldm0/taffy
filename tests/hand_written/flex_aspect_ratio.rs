@@ -32,3 +32,25 @@ fn transferred_max_size_does_not_clamp_the_flexed_main_size() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
+
+/// Regression for WPT css/css-flexbox/aspect-ratio-intrinsic-size-003.html.
+#[test]
+fn auto_flex_basis_uses_a_definite_stretched_cross_size_through_aspect_ratio() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree.new_leaf(Style { aspect_ratio: Some(1.0), ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
