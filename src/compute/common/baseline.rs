@@ -6,7 +6,7 @@ use crate::{Direction, WritingMode};
 /// One of the two baseline-sharing groups that may occupy an alignment axis.
 /// The major group is placed toward the axis start and the minor group toward
 /// its end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum BaselineGroup {
     /// Baselines aligned toward the alignment axis start.
     Major,
@@ -66,18 +66,22 @@ pub(crate) fn determine_baseline_writing_mode(
     }
 }
 
-/// Select the first-baseline sharing group for a baseline writing mode.
-pub(crate) fn determine_first_baseline_group(
+/// Select the baseline-sharing group for a baseline writing mode.
+pub(crate) fn determine_baseline_group(
     container: WritingDirection,
     baseline_writing_mode: WritingMode,
     is_parallel_context: bool,
+    is_last_baseline: bool,
     is_flipped: bool,
 ) -> BaselineGroup {
-    let (start_group, end_group) = if is_flipped {
-        (BaselineGroup::Minor, BaselineGroup::Major)
-    } else {
-        (BaselineGroup::Major, BaselineGroup::Minor)
-    };
+    let mut start_group = BaselineGroup::Major;
+    let mut end_group = BaselineGroup::Minor;
+    if is_last_baseline {
+        core::mem::swap(&mut start_group, &mut end_group);
+    }
+    if is_flipped {
+        core::mem::swap(&mut start_group, &mut end_group);
+    }
 
     if is_parallel_context {
         debug_assert!(!container.mode.is_orthogonal_to(baseline_writing_mode));
@@ -258,22 +262,37 @@ mod tests {
     #[test]
     fn baseline_groups_keep_perpendicular_ltr_and_rtl_items_in_the_major_group() {
         assert_eq!(
-            determine_first_baseline_group(
+            determine_baseline_group(
                 WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
                 WritingMode::VerticalLr,
+                false,
                 false,
                 false,
             ),
             BaselineGroup::Major,
         );
         assert_eq!(
-            determine_first_baseline_group(
+            determine_baseline_group(
                 WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
                 WritingMode::VerticalRl,
                 false,
                 false,
+                false,
             ),
             BaselineGroup::Major,
+        );
+    }
+
+    #[test]
+    fn last_baselines_swap_the_first_baseline_groups() {
+        let container = WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr);
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, false, false),
+            BaselineGroup::Major,
+        );
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, true, false),
+            BaselineGroup::Minor,
         );
     }
 }

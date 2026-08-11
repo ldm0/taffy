@@ -1,7 +1,7 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
 use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
 use crate::compute::common::baseline::{
-    determine_baseline_writing_mode, determine_first_baseline_group, logical_block_baseline,
+    determine_baseline_group, determine_baseline_writing_mode, logical_block_baseline,
     logical_block_baseline_or_synthesize, physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline,
 };
 use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
@@ -908,10 +908,11 @@ fn generate_anonymous_flex_items(
                 child_writing_mode,
                 constants.main_axis_is_inline,
             );
-            let baseline_group = determine_first_baseline_group(
+            let baseline_group = determine_baseline_group(
                 constants.writing_direction(),
                 baseline_writing_mode,
                 constants.main_axis_is_inline,
+                false,
                 constants.wrap_reverse,
             );
             let overflow = child_style.overflow();
