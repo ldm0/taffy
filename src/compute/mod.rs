@@ -297,17 +297,18 @@ fn node_block_constraint_dependency(
         return reported_dependency;
     }
 
+    let writing_mode = tree.get_writing_mode(node);
     let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
     let style_depends_on_parent_block_size = {
         let style = tree.get_core_container_style(node);
-        let size = style.size();
-        let min_size = style.min_size();
-        let max_size = style.max_size();
-        [size.height, min_size.height, max_size.height]
+        let size = writing_mode.to_logical(style.size());
+        let min_size = writing_mode.to_logical(style.min_size());
+        let max_size = writing_mode.to_logical(style.max_size());
+        [size.block_size, min_size.block_size, max_size.block_size]
             .into_iter()
             .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
     };
-    let requested_block_size = inputs.axis != RequestedAxis::Horizontal;
+    let requested_block_size = inputs.axis.contains(writing_mode.block_axis());
     style_depends_on_parent_block_size && (requested_block_size || has_aspect_ratio || reported_dependency)
 }
 
