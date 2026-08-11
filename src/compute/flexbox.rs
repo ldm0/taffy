@@ -1,13 +1,15 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
-use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
+use crate::compute::common::alignment::{
+    compute_alignment_offset, resolve_self_alignment_safety, ResolvedAlignContentKeyword,
+};
 use crate::compute::common::baseline::{
     determine_baseline_group, determine_baseline_writing_mode, logical_block_baseline,
     logical_block_baseline_or_synthesize, physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline,
 };
 use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
 use crate::style::{
-    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
-    JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap, JustifyContent,
+    LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
 use crate::style_helpers::{TaffyMaxContent, TaffyMinContent};
@@ -3059,22 +3061,24 @@ fn perform_absolute_layout_on_absolute_children(
             // `start`/`end` are writing-mode relative (they flip for RTL but not for
             // reversed flex-directions), whereas `flex-start`/`flex-end` and the
             // distributed keywords' fallbacks are flex-relative.
-            let start_position = match constants.justify_content.unwrap_or(JustifyContent::FLEX_START).keyword() {
-                AlignContentKeyword::Start => !constants.main_axis_start_reversed,
-                AlignContentKeyword::End => constants.main_axis_start_reversed,
+            let justify_content = apply_alignment_fallback(
+                free_space.main(constants.dir),
+                1,
+                constants.justify_content.unwrap_or(JustifyContent::FLEX_START),
+            );
+            let start_position = match justify_content {
+                ResolvedAlignContentKeyword::Start => !constants.main_axis_start_reversed,
+                ResolvedAlignContentKeyword::End => constants.main_axis_start_reversed,
                 _ => true,
             };
-            match (
-                constants.justify_content.unwrap_or(JustifyContent::FLEX_START).keyword(),
-                main_axis_flex_start_reversed,
-            ) {
-                (AlignContentKeyword::SpaceBetween, false)
-                | (AlignContentKeyword::Stretch, false)
-                | (AlignContentKeyword::FlexStart, false)
-                | (AlignContentKeyword::FlexEnd, true) => {
+            match (justify_content, main_axis_flex_start_reversed) {
+                (ResolvedAlignContentKeyword::SpaceBetween, false)
+                | (ResolvedAlignContentKeyword::Stretch, false)
+                | (ResolvedAlignContentKeyword::FlexStart, false)
+                | (ResolvedAlignContentKeyword::FlexEnd, true) => {
                     constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
                 }
-                (AlignContentKeyword::Start | AlignContentKeyword::End, _) => {
+                (ResolvedAlignContentKeyword::Start | ResolvedAlignContentKeyword::End, _) => {
                     if start_position {
                         constants.content_box_inset.main_start(constants.dir)
                             + resolved_margin.main_start(constants.dir)
@@ -3085,18 +3089,18 @@ fn perform_absolute_layout_on_absolute_children(
                             - resolved_margin.main_end(constants.dir)
                     }
                 }
-                (AlignContentKeyword::FlexEnd, false)
-                | (AlignContentKeyword::FlexStart, true)
-                | (AlignContentKeyword::Stretch, true)
-                | (AlignContentKeyword::SpaceBetween, true) => {
+                (ResolvedAlignContentKeyword::FlexEnd, false)
+                | (ResolvedAlignContentKeyword::FlexStart, true)
+                | (ResolvedAlignContentKeyword::Stretch, true)
+                | (ResolvedAlignContentKeyword::SpaceBetween, true) => {
                     constants.container_size.main(constants.dir)
                         - constants.content_box_inset.main_end(constants.dir)
                         - final_size.main(constants.dir)
                         - resolved_margin.main_end(constants.dir)
                 }
-                (AlignContentKeyword::SpaceEvenly, _)
-                | (AlignContentKeyword::SpaceAround, _)
-                | (AlignContentKeyword::Center, _) => {
+                (ResolvedAlignContentKeyword::SpaceEvenly, _)
+                | (ResolvedAlignContentKeyword::SpaceAround, _)
+                | (ResolvedAlignContentKeyword::Center, _) => {
                     (constants.container_size.main(constants.dir)
                         + constants.content_box_inset.main_start(constants.dir)
                         - constants.content_box_inset.main_end(constants.dir)

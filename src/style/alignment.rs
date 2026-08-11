@@ -77,6 +77,10 @@ pub enum AlignContentKeyword {
     FlexEnd,
     /// Items are centered around the middle of the axis.
     Center,
+    /// Contents participate in first-baseline content alignment.
+    Baseline,
+    /// Contents participate in last-baseline content alignment.
+    LastBaseline,
     /// Items are stretched to fill the container.
     Stretch,
     /// The first and last items are aligned flush with the edges of the container
@@ -88,24 +92,6 @@ pub enum AlignContentKeyword {
     /// The gap between the first and last items is exactly HALF the gap between
     /// items. The gaps are distributed evenly in proportion to these ratios.
     SpaceAround,
-}
-
-impl AlignContentKeyword {
-    /// Returns the reversed keyword for RTL (right-to-left) contexts: `Start`↔`End`,
-    /// `FlexStart`↔`FlexEnd`. `Stretch` maps to `End` to preserve the layout
-    /// algorithms' historical handling. Center and the distribution keywords
-    /// (`SpaceBetween`, `SpaceEvenly`, `SpaceAround`) are unaffected because their
-    /// visual placement is direction-symmetric.
-    pub(crate) fn reversed(self) -> Self {
-        match self {
-            Self::Start => Self::End,
-            Self::End => Self::Start,
-            Self::FlexStart => Self::FlexEnd,
-            Self::FlexEnd => Self::FlexStart,
-            Self::Stretch => Self::End,
-            Self::Center | Self::SpaceBetween | Self::SpaceEvenly | Self::SpaceAround => self,
-        }
-    }
 }
 
 /// The overflow-position modifier per [CSS Box Alignment §4.3][css-align-overflow].
@@ -375,6 +361,11 @@ impl AlignContent {
     pub const FLEX_END: Self = Self { keyword: AlignContentKeyword::FlexEnd, safety: AlignmentSafety::Unsafe };
     /// Items are centered around the middle of the axis.
     pub const CENTER: Self = Self { keyword: AlignContentKeyword::Center, safety: AlignmentSafety::Unsafe };
+    /// Contents participate in first-baseline content alignment.
+    pub const BASELINE: Self = Self { keyword: AlignContentKeyword::Baseline, safety: AlignmentSafety::Unsafe };
+    /// Contents participate in last-baseline content alignment.
+    pub const LAST_BASELINE: Self =
+        Self { keyword: AlignContentKeyword::LastBaseline, safety: AlignmentSafety::Unsafe };
     /// Items are stretched to fill the container.
     pub const STRETCH: Self = Self { keyword: AlignContentKeyword::Stretch, safety: AlignmentSafety::Unsafe };
     /// The first and last items are aligned flush with the edges of the container.
@@ -411,6 +402,18 @@ impl AlignContent {
     pub const fn keyword(self) -> AlignContentKeyword {
         self.keyword
     }
+
+    /// Returns `true` for either first- or last-baseline content alignment.
+    #[inline]
+    pub const fn is_baseline(self) -> bool {
+        matches!(self.keyword, AlignContentKeyword::Baseline | AlignContentKeyword::LastBaseline)
+    }
+
+    /// Returns `true` only for last-baseline content alignment.
+    #[inline]
+    pub const fn is_last_baseline(self) -> bool {
+        matches!(self.keyword, AlignContentKeyword::LastBaseline)
+    }
 }
 
 #[cfg(feature = "parse")]
@@ -445,6 +448,32 @@ impl FromCss for AlignContent {
             "flex-start" => Ok(Self::FLEX_START),
             "flex-end" => Ok(Self::FLEX_END),
             "center" => Ok(Self::CENTER),
+            "baseline" => {
+                if input.is_exhausted() {
+                    Ok(Self::BASELINE)
+                } else {
+                    let preference = input.expect_ident()?.clone();
+                    cssparser::match_ignore_ascii_case! { &*preference,
+                        "first" => Ok(Self::BASELINE),
+                        "last" => Ok(Self::LAST_BASELINE),
+                        _ => Err(input.new_unexpected_token_error(Token::Ident(preference))),
+                    }
+                }
+            },
+            "first" => {
+                let baseline = input.expect_ident()?.clone();
+                cssparser::match_ignore_ascii_case! { &*baseline,
+                    "baseline" => Ok(Self::BASELINE),
+                    _ => Err(input.new_unexpected_token_error(Token::Ident(baseline))),
+                }
+            },
+            "last" => {
+                let baseline = input.expect_ident()?.clone();
+                cssparser::match_ignore_ascii_case! { &*baseline,
+                    "baseline" => Ok(Self::LAST_BASELINE),
+                    _ => Err(input.new_unexpected_token_error(Token::Ident(baseline))),
+                }
+            },
             "stretch" => Ok(Self::STRETCH),
             "space-between" => Ok(Self::SPACE_BETWEEN),
             "space-evenly" => Ok(Self::SPACE_EVENLY),
@@ -564,6 +593,8 @@ const ALIGN_CONTENT_NAMES: &[&str] = &[
     "FlexStart",
     "FlexEnd",
     "Center",
+    "Baseline",
+    "LastBaseline",
     "Stretch",
     "SpaceBetween",
     "SpaceEvenly",
@@ -584,6 +615,8 @@ impl serde::Serialize for AlignContent {
             (AlignContentKeyword::FlexStart, AlignmentSafety::Unsafe) => "FlexStart",
             (AlignContentKeyword::FlexEnd, AlignmentSafety::Unsafe) => "FlexEnd",
             (AlignContentKeyword::Center, AlignmentSafety::Unsafe) => "Center",
+            (AlignContentKeyword::Baseline, _) => "Baseline",
+            (AlignContentKeyword::LastBaseline, _) => "LastBaseline",
             (AlignContentKeyword::Stretch, _) => "Stretch",
             (AlignContentKeyword::SpaceBetween, _) => "SpaceBetween",
             (AlignContentKeyword::SpaceEvenly, _) => "SpaceEvenly",
@@ -614,6 +647,8 @@ impl<'de> serde::Deserialize<'de> for AlignContent {
                     "FlexStart" => AlignContent::FLEX_START,
                     "FlexEnd" => AlignContent::FLEX_END,
                     "Center" => AlignContent::CENTER,
+                    "Baseline" => AlignContent::BASELINE,
+                    "LastBaseline" => AlignContent::LAST_BASELINE,
                     "Stretch" => AlignContent::STRETCH,
                     "SpaceBetween" => AlignContent::SPACE_BETWEEN,
                     "SpaceEvenly" => AlignContent::SPACE_EVENLY,
@@ -764,6 +799,8 @@ mod tests {
         assert!(AlignContent::SAFE_START.is_safe());
         assert!(AlignContent::SAFE_CENTER.is_safe());
         assert!(!AlignContent::SPACE_BETWEEN.is_safe());
+        assert!(!AlignContent::BASELINE.is_safe());
+        assert!(!AlignContent::LAST_BASELINE.is_safe());
         assert!(!AlignContent::STRETCH.is_safe());
     }
 
@@ -776,17 +813,12 @@ mod tests {
     }
 
     #[test]
-    fn align_content_keyword_reversed_swaps_start_end() {
-        assert_eq!(AlignContentKeyword::Start.reversed(), AlignContentKeyword::End);
-        assert_eq!(AlignContentKeyword::End.reversed(), AlignContentKeyword::Start);
-        assert_eq!(AlignContentKeyword::FlexStart.reversed(), AlignContentKeyword::FlexEnd);
-        assert_eq!(AlignContentKeyword::FlexEnd.reversed(), AlignContentKeyword::FlexStart);
-        // Stretch reverses to End — preserves pre-refactor behaviour.
-        assert_eq!(AlignContentKeyword::Stretch.reversed(), AlignContentKeyword::End);
-        assert_eq!(AlignContentKeyword::Center.reversed(), AlignContentKeyword::Center);
-        assert_eq!(AlignContentKeyword::SpaceBetween.reversed(), AlignContentKeyword::SpaceBetween);
-        assert_eq!(AlignContentKeyword::SpaceEvenly.reversed(), AlignContentKeyword::SpaceEvenly);
-        assert_eq!(AlignContentKeyword::SpaceAround.reversed(), AlignContentKeyword::SpaceAround);
+    fn align_content_identifies_baseline_preference() {
+        assert!(AlignContent::BASELINE.is_baseline());
+        assert!(AlignContent::LAST_BASELINE.is_baseline());
+        assert!(!AlignContent::START.is_baseline());
+        assert!(!AlignContent::BASELINE.is_last_baseline());
+        assert!(AlignContent::LAST_BASELINE.is_last_baseline());
     }
 
     #[cfg(feature = "parse")]
@@ -852,6 +884,11 @@ mod tests {
     #[test]
     fn parse_align_content_plain() {
         assert_eq!("start".parse::<AlignContent>().unwrap(), AlignContent::START);
+        assert_eq!("baseline".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
+        assert_eq!("first baseline".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
+        assert_eq!("baseline first".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
+        assert_eq!("last baseline".parse::<AlignContent>().unwrap(), AlignContent::LAST_BASELINE);
+        assert_eq!("baseline last".parse::<AlignContent>().unwrap(), AlignContent::LAST_BASELINE);
         assert_eq!("space-between".parse::<AlignContent>().unwrap(), AlignContent::SPACE_BETWEEN);
         assert_eq!("space-evenly".parse::<AlignContent>().unwrap(), AlignContent::SPACE_EVENLY);
         assert_eq!("space-around".parse::<AlignContent>().unwrap(), AlignContent::SPACE_AROUND);
@@ -879,11 +916,13 @@ mod tests {
     #[test]
     fn parse_align_content_rejects_invalid_safe_combos() {
         assert!("safe stretch".parse::<AlignContent>().is_err());
+        assert!("safe baseline".parse::<AlignContent>().is_err());
         assert!("safe space-between".parse::<AlignContent>().is_err());
         assert!("safe space-evenly".parse::<AlignContent>().is_err());
         assert!("safe space-around".parse::<AlignContent>().is_err());
         assert!("safe".parse::<AlignContent>().is_err());
         assert!("unsafe stretch".parse::<AlignContent>().is_err());
+        assert!("unsafe baseline".parse::<AlignContent>().is_err());
         assert!("unsafe space-between".parse::<AlignContent>().is_err());
     }
 
@@ -927,6 +966,8 @@ mod tests {
             (AlignContent::FLEX_START, "\"FlexStart\""),
             (AlignContent::FLEX_END, "\"FlexEnd\""),
             (AlignContent::CENTER, "\"Center\""),
+            (AlignContent::BASELINE, "\"Baseline\""),
+            (AlignContent::LAST_BASELINE, "\"LastBaseline\""),
             (AlignContent::STRETCH, "\"Stretch\""),
             (AlignContent::SPACE_BETWEEN, "\"SpaceBetween\""),
             (AlignContent::SPACE_EVENLY, "\"SpaceEvenly\""),
