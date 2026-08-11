@@ -1,6 +1,6 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
-use crate::compute::common::aspect_ratio::resolve_size_constraints;
+use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{Line, Point, Rect, Size};
@@ -281,6 +281,7 @@ impl GridItem {
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
             self.size.map(|dimension| dimension.is_auto()),
+            TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border_size,
         );
@@ -550,6 +551,7 @@ impl GridItem {
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
             self.size.map(|dimension| dimension.is_auto()),
+            TransferredSizesMode::Normal,
             self.aspect_ratio,
             padding_border_size,
         );

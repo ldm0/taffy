@@ -21,7 +21,7 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::resolve_size_constraints;
+use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -84,6 +84,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
+                TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border_size,
             );

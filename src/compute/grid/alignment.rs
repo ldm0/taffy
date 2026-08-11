@@ -3,7 +3,7 @@ use super::types::GridTrack;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
-use crate::compute::common::aspect_ratio::resolve_size_constraints;
+use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
@@ -204,6 +204,7 @@ pub(super) fn align_and_position_item(
         min_size,
         max_size,
         raw_size.map(|dimension| dimension.is_auto()),
+        TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border_size,
     );
