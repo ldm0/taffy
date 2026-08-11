@@ -11,15 +11,15 @@ use crate::geometry::Size;
 use crate::style::{AvailableSpace, Display, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
-    Cache, ClearState, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree, RoundTree, RunMode,
-    TraversePartialTree, TraverseTree,
+    Cache, ClearState, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
+    RoundTree, RunMode, TraversePartialTree, TraverseTree,
 };
 use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_hidden_layout, compute_leaf_layout_with_aspect_ratio, compute_root_layout,
-    round_layout,
+    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_aspect_ratio,
+    compute_root_layout, round_layout,
 };
 use crate::CacheTree;
 
@@ -219,6 +219,14 @@ impl<NodeContext> CacheTree for TaffyTree<NodeContext> {
         self.nodes[node_id.into()].cache.store(input, layout_output)
     }
 
+    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
+        self.nodes[node_id.into()].cache.get_size(input)
+    }
+
+    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
+        self.nodes[node_id.into()].cache.store_size(input, result)
+    }
+
     fn cache_clear(&mut self, node_id: NodeId) {
         self.nodes[node_id.into()].cache.clear();
     }
@@ -338,6 +346,43 @@ where
             output.with_block_constraint_dependency(intrinsic_dependency)
         })
     }
+
+    /// Operation-specific intrinsic sizing path used by parent formatting
+    /// contexts. The formatting algorithms still return a transitional combined
+    /// result internally; only its measurement projection crosses this seam.
+    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
+        debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
+        let (inputs, intrinsic_dependency) =
+            crate::compute::common::intrinsic_size::resolve_intrinsic_width_inputs_with_metadata(self, node_id, inputs);
+
+        compute_cached_size(self, node_id, inputs, |tree, node_id, inputs| {
+            let display_mode = tree.taffy.nodes[node_id.into()].style.display;
+            let has_children = tree.child_count(node_id) > 0;
+            let output = match (display_mode, has_children) {
+                (Display::None, _) => compute_hidden_layout(tree, node_id),
+                #[cfg(feature = "block_layout")]
+                (Display::Block, true) => compute_block_layout(tree, node_id, inputs, None),
+                #[cfg(feature = "block_layout")]
+                (Display::FlowRoot, true) => compute_block_layout(tree, node_id, inputs, None),
+                #[cfg(feature = "flexbox")]
+                (Display::Flex, true) => compute_flexbox_layout(tree, node_id, inputs),
+                #[cfg(feature = "grid")]
+                (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
+                (_, false) => {
+                    let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+                    let node_key = node_id.into();
+                    let style = &tree.taffy.nodes[node_key].style;
+                    let has_context = tree.taffy.nodes[node_key].has_context;
+                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
+                    let measure_function = |known_dimensions, available_space| {
+                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
+                    };
+                    compute_leaf_layout_with_aspect_ratio(inputs, style, aspect_ratio, |_, _| 0.0, measure_function)
+                }
+            };
+            output.with_block_constraint_dependency(intrinsic_dependency).intrinsic_size_result()
+        })
+    }
 }
 
 // TraversePartialTree impl for TaffyView
@@ -411,6 +456,11 @@ where
             None,
         )
     }
+
+    #[inline(always)]
+    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
+        self.compute_child_size(node_id, inputs)
+    }
 }
 
 impl<NodeContext, MeasureFunction> CacheTree for TaffyView<'_, NodeContext, MeasureFunction>
@@ -424,6 +474,14 @@ where
 
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput) {
         self.taffy.nodes[node_id.into()].cache.store(input, layout_output)
+    }
+
+    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
+        self.taffy.nodes[node_id.into()].cache.get_size(input)
+    }
+
+    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
+        self.taffy.nodes[node_id.into()].cache.store_size(input, result)
     }
 
     fn cache_clear(&mut self, node_id: NodeId) {
@@ -1129,8 +1187,8 @@ mod tests {
         };
 
         let mut layout_tree = taffy.as_layout_tree();
-        let first = layout_tree.compute_child_layout(parent, initial);
-        let second = layout_tree.compute_child_layout(
+        let first = layout_tree.compute_child_size(parent, initial);
+        let second = layout_tree.compute_child_size(
             parent,
             LayoutInput { parent_size: Size { width: Some(200.0), height: Some(50.0) }, ..initial },
         );

@@ -53,8 +53,8 @@ pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCal
 use crate::geometry::{Line, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
 use crate::tree::{
-    Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree, RunMode, SizingMode,
-    SizingPurpose,
+    IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RoundTree,
+    RunMode, SizingMode, SizingPurpose,
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
@@ -223,32 +223,12 @@ where
 
     let mut computed_size_and_baselines = compute_uncached(tree, node, inputs);
 
-    // A measurement result only depends on the parent's block constraint when
-    // this box consumes that constraint and the requested result can observe
-    // it. This mirrors Blink's BlockNode/MinMaxSizesResult boundary: formatting
-    // algorithms report descendant dependency, while the node boundary gates
-    // propagation using this node's own block-size styles and aspect ratio.
-    if inputs.run_mode == RunMode::ComputeSize && inputs.sizing_mode == SizingMode::InherentSize {
-        let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
-        let style_depends_on_parent_block_size = {
-            let style = tree.get_core_container_style(node);
-            let size = style.size();
-            let min_size = style.min_size();
-            let max_size = style.max_size();
-            [size.height, min_size.height, max_size.height]
-                .into_iter()
-                .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
-        };
-        let requested_block_size = inputs.axis != RequestedAxis::Horizontal;
-        computed_size_and_baselines.set_block_constraint_dependency(
-            style_depends_on_parent_block_size
-                && (requested_block_size
-                    || has_aspect_ratio
-                    || computed_size_and_baselines.block_constraint_dependency()),
-        );
-    } else if inputs.run_mode != RunMode::ComputeSize {
-        computed_size_and_baselines.set_block_constraint_dependency(false);
-    }
+    computed_size_and_baselines.set_block_constraint_dependency(node_block_constraint_dependency(
+        tree,
+        node,
+        inputs,
+        computed_size_and_baselines.block_constraint_dependency(),
+    ));
 
     // Cache result
     tree.cache_store(node, &inputs, computed_size_and_baselines);
@@ -257,6 +237,75 @@ where
     debug_pop_node!();
 
     computed_size_and_baselines
+}
+
+/// Compute or retrieve a dedicated intrinsic size result for a node.
+///
+/// This is the sizing counterpart to [`compute_cached_layout`]. It keeps
+/// measurement provenance out of the public layout result protocol while the
+/// formatting-context implementations are incrementally moved off the legacy
+/// combined dispatcher.
+pub fn compute_cached_size<Tree: CacheTree + LayoutPartialTree + ?Sized, ComputeFunction>(
+    tree: &mut Tree,
+    node: NodeId,
+    inputs: LayoutInput,
+    compute_uncached: ComputeFunction,
+) -> IntrinsicSizeResult
+where
+    ComputeFunction: FnOnce(&mut Tree, NodeId, LayoutInput) -> IntrinsicSizeResult,
+{
+    debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
+    debug_push_node!(node);
+
+    if let Some(cached_result) = tree.cache_get_size(node, &inputs) {
+        debug_log_node!(inputs);
+        debug_log!("RESULT (CACHED)", dbg:cached_result.size);
+        debug_pop_node!();
+        return cached_result;
+    }
+
+    debug_log_node!(inputs);
+    let mut result = compute_uncached(tree, node, inputs);
+    result.depends_on_block_constraints =
+        node_block_constraint_dependency(tree, node, inputs, result.depends_on_block_constraints);
+    tree.cache_store_size(node, &inputs, result);
+
+    debug_log!("RESULT", dbg:result.size);
+    debug_pop_node!();
+    result
+}
+
+/// Gate a formatting algorithm's reported dependency at the node sizing
+/// boundary.
+///
+/// Content-only probes forward descendant dependency unchanged. Inherent-size
+/// probes report it to their parent only when this node consumes the parent's
+/// block constraint and the requested result can observe the change.
+fn node_block_constraint_dependency(
+    tree: &(impl LayoutPartialTree + ?Sized),
+    node: NodeId,
+    inputs: LayoutInput,
+    reported_dependency: bool,
+) -> bool {
+    if inputs.run_mode != RunMode::ComputeSize {
+        return false;
+    }
+    if inputs.sizing_mode != SizingMode::InherentSize {
+        return reported_dependency;
+    }
+
+    let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
+    let style_depends_on_parent_block_size = {
+        let style = tree.get_core_container_style(node);
+        let size = style.size();
+        let min_size = style.min_size();
+        let max_size = style.max_size();
+        [size.height, min_size.height, max_size.height]
+            .into_iter()
+            .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
+    };
+    let requested_block_size = inputs.axis != RequestedAxis::Horizontal;
+    style_depends_on_parent_block_size && (requested_block_size || has_aspect_ratio || reported_dependency)
 }
 
 /// Rounds the calculated layout to exact pixel values

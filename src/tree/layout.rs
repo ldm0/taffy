@@ -223,6 +223,10 @@ pub struct LayoutOutput {
     /// layout consumers exchange this state through [`IntrinsicSizeResult`],
     /// not through `LayoutOutput`.
     depends_on_block_constraints: bool,
+    /// Transitional transport for operation-local aspect-ratio provenance.
+    /// This flag is projected through [`IntrinsicSizeResult`] and is never
+    /// exposed as part of the public layout result protocol.
+    applied_aspect_ratio: bool,
     #[cfg(feature = "content_size")]
     /// The size of the content within the node
     pub content_size: Size<f32>,
@@ -246,6 +250,7 @@ impl LayoutOutput {
     pub const HIDDEN: Self = Self {
         size: Size::ZERO,
         depends_on_block_constraints: false,
+        applied_aspect_ratio: false,
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
         first_baselines: Point::NONE,
@@ -277,6 +282,7 @@ impl LayoutOutput {
         Self {
             size,
             depends_on_block_constraints: false,
+            applied_aspect_ratio: false,
             #[cfg(feature = "content_size")]
             content_size,
             first_baselines,
@@ -317,6 +323,16 @@ impl LayoutOutput {
         self.depends_on_block_constraints = depends;
     }
 
+    /// Construct the transitional combined result from a dedicated intrinsic
+    /// sizing result.
+    #[inline(always)]
+    pub(crate) fn from_intrinsic_size_result(result: IntrinsicSizeResult) -> Self {
+        let mut output = Self::from_outer_size(result.size);
+        output.depends_on_block_constraints = result.depends_on_block_constraints;
+        output.applied_aspect_ratio = result.applied_aspect_ratio;
+        output
+    }
+
     /// Project the measurement portion of this transitional combined result.
     ///
     /// Layout algorithms should exchange [`IntrinsicSizeResult`] through
@@ -329,7 +345,7 @@ impl LayoutOutput {
         IntrinsicSizeResult {
             size: self.size,
             depends_on_block_constraints: self.depends_on_block_constraints,
-            applied_aspect_ratio: false,
+            applied_aspect_ratio: self.applied_aspect_ratio,
         }
     }
 }
