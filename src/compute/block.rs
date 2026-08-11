@@ -729,29 +729,28 @@ fn compute_inner(
     let can_be_collapsed_through =
         !has_styles_preventing_being_collapsed_through && all_in_flow_children_can_be_collapsed_through;
 
-    let mut output = LayoutOutput {
-        size: final_outer_size,
-        depends_on_block_constraints: content_width_depends_on_block_constraints
-            || items.iter().any(|item| item.depends_on_block_constraints),
-        #[cfg(feature = "content_size")]
-        content_size: Size::ZERO,
-        first_baselines: Point { x: None, y: first_baseline },
-        last_baselines: Point { x: None, y: last_baseline },
-        top_margin: if own_margins_collapse_with_children.start {
-            first_child_top_margin_set
-        } else {
-            let margin_top = raw_margin.top.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-            CollapsibleMarginSet::from_margin(margin_top)
-        },
-        bottom_margin: if own_bottom_margin_collapses_with_children {
-            last_child_bottom_margin_set
-        } else {
-            let margin_bottom =
-                raw_margin.bottom.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
-            CollapsibleMarginSet::from_margin(margin_bottom)
-        },
-        margins_can_collapse_through: can_be_collapsed_through,
+    let mut output = LayoutOutput::from_sizes_and_baseline_sets(
+        final_outer_size,
+        Size::ZERO,
+        Point { x: None, y: first_baseline },
+        Point { x: None, y: last_baseline },
+    )
+    .with_block_constraint_dependency(
+        content_width_depends_on_block_constraints || items.iter().any(|item| item.depends_on_block_constraints),
+    );
+    output.top_margin = if own_margins_collapse_with_children.start {
+        first_child_top_margin_set
+    } else {
+        let margin_top = raw_margin.top.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+        CollapsibleMarginSet::from_margin(margin_top)
     };
+    output.bottom_margin = if own_bottom_margin_collapses_with_children {
+        last_child_bottom_margin_set
+    } else {
+        let margin_bottom = raw_margin.bottom.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis));
+        CollapsibleMarginSet::from_margin(margin_bottom)
+    };
+    output.margins_can_collapse_through = can_be_collapsed_through;
 
     // Short-circuit if computing size.
     //
@@ -1419,7 +1418,7 @@ fn perform_final_layout_on_in_flow_children(
             } else {
                 tree.compute_child_layout(item.node_id, inputs)
             };
-            item.depends_on_block_constraints |= item_layout.depends_on_block_constraints;
+            item.depends_on_block_constraints |= item_layout.block_constraint_dependency();
             let final_size = item_layout.size;
 
             let top_margin_set = item_layout.top_margin.collapse_with_margin(item_margin.top.unwrap_or(0.0));

@@ -126,7 +126,9 @@
 //! }
 //! ```
 //!
-use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode, SizingPurpose};
+use super::{
+    IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode, SizingPurpose,
+};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Line, Size};
@@ -210,6 +212,17 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Compute the specified node's size or full layout given the specified constraints
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput;
+
+    /// Measure the specified node while retaining intrinsic sizing provenance.
+    ///
+    /// Implementations with an operation-specific sizing path should override
+    /// this method. The default preserves compatibility with existing custom
+    /// trees while Taffy's combined cached dispatcher is split into independent
+    /// layout and intrinsic-sizing protocols.
+    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
+        debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
+        self.compute_child_layout(node_id, inputs).intrinsic_size_result()
+    }
 }
 
 /// Trait used by the `compute_cached_layout` method which allows cached layout results to be stored and retrieved.
@@ -343,8 +356,8 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
         sizing_mode: SizingMode,
         axis: RequestedAxis,
         vertical_margins_are_collapsible: Line<bool>,
-    ) -> LayoutOutput {
-        self.compute_child_layout(
+    ) -> IntrinsicSizeResult {
+        self.compute_child_size(
             node_id,
             LayoutInput {
                 known_dimensions,
