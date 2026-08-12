@@ -789,6 +789,11 @@ pub struct ResolvedNodeSizing {
     /// Initial physical border-box geometry after parent-fixed dimensions and
     /// child-owned sizing have been combined.
     pub outer_size: Size<Option<f32>>,
+    /// Used physical border-box dimensions that are definite for descendants.
+    ///
+    /// Unlike `outer_size`, this excludes content-derived and intrinsic-keyword
+    /// sizes even after they have been reduced to numeric used values.
+    pub definite_size: Size<Option<f32>>,
     /// Whether resolving the logical inline axis measured content dependent
     /// on the containing block's block constraint.
     pub depends_on_block_constraints: bool,
@@ -799,6 +804,19 @@ pub struct ResolvedNodeSizing {
     pub(crate) constraints: ResolvedSizeConstraints,
 }
 
+/// Direct authored-size resolution and the subset whose source is definite.
+///
+/// Intrinsic keywords and size-containment substitutes can produce numeric
+/// preferred sizes later in the pipeline, but they must not become percentage
+/// bases merely because their used value has been measured.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DirectNodeSizeResolution {
+    /// Preferred and limiting used-value constraints after containment.
+    constraints: ResolvedSizeConstraints,
+    /// Preferred axes resolved without content measurement or containment.
+    definite_preferred_size: Size<Option<f32>>,
+}
+
 /// Resolve authored numeric, available-space and containment constraints
 /// before intrinsic keywords are merged by the caller.
 fn resolve_direct_node_size_constraints(
@@ -807,7 +825,7 @@ fn resolve_direct_node_size_constraints(
     writing_mode: WritingMode,
     sizing: NodeSizeConstraintInput,
     transferred_sizes_mode: TransferredSizesMode,
-) -> ResolvedSizeConstraints {
+) -> DirectNodeSizeResolution {
     let NodeSizeConstraintInput {
         raw_size,
         raw_min_size,
@@ -824,33 +842,48 @@ fn resolve_direct_node_size_constraints(
         inputs.available_space.into_options(),
         padding_border_size,
     );
-    apply_contained_intrinsic_size_constraints(
-        resolve_size_constraints(SizeConstraintInput {
-            size: raw_size
-                .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.preferred),
-            min_size: raw_min_size
-                .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.min),
-            max_size: raw_max_size
-                .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.max),
-            size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-            writing_mode,
-            inline_auto_behavior: inputs.inline_auto_behavior,
-            block_auto_behavior: inputs.block_auto_behavior,
-            transferred_sizes_mode,
-            aspect_ratio,
-            padding_border: padding_border_size,
-        }),
+    let direct_preferred_size = raw_size
+        .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
+        .maybe_add(box_sizing_adjustment)
+        .or(stretch.preferred);
+    let resolved = resolve_size_constraints(SizeConstraintInput {
+        size: direct_preferred_size,
+        min_size: raw_min_size
+            .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
+            .maybe_add(box_sizing_adjustment)
+            .or(stretch.min),
+        max_size: raw_max_size
+            .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
+            .maybe_add(box_sizing_adjustment)
+            .or(stretch.max),
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inline_auto_behavior: inputs.inline_auto_behavior,
+        block_auto_behavior: inputs.block_auto_behavior,
+        transferred_sizes_mode,
+        aspect_ratio,
+        padding_border: padding_border_size,
+    });
+    let definite_preferred_size = resolved.size;
+    let constraints = apply_contained_intrinsic_size_constraints(
+        resolved,
         raw_size,
         raw_min_size,
         raw_max_size,
         contained_outer_size,
-    )
+    );
+    DirectNodeSizeResolution { constraints, definite_preferred_size }
+}
+
+/// Keep the final used value only on axes with a definite sizing source.
+#[inline(always)]
+fn used_definite_size(
+    used_size: Size<Option<f32>>,
+    parent_definite_size: Size<Option<f32>>,
+    own_definite_size: Size<Option<f32>>,
+) -> Size<Option<f32>> {
+    let definite_source = parent_definite_size.or(own_definite_size);
+    Size { width: definite_source.width.and(used_size.width), height: definite_source.height.and(used_size.height) }
 }
 
 /// Resolve a node's initial sizing geometry without changing its constraint
@@ -878,13 +911,14 @@ pub(crate) fn resolve_node_size_constraints(
         // the contribution being measured, while preferred-ratio transfer is
         // owned by the formatting algorithm performing that measurement.
         let contribution_sizing = sizing.for_content_contribution(inputs.axis);
-        let resolved = resolve_direct_node_size_constraints(
+        let direct = resolve_direct_node_size_constraints(
             tree,
             inputs,
             writing_mode,
             contribution_sizing,
             TransferredSizesMode::Ignore,
         );
+        let resolved = direct.constraints;
         let preferred_size = resolved
             .size
             .maybe_clamp(resolved.min_size, resolved.max_size)
@@ -896,11 +930,13 @@ pub(crate) fn resolve_node_size_constraints(
             resolved.max_size,
             sizing.padding_border_size,
         );
+        let definite_size = used_definite_size(outer_size, inputs.definite_dimensions, direct.definite_preferred_size);
         return ResolvedNodeSizing {
             preferred_size,
             min_size: resolved.min_size,
             max_size: resolved.max_size,
             outer_size,
+            definite_size,
             depends_on_block_constraints: false,
             applied_aspect_ratio: false,
             constraints: resolved,
@@ -936,8 +972,8 @@ pub(crate) fn resolve_node_size_constraints(
         },
     );
 
-    let mut resolved =
-        resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
+    let direct = resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
+    let mut resolved = direct.constraints;
     let mut logical_resolved_size = writing_mode.to_logical(resolved.size);
     logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
     resolved.size = writing_mode.to_physical(logical_resolved_size);
@@ -951,6 +987,13 @@ pub(crate) fn resolve_node_size_constraints(
     resolved.apply_automatic_minimum(inline_axis, automatic_minimum.value);
     resolved.size = resolve_inline_auto_size(
         resolved.size,
+        raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inputs.inline_auto_behavior,
+        inputs.available_space,
+    );
+    let own_definite_size = resolve_inline_auto_size(
+        direct.definite_preferred_size,
         raw_size.map(|dimension| dimension.is_auto()),
         writing_mode,
         inputs.inline_auto_behavior,
@@ -987,6 +1030,7 @@ pub(crate) fn resolve_node_size_constraints(
         resolved.max_size,
         padding_border_size,
     );
+    let definite_size = used_definite_size(outer_size, inputs.definite_dimensions, own_definite_size);
     let applied_aspect_ratio = inputs.known_dimensions.get_abs(inline_axis).is_none()
         && min_max_definite_size.get_abs(inline_axis).is_none()
         && (resolved.aspect_ratio_applied.get_abs(inline_axis)
@@ -998,6 +1042,7 @@ pub(crate) fn resolve_node_size_constraints(
         min_size: resolved.min_size,
         max_size: resolved.max_size,
         outer_size,
+        definite_size,
         depends_on_block_constraints: intrinsic.depends_on_block_constraints
             || automatic_minimum.depends_on_block_constraints,
         applied_aspect_ratio,

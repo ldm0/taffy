@@ -541,7 +541,7 @@ fn compute_inner(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node_id);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { definite_dimensions, available_space, run_mode, block_margins_are_collapsible, .. } = inputs;
+    let LayoutInput { available_space, run_mode, block_margins_are_collapsible, .. } = inputs;
 
     let style = tree.get_block_container_style(node_id);
     let raw_margin = style.margin();
@@ -583,7 +583,7 @@ fn compute_inner(
     let raw_size_logical = writing_mode.to_logical(raw_size);
     let raw_min_size_logical = writing_mode.to_logical(raw_min_size);
     let outer_logical_size = writing_mode.to_logical(node_sizing.outer_size);
-    let definite_logical_size = writing_mode.to_logical(definite_dimensions);
+    let definite_logical_size = writing_mode.to_logical(node_sizing.definite_size);
     let size_logical = writing_mode.to_logical(node_sizing.preferred_size);
     let min_size_logical = writing_mode.to_logical(node_sizing.min_size);
     let max_size_logical = writing_mode.to_logical(node_sizing.max_size);
@@ -694,14 +694,11 @@ fn compute_inner(
             .with_block_constraint_dependency(content_inline_size_depends_on_block_constraints);
     }
 
-    let container_percentage_resolution_block_size = outer_logical_size
-        .block_size
-        .or(size_logical.block_size.maybe_max(min_size_logical.block_size))
-        .or(min_size_logical.block_size);
+    let container_percentage_resolution_block_size = definite_logical_size.block_size;
     // Relative block-axis percentage insets only resolve against a definite
     // containing-block block size. A minimum may determine the eventual used
     // size, but it does not make an otherwise-auto block size definite.
-    let relative_inset_percentage_resolution_block_size = definite_logical_size.block_size.or(size_logical.block_size);
+    let relative_inset_percentage_resolution_block_size = definite_logical_size.block_size;
 
     // 3. Perform final item layout and return the content block size.
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
