@@ -13,7 +13,8 @@ pub use cache::{Cache, ClearState};
 pub(crate) use layout::ChildLayoutInput;
 pub use layout::{
     AutoSizeBehavior, CollapsibleMarginSet, ConstraintSpace, IntrinsicSizeResult, Layout, LayoutEnvironment,
-    LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose,
+    LayoutInput, LayoutOutput, OutOfFlowCandidate, OutOfFlowContainingBlock, RequestedAxis, RunMode, SizingMode,
+    SizingPurpose,
 };
 pub use node::NodeId;
 pub(crate) use traits::LayoutPartialTreeExt;

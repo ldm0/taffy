@@ -1,5 +1,5 @@
 //! Final data structures that represent the high-level UI layout
-use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingMode};
+use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
 use crate::style::AvailableSpace;
 use crate::style_helpers::TaffyMaxContent;
 use crate::util::sys::{f32_max, f32_min};
@@ -40,6 +40,36 @@ pub enum SizingPurpose {
     /// Compute a min/max-content contribution for an ancestor whose size may
     /// depend on this node.
     IntrinsicContribution,
+}
+
+/// Geometry of the CSS containing block used to resolve and position an
+/// out-of-flow descendant.
+///
+/// This is explicit because an inline containing block can be a fragment rect
+/// inside the numeric container rather than that container's own padding box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutOfFlowContainingBlock {
+    /// Border-box size of the numeric container whose coordinate system owns
+    /// the resulting [`Layout::location`].
+    pub outer_size: Size<f32>,
+    /// Origin of the CSS containing area in the numeric container's border-box
+    /// coordinate system.
+    pub area_offset: Point<f32>,
+    /// Size against which percentages and opposing insets resolve.
+    pub area_size: Size<f32>,
+    /// Writing direction of the CSS containing block.
+    pub writing_direction: WritingDirection,
+}
+
+/// A real out-of-flow child exposed to its original formatting context even
+/// when the numeric tree attaches it to an ancestor containing block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutOfFlowCandidate {
+    /// Node whose static position the original formatting context must emit.
+    pub node: crate::tree::NodeId,
+    /// Number of ordinary numeric children that precede this candidate in
+    /// source order.
+    pub insertion_index: usize,
 }
 
 /// How an authored `auto` size behaves in one logical axis.

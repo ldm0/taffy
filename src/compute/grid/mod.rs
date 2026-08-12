@@ -2,7 +2,7 @@
 //! <https://www.w3.org/TR/css-grid-1>
 use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
-use crate::geometry::{Line, LogicalSize, Size};
+use crate::geometry::{Line, LogicalSize, Point, Size};
 use crate::style::{AlignItems, AvailableSpace, Overflow, Position};
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
@@ -15,7 +15,7 @@ use crate::{
     style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
     JustifyContent, LayoutGridContainer, RequestedAxis,
 };
-use alignment::{align_and_position_item, align_tracks};
+use alignment::{align_and_position_item, align_tracks, out_of_flow_static_position};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
 use flow::GridFlow;
 use implicit_grid::compute_grid_size_estimate;
@@ -25,11 +25,13 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
+use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
 use super::common::intrinsic_size::{
     apply_contained_intrinsic_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
     ContentBasedBlockSize, NodeSizeConstraintInput,
 };
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
+use crate::tree::OutOfFlowContainingBlock;
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -881,7 +883,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
         let placement = align_and_position_item(
             tree,
-            node,
             item.node,
             index as u32,
             grid_area,
@@ -908,9 +909,24 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Position hidden and absolutely positioned children
     let mut order = items.len() as u32;
-    (0..tree.child_count(node)).for_each(|index| {
-        let child = tree.get_child_id(node, index);
+    let numeric_children: Vec<_> = tree.child_ids(node).collect();
+    let candidate_count = tree.out_of_flow_candidate_count(node);
+    let candidates: Vec<_> = (0..candidate_count).map(|index| tree.get_out_of_flow_candidate(node, index)).collect();
+    let mut positioned_children = Vec::with_capacity(numeric_children.len() + candidates.len());
+    for insertion_index in 0..=numeric_children.len() {
+        positioned_children.extend(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.insertion_index.min(numeric_children.len()) == insertion_index)
+                .map(|candidate| candidate.node),
+        );
+        if let Some(child) = numeric_children.get(insertion_index) {
+            positioned_children.push(*child);
+        }
+    }
+    positioned_children.into_iter().for_each(|child| {
         let grid_is_containing_block = tree.is_out_of_flow_containing_block(node, child);
+        let is_direct_grid_child = tree.is_out_of_flow_direct_child(node, child);
         let child_style = tree.get_grid_child_style(child);
 
         // Position hidden child
@@ -1041,8 +1057,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 start: block_containing_bounds.start + block_padding.start,
                 end: block_containing_bounds.end - block_padding.end,
             };
-            let grid_area = if grid_is_containing_block {
+            let grid_area = if grid_is_containing_block && is_direct_grid_child {
                 flow.to_physical_rect(inline_grid_bounds, block_grid_bounds)
+            } else if grid_is_containing_block {
+                // A positioned descendant numerically attached to this grid
+                // uses the grid's padding box, not grid lines authored in a
+                // different formatting context.
+                flow.to_physical_rect(inline_containing_bounds, block_containing_bounds)
             } else {
                 // When the grid only supplies a static position, CSS uses its
                 // content box and ignores authored grid lines. The actual
@@ -1051,26 +1072,46 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             };
             drop(child_style);
 
-            // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
-            #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-            let placement = align_and_position_item(
+            let local_static_position = out_of_flow_static_position(
                 tree,
-                node,
                 child,
-                order,
                 grid_area,
                 container_alignment_styles,
-                InBothAbstractAxis { inline: 0.0, block: 0.0 },
-                InBothAbstractAxis { inline: BaselineGroup::Major, block: BaselineGroup::Major },
-                InBothAbstractAxis { inline: None, block: None },
                 direction,
                 writing_mode,
                 physical_container_border_box,
-                border,
             );
-            #[cfg(feature = "content_size")]
-            {
-                absolute_content_size = absolute_content_size.f32_max(placement.content_size_contribution);
+            tree.set_out_of_flow_static_position(node, child, local_static_position);
+            if grid_is_containing_block {
+                let writing_direction = flow.writing_direction();
+                let containing_block = tree.get_out_of_flow_containing_block(
+                    node,
+                    child,
+                    OutOfFlowContainingBlock {
+                        outer_size: physical_container_border_box,
+                        area_offset: Point { x: grid_area.left, y: grid_area.top },
+                        area_size: Size {
+                            width: grid_area.right - grid_area.left,
+                            height: grid_area.bottom - grid_area.top,
+                        },
+                        writing_direction,
+                    },
+                );
+                let static_position = tree
+                    .get_out_of_flow_static_position(
+                        node,
+                        child,
+                        containing_block.outer_size,
+                        containing_block.writing_direction,
+                    )
+                    .unwrap_or(local_static_position);
+                if let Some(output) = layout_out_of_flow_item(
+                    tree,
+                    OutOfFlowItem { node: child, order, static_position },
+                    containing_block,
+                ) {
+                    absolute_content_size = absolute_content_size.f32_max(output.content_size);
+                }
             }
 
             order += 1;

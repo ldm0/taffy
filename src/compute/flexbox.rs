@@ -1,15 +1,16 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
-use crate::compute::common::alignment::{
-    compute_alignment_offset, resolve_self_alignment_safety, ResolvedAlignContentKeyword,
-};
+use crate::compute::common::alignment::compute_alignment_offset;
 use crate::compute::common::baseline::{
     determine_baseline_group, determine_baseline_writing_mode, logical_block_baseline,
     logical_block_baseline_or_synthesize, physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline,
 };
-use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
+use crate::geometry::{
+    AbsoluteAxis, AbstractAxis, Line, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size,
+    StaticPositionEdge, WritingDirection, WritingMode,
+};
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap, JustifyContent,
-    LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
+    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
+    JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
 use crate::style_helpers::{TaffyMaxContent, TaffyMinContent};
@@ -23,19 +24,17 @@ use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
-use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
+use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
 use super::common::alignment::apply_alignment_fallback;
-use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
-};
+use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    measure_aspect_ratio_automatic_minimum, measure_intrinsic_block_size_constraints,
-    resolve_intrinsic_width_constraints, resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
-    NodeSizeConstraintInput, ResolvedNodeSizing,
+    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
-use super::common::stretch::{resolve_stretch_size_constraints, StretchSizeProperties};
+use super::common::stretch::StretchSizeProperties;
+use crate::tree::OutOfFlowContainingBlock;
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
 /// through the preferred main size.
@@ -70,15 +69,9 @@ struct FlexFlow {
     horizontal_direction: Direction,
     /// Whether the main axis is the container's logical inline axis.
     main_axis_is_inline: bool,
-    /// Whether the container's logical main-start lies at the physical high
-    /// coordinate of the main axis.
-    main_axis_start_reversed: bool,
     /// Whether the container's logical cross-start lies at the physical high
     /// coordinate of the cross axis.
     cross_axis_start_reversed: bool,
-    /// Whether flex-start lies at the physical high coordinate of the main
-    /// axis after applying `*-reverse`.
-    main_axis_flex_start_reversed: bool,
     /// Whether flex-start lies at the physical high coordinate of the cross
     /// axis after applying `wrap-reverse`.
     cross_axis_flex_start_reversed: bool,
@@ -130,9 +123,7 @@ impl FlexFlow {
             direction,
             horizontal_direction,
             main_axis_is_inline,
-            main_axis_start_reversed: base_main_reversed,
             cross_axis_start_reversed: base_cross_reversed,
-            main_axis_flex_start_reversed: base_main_reversed ^ authored_main_reversed,
             cross_axis_flex_start_reversed: base_cross_reversed ^ authored_cross_reversed,
             cross_axis_reversed,
         }
@@ -356,12 +347,8 @@ struct AlgoConstants {
     main_axis_is_inline: bool,
     /// Does the main axis use the container's logical block axis?
     main_axis_is_block: bool,
-    /// Whether logical main-start is the physical high edge.
-    main_axis_start_reversed: bool,
     /// Whether logical cross-start is the physical high edge.
     cross_axis_start_reversed: bool,
-    /// Whether flex main-start is the physical high edge.
-    main_axis_flex_start_reversed: bool,
     /// Whether flex cross-start is the physical high edge.
     cross_axis_flex_start_reversed: bool,
     /// Is wrapping enabled (in either direction)
@@ -859,9 +846,7 @@ fn compute_constants(
         is_column,
         main_axis_is_inline,
         main_axis_is_block,
-        main_axis_start_reversed: flow.main_axis_start_reversed,
         cross_axis_start_reversed: flow.cross_axis_start_reversed,
-        main_axis_flex_start_reversed: flow.main_axis_flex_start_reversed,
         cross_axis_flex_start_reversed: flow.cross_axis_flex_start_reversed,
         is_wrap,
         wrap_reverse,
@@ -2858,34 +2843,146 @@ fn final_layout_pass(
     content_size
 }
 
-/// Perform absolute layout on all absolutely positioned children.
 #[inline]
+/// Map main-axis content alignment to a size-independent static edge.
+fn flex_main_static_position_edge(justify_content: JustifyContent, reverse: bool) -> StaticPositionEdge {
+    match justify_content.keyword() {
+        AlignContentKeyword::Center | AlignContentKeyword::SpaceAround | AlignContentKeyword::SpaceEvenly => {
+            StaticPositionEdge::Center
+        }
+        AlignContentKeyword::Start | AlignContentKeyword::Baseline => StaticPositionEdge::Start,
+        AlignContentKeyword::End | AlignContentKeyword::LastBaseline => StaticPositionEdge::End,
+        AlignContentKeyword::FlexEnd => {
+            if reverse {
+                StaticPositionEdge::Start
+            } else {
+                StaticPositionEdge::End
+            }
+        }
+        AlignContentKeyword::FlexStart | AlignContentKeyword::Stretch | AlignContentKeyword::SpaceBetween => {
+            if reverse {
+                StaticPositionEdge::End
+            } else {
+                StaticPositionEdge::Start
+            }
+        }
+    }
+}
+
+#[inline]
+/// Map cross-axis self alignment to a size-independent static edge.
+fn flex_cross_static_position_edge(align_self: AlignSelf, wrap_reverse: bool) -> StaticPositionEdge {
+    match align_self.keyword() {
+        AlignItemsKeyword::Center => StaticPositionEdge::Center,
+        AlignItemsKeyword::End | AlignItemsKeyword::LastBaseline => StaticPositionEdge::End,
+        AlignItemsKeyword::FlexEnd => {
+            if wrap_reverse {
+                StaticPositionEdge::Start
+            } else {
+                StaticPositionEdge::End
+            }
+        }
+        AlignItemsKeyword::FlexStart | AlignItemsKeyword::Stretch => {
+            if wrap_reverse {
+                StaticPositionEdge::End
+            } else {
+                StaticPositionEdge::Start
+            }
+        }
+        AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => StaticPositionEdge::Start,
+        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => {
+            unreachable!("self-relative alignment is resolved before static-position generation")
+        }
+    }
+}
+
+#[inline]
+/// Build the static-position candidate contributed by a flex formatting context.
+fn flex_static_position(constants: &AlgoConstants, align_self: AlignSelf) -> LogicalStaticPosition {
+    let writing_direction = constants.writing_direction();
+    let logical_outer_size = constants.writing_mode.to_logical(constants.container_size);
+    let logical_content_inset = writing_direction.to_logical_box_strut(constants.content_box_inset);
+    let logical_content_size = LogicalSize {
+        inline_size: f32_max(
+            logical_outer_size.inline_size - logical_content_inset.inline_start - logical_content_inset.inline_end,
+            0.0,
+        ),
+        block_size: f32_max(
+            logical_outer_size.block_size - logical_content_inset.block_start - logical_content_inset.block_end,
+            0.0,
+        ),
+    };
+    let main_edge = flex_main_static_position_edge(
+        constants.justify_content.unwrap_or(JustifyContent::FLEX_START),
+        constants.dir.is_reverse(),
+    );
+    let cross_edge = flex_cross_static_position_edge(align_self, constants.wrap_reverse);
+    let (inline_edge, block_edge, align_self_axis) = if constants.main_axis_is_inline {
+        (main_edge, cross_edge, AbstractAxis::Block)
+    } else {
+        (cross_edge, main_edge, AbstractAxis::Inline)
+    };
+
+    let anchor = |start: f32, size: f32, edge: StaticPositionEdge| match edge {
+        StaticPositionEdge::Start => start,
+        StaticPositionEdge::Center => start + size / 2.0,
+        StaticPositionEdge::End => start + size,
+    };
+    LogicalStaticPosition {
+        offset: LogicalOffset {
+            inline_offset: anchor(logical_content_inset.inline_start, logical_content_size.inline_size, inline_edge),
+            block_offset: anchor(logical_content_inset.block_start, logical_content_size.block_size, block_edge),
+        },
+        inline_edge,
+        block_edge,
+        align_self_axis,
+    }
+}
+
+/// Emit flex static-position candidates and lay out the children for which this
+/// flex box supplies the actual containing block.
 fn perform_absolute_layout_on_absolute_children(
     tree: &mut impl LayoutFlexboxContainer,
     node: NodeId,
     constants: &AlgoConstants,
 ) -> Size<f32> {
-    let inset_relative_size =
-        constants.container_size - constants.border.sum_axes() - constants.scrollbar_gutter.into();
-    let percentage_basis = constants.writing_mode.to_logical(inset_relative_size).inline_size;
-
-    #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
+    let area_size = constants.container_size - constants.border.sum_axes() - constants.scrollbar_gutter.into();
+    let area_offset = Point {
+        x: constants.border.left
+            + if constants.horizontal_direction.is_rtl() { constants.scrollbar_gutter.x } else { 0.0 },
+        y: constants.border.top,
+    };
+    let containing_block = OutOfFlowContainingBlock {
+        outer_size: constants.container_size,
+        area_offset,
+        area_size,
+        writing_direction: constants.writing_direction(),
+    };
     let mut content_size = Size::ZERO;
 
-    for order in 0..tree.child_count(node) {
-        let child = tree.get_child_id(node, order);
-        let aspect_ratio = tree.get_resolved_aspect_ratio(child);
+    let numeric_children: Vec<_> = tree.child_ids(node).collect();
+    let candidate_count = tree.out_of_flow_candidate_count(node);
+    let candidates: Vec<_> = (0..candidate_count).map(|index| tree.get_out_of_flow_candidate(node, index)).collect();
+    let mut children = Vec::with_capacity(numeric_children.len() + candidates.len());
+    for insertion_index in 0..=numeric_children.len() {
+        children.extend(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.insertion_index.min(numeric_children.len()) == insertion_index)
+                .map(|candidate| candidate.node),
+        );
+        if let Some(child) = numeric_children.get(insertion_index) {
+            children.push(*child);
+        }
+    }
+
+    for (order, child) in children.into_iter().enumerate() {
         let child_writing_mode = tree.get_writing_mode(child);
         let child_style = tree.get_flexbox_child_style(child);
-
-        // Skip items that are display:none or are not position:absolute
         if child_style.box_generation_mode() == BoxGenerationMode::None || child_style.position() != Position::Absolute
         {
             continue;
         }
-
-        let overflow = child_style.overflow();
-        let scrollbar_width = child_style.scrollbar_width();
         let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
             child_writing_mode,
             child_style.direction(),
@@ -2893,537 +2990,28 @@ fn perform_absolute_layout_on_absolute_children(
             constants.inline_direction,
             constants.dir.cross_axis(),
         );
-        let margin = child_style
-            .margin()
-            .map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
-        let padding = child_style.padding().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
-        let border = child_style.border().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
-        let padding_border_sum = (padding + border).sum_axes();
-        let box_sizing = child_style.box_sizing();
-        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
-
-        // Resolve inset
-        // Insets are resolved against the container size minus border
-        let left =
-            child_style.inset().left.maybe_resolve(inset_relative_size.width, |val, basis| tree.calc(val, basis));
-        let right =
-            child_style.inset().right.maybe_resolve(inset_relative_size.width, |val, basis| tree.calc(val, basis));
-        let top = child_style.inset().top.maybe_resolve(inset_relative_size.height, |val, basis| tree.calc(val, basis));
-        let bottom =
-            child_style.inset().bottom.maybe_resolve(inset_relative_size.height, |val, basis| tree.calc(val, basis));
-        let block_auto_behavior = match child_writing_mode.block_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
-            _ => AutoSizeBehavior::FitContent,
-        };
-        let inline_auto_behavior = match child_writing_mode.inline_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
-            _ => AutoSizeBehavior::FitContent,
-        };
-
-        // Keep intrinsic keywords unresolved until the absolute containing
-        // block and inset-constrained available width are known.
-        let raw_size = child_style.size();
-        let raw_min_size = child_style.min_size();
-        let raw_max_size = child_style.max_size();
-        let mut style_size = raw_size
-            .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment);
-        let mut min_size = raw_min_size
-            .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment);
-        let mut max_size = raw_max_size
-            .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment);
-
         drop(child_style);
 
-        let inset_modified_containing_block = inset_modified_containing_block_size(
-            inset_relative_size,
-            Rect { left, right, top, bottom },
-            Point { x: if constants.horizontal_direction.is_rtl() { inset_relative_size.width } else { 0.0 }, y: 0.0 },
-            constants.horizontal_direction.is_rtl(),
-        );
-        let inset_modified_size =
-            (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
-        let available_width = inset_modified_size.width;
-        let available_height = inset_modified_size.height;
-        let stretch = resolve_stretch_size_constraints(
-            raw_size,
-            raw_min_size,
-            raw_max_size,
-            inset_modified_size.map(Some),
-            padding_border_sum,
-        );
-        style_size = style_size.or(stretch.preferred);
-        min_size = min_size.or(stretch.min);
-        max_size = max_size.or(stretch.max);
-        let intrinsic_inputs = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::IntrinsicContribution,
-            axis: RequestedAxis::Horizontal,
-            inline_auto_behavior: AutoSizeBehavior::FitContent,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
-            known_dimensions: Size { width: None, height: style_size.height },
-            definite_dimensions: Size::NONE,
-            parent_size: constants.node_inner_size,
-            parent_writing_mode: constants.writing_mode,
-            available_space: Size {
-                width: AvailableSpace::Definite(available_width),
-                height: AvailableSpace::Definite(available_height),
-            },
-            block_margins_are_collapsible: Line::FALSE,
-        };
-        let intrinsic = resolve_intrinsic_width_constraints(
-            tree,
-            child,
-            intrinsic_inputs,
-            raw_size.width,
-            raw_min_size.width,
-            raw_max_size.width,
-            intrinsic_inputs.available_space.width,
-        );
-        style_size.width = style_size.width.or(intrinsic.preferred);
-        min_size.width = min_size.width.or(intrinsic.min);
-        max_size.width = max_size.width.or(intrinsic.max);
-
-        let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: style_size,
-            min_size,
-            max_size,
-            size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-            writing_mode: child_writing_mode,
-            inline_auto_behavior,
-            block_auto_behavior,
-            transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio,
-            padding_border: padding_border_sum,
-        });
-        let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
-        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let mut max_size = resolved.max_size;
-        let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
-
-        // Fill in width from left/right and reapply aspect ratio if:
-        //   - Width is not already known
-        //   - Item has both left and right inset properties set
-        if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
-            let new_width_raw = inset_relative_size.width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
-            known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
-            )
-            .maybe_clamp(min_size, max_size);
+        let local_static_position = flex_static_position(constants, align_self);
+        tree.set_out_of_flow_static_position(node, child, local_static_position);
+        if !tree.is_out_of_flow_containing_block(node, child) {
+            continue;
         }
-
-        if known_dimensions.width.is_none() {
-            known_dimensions.width = Some(fit_content_width(
-                tree,
+        let containing_block = tree.get_out_of_flow_containing_block(node, child, containing_block);
+        let static_position = tree
+            .get_out_of_flow_static_position(
+                node,
                 child,
-                ChildLayoutInput::new(
-                    known_dimensions,
-                    constants.node_inner_size,
-                    constants.writing_mode,
-                    Size {
-                        width: AvailableSpace::Definite(available_width),
-                        height: AvailableSpace::Definite(
-                            available_height.maybe_clamp(min_size.height, max_size.height),
-                        ),
-                    },
-                    SizingMode::InherentSize,
-                    Line::FALSE,
-                ),
-                available_width,
-            ));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
+                containing_block.outer_size,
+                containing_block.writing_direction,
             )
-            .maybe_clamp(min_size, max_size);
-        }
-
-        let raw_logical_size = child_writing_mode.to_logical(raw_size);
-        let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
-        let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
-        let block_size_properties = BlockSizeProperties::new(
-            raw_logical_size.block_size,
-            raw_logical_min_size.block_size,
-            raw_logical_max_size.block_size,
-        );
-        let content_based_block_size = ContentBasedBlockSize::new(
-            block_size_properties,
-            aspect_ratio,
-            padding_border_sum,
-            block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
-            overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
-            None,
-        );
-        let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+            .unwrap_or(local_static_position);
+        if let Some(output) = layout_out_of_flow_item(
             tree,
-            child,
-            ChildLayoutInput::new(
-                known_dimensions,
-                constants.node_inner_size,
-                constants.writing_mode,
-                Size {
-                    width: AvailableSpace::Definite(available_width),
-                    height: AvailableSpace::Definite(available_height),
-                },
-                SizingMode::ContentSize,
-                Line::FALSE,
-            )
-            .with_block_auto_behavior(block_auto_behavior),
-            content_based_block_size,
-        );
-        intrinsic_block_constraints.apply_to_block_axis(
-            child_writing_mode,
-            block_axis_constraints,
-            padding_border_sum,
-            &mut known_dimensions,
-            &mut min_size,
-            &mut max_size,
-        );
-
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
-            let new_height_raw =
-                inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
-            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
-            )
-            .maybe_clamp(min_size, max_size);
-        }
-        let measured_size = tree.measure_child_size_both(
-            child,
-            ChildLayoutInput::new(
-                known_dimensions,
-                constants.node_inner_size,
-                constants.writing_mode,
-                Size {
-                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
-                },
-                SizingMode::InherentSize,
-                Line::FALSE,
-            ),
-        );
-        let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
-
-        let layout_output = tree.perform_child_layout(
-            child,
-            ChildLayoutInput::new(
-                final_size.map(Some),
-                constants.node_inner_size,
-                constants.writing_mode,
-                Size {
-                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
-                },
-                SizingMode::InherentSize,
-                Line::FALSE,
-            ),
-        );
-
-        let non_auto_margin = margin.map(|m| m.unwrap_or(0.0));
-
-        let free_space = Size {
-            width: constants.container_size.width - final_size.width - non_auto_margin.horizontal_axis_sum(),
-            height: constants.container_size.height - final_size.height - non_auto_margin.vertical_axis_sum(),
-        }
-        .f32_max(Size::ZERO);
-
-        // Expand auto margins to fill available space. Auto margins only absorb free space
-        // when the box is inset-constrained in that axis (both insets set); otherwise they
-        // resolve to zero and the box is statically positioned (CSS2 §10.3.7 / §10.6.4).
-        let resolved_margin = {
-            let auto_margin_size = Size {
-                width: {
-                    let auto_margin_count = margin.left.is_none() as u8 + margin.right.is_none() as u8;
-                    if auto_margin_count > 0 && left.is_some() && right.is_some() {
-                        free_space.width / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-                height: {
-                    let auto_margin_count = margin.top.is_none() as u8 + margin.bottom.is_none() as u8;
-                    if auto_margin_count > 0 && top.is_some() && bottom.is_some() {
-                        free_space.height / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-            };
-
-            Rect {
-                left: margin.left.unwrap_or(auto_margin_size.width),
-                right: margin.right.unwrap_or(auto_margin_size.width),
-                top: margin.top.unwrap_or(auto_margin_size.height),
-                bottom: margin.bottom.unwrap_or(auto_margin_size.height),
-            }
-        };
-
-        // Determine flex-relative insets
-        let (start_main, end_main) = if constants.is_row { (left, right) } else { (top, bottom) };
-        let (start_cross, end_cross) = if constants.is_row { (top, bottom) } else { (left, right) };
-        let main_axis_is_horizontal = constants.is_row;
-        let cross_axis_is_horizontal = !constants.is_row;
-        let main_is_rtl = main_axis_is_horizontal && constants.horizontal_direction.is_rtl();
-        let cross_is_rtl = cross_axis_is_horizontal && constants.horizontal_direction.is_rtl();
-        let main_axis_flex_start_reversed = constants.main_axis_flex_start_reversed;
-        let cross_axis_flex_start_reversed = constants.cross_axis_flex_start_reversed;
-        let main_start_scrollbar_offset =
-            if main_is_rtl { constants.scrollbar_gutter.main(constants.dir) } else { 0.0 };
-        let cross_start_scrollbar_offset =
-            if cross_is_rtl { constants.scrollbar_gutter.cross(constants.dir) } else { 0.0 };
-        let main_end_scrollbar_offset = if main_is_rtl { 0.0 } else { constants.scrollbar_gutter.main(constants.dir) };
-        let cross_end_scrollbar_offset =
-            if cross_is_rtl { 0.0 } else { constants.scrollbar_gutter.cross(constants.dir) };
-
-        // Apply main-axis alignment
-        // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
-        let offset_main = if start_main.is_some() || end_main.is_some() {
-            if main_is_rtl && end_main.is_some() {
-                constants.container_size.main(constants.dir)
-                    - constants.border.main_end(constants.dir)
-                    - main_end_scrollbar_offset
-                    - final_size.main(constants.dir)
-                    - end_main.unwrap_or(0.0)
-                    - resolved_margin.main_end(constants.dir)
-            } else if let Some(start) = start_main {
-                start
-                    + constants.border.main_start(constants.dir)
-                    + main_start_scrollbar_offset
-                    + resolved_margin.main_start(constants.dir)
-            } else {
-                constants.container_size.main(constants.dir)
-                    - constants.border.main_end(constants.dir)
-                    - main_end_scrollbar_offset
-                    - final_size.main(constants.dir)
-                    - end_main.unwrap_or(0.0)
-                    - resolved_margin.main_end(constants.dir)
-            }
-        } else {
-            // Stretch is an invalid value for justify_content in the flexbox algorithm, so we
-            // treat it as if it wasn't set (and thus we default to FlexStart behaviour).
-            //
-            // The `safe` overflow-position keyword is intentionally NOT applied here, even when
-            // the abs-positioned item would overflow the main axis: Chrome does not apply safe
-            // fallback to `justify-content` on absolutely-positioned flex items (only the
-            // cross-axis `align-self` does so). Matching the layout authority over a strict
-            // spec read keeps gentest fixtures green; reconsider if Chromium changes behavior.
-            // `start`/`end` are writing-mode relative (they flip for RTL but not for
-            // reversed flex-directions), whereas `flex-start`/`flex-end` and the
-            // distributed keywords' fallbacks are flex-relative.
-            let justify_content = apply_alignment_fallback(
-                free_space.main(constants.dir),
-                1,
-                constants.justify_content.unwrap_or(JustifyContent::FLEX_START),
-            );
-            let start_position = match justify_content {
-                ResolvedAlignContentKeyword::Start => !constants.main_axis_start_reversed,
-                ResolvedAlignContentKeyword::End => constants.main_axis_start_reversed,
-                _ => true,
-            };
-            match (justify_content, main_axis_flex_start_reversed) {
-                (ResolvedAlignContentKeyword::SpaceBetween, false)
-                | (ResolvedAlignContentKeyword::Stretch, false)
-                | (ResolvedAlignContentKeyword::FlexStart, false)
-                | (ResolvedAlignContentKeyword::FlexEnd, true) => {
-                    constants.content_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
-                }
-                (ResolvedAlignContentKeyword::Start | ResolvedAlignContentKeyword::End, _) => {
-                    if start_position {
-                        constants.content_box_inset.main_start(constants.dir)
-                            + resolved_margin.main_start(constants.dir)
-                    } else {
-                        constants.container_size.main(constants.dir)
-                            - constants.content_box_inset.main_end(constants.dir)
-                            - final_size.main(constants.dir)
-                            - resolved_margin.main_end(constants.dir)
-                    }
-                }
-                (ResolvedAlignContentKeyword::FlexEnd, false)
-                | (ResolvedAlignContentKeyword::FlexStart, true)
-                | (ResolvedAlignContentKeyword::Stretch, true)
-                | (ResolvedAlignContentKeyword::SpaceBetween, true) => {
-                    constants.container_size.main(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        - resolved_margin.main_end(constants.dir)
-                }
-                (ResolvedAlignContentKeyword::SpaceEvenly, _)
-                | (ResolvedAlignContentKeyword::SpaceAround, _)
-                | (ResolvedAlignContentKeyword::Center, _) => {
-                    (constants.container_size.main(constants.dir)
-                        + constants.content_box_inset.main_start(constants.dir)
-                        - constants.content_box_inset.main_end(constants.dir)
-                        - final_size.main(constants.dir)
-                        + resolved_margin.main_start(constants.dir)
-                        - resolved_margin.main_end(constants.dir))
-                        / 2.0
-                }
-            }
-        };
-
-        // Apply cross-axis alignment
-        // let free_cross_space = free_space.cross(constants.dir) - resolved_margin.cross_axis_sum(constants.dir);
-        let offset_cross = if start_cross.is_some() || end_cross.is_some() {
-            if cross_is_rtl && end_cross.is_some() {
-                constants.container_size.cross(constants.dir)
-                    - constants.border.cross_end(constants.dir)
-                    - cross_end_scrollbar_offset
-                    - final_size.cross(constants.dir)
-                    - end_cross.unwrap_or(0.0)
-                    - resolved_margin.cross_end(constants.dir)
-            } else if let Some(start) = start_cross {
-                start
-                    + constants.border.cross_start(constants.dir)
-                    + cross_start_scrollbar_offset
-                    + resolved_margin.cross_start(constants.dir)
-            } else {
-                constants.container_size.cross(constants.dir)
-                    - constants.border.cross_end(constants.dir)
-                    - cross_end_scrollbar_offset
-                    - final_size.cross(constants.dir)
-                    - end_cross.unwrap_or(0.0)
-                    - resolved_margin.cross_end(constants.dir)
-            }
-        } else {
-            let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
-                > constants.container_size.cross(constants.dir)
-                    - constants.content_box_inset.cross_axis_sum(constants.dir);
-            let cross_keyword = resolve_self_alignment_safety(align_self, cross_overflows);
-            // `start`/`end` (and `baseline`, whose static-position fallback is `start`) are
-            // writing-mode relative: they flip for RTL but not for `wrap-reverse`.
-            // `flex-start`/`flex-end` and the `stretch` fallback are flex-relative.
-            let start_position = match cross_keyword {
-                AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => !constants.cross_axis_start_reversed,
-                AlignItemsKeyword::LastBaseline => constants.cross_axis_start_reversed,
-                AlignItemsKeyword::End => constants.cross_axis_start_reversed,
-                _ => true,
-            };
-            match (cross_keyword, cross_axis_flex_start_reversed) {
-                // Stretch alignment does not apply to absolutely positioned items
-                // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
-                // Note: Stretch should be FlexStart not Start when we support both
-                (
-                    AlignItemsKeyword::Start
-                    | AlignItemsKeyword::End
-                    | AlignItemsKeyword::Baseline
-                    | AlignItemsKeyword::LastBaseline,
-                    _,
-                ) => {
-                    if start_position {
-                        constants.content_box_inset.cross_start(constants.dir)
-                            + resolved_margin.cross_start(constants.dir)
-                    } else {
-                        constants.container_size.cross(constants.dir)
-                            - constants.content_box_inset.cross_end(constants.dir)
-                            - final_size.cross(constants.dir)
-                            - resolved_margin.cross_end(constants.dir)
-                    }
-                }
-                (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
-                | (AlignItemsKeyword::FlexEnd, true) => {
-                    constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
-                }
-                (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
-                | (AlignItemsKeyword::FlexEnd, false) => {
-                    constants.container_size.cross(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        - resolved_margin.cross_end(constants.dir)
-                }
-                (AlignItemsKeyword::Center, _) => {
-                    (constants.container_size.cross(constants.dir)
-                        + constants.content_box_inset.cross_start(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        + resolved_margin.cross_start(constants.dir)
-                        - resolved_margin.cross_end(constants.dir))
-                        / 2.0
-                }
-                // SelfStart/SelfEnd are resolved to Start/End against the item's own direction
-                // where `align_self` is read above.
-                (AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd, _) => unreachable!(),
-            }
-        };
-
-        let location = match constants.is_row {
-            true => Point { x: offset_main, y: offset_cross },
-            false => Point { x: offset_cross, y: offset_main },
-        };
-        let scrollbar_size = Size {
-            width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
-            height: if overflow.x == Overflow::Scroll { scrollbar_width } else { 0.0 },
-        };
-        tree.set_unrounded_layout(
-            child,
-            &Layout {
-                order: order as u32,
-                size: final_size,
-                #[cfg(feature = "content_size")]
-                content_size: layout_output.content_size,
-                scrollbar_size,
-                location,
-                padding,
-                border,
-                margin: resolved_margin,
-            },
-        );
-
-        #[cfg(feature = "content_size")]
-        {
-            let size_content_size_contribution = Size {
-                width: match overflow.x {
-                    Overflow::Visible => f32_max(final_size.width, layout_output.content_size.width),
-                    _ => final_size.width,
-                },
-                height: match overflow.y {
-                    Overflow::Visible => f32_max(final_size.height, layout_output.content_size.height),
-                    _ => final_size.height,
-                },
-            };
-            if size_content_size_contribution.has_non_zero_area() {
-                let absolute_area_offset = Point {
-                    x: constants.border.left
-                        + if constants.horizontal_direction.is_rtl() { constants.scrollbar_gutter.x } else { 0.0 },
-                    y: constants.border.top,
-                };
-                let relative_location =
-                    Point { x: location.x - absolute_area_offset.x, y: location.y - absolute_area_offset.y };
-                let content_size_contribution = Size {
-                    width: if constants.horizontal_direction.is_rtl() {
-                        let overflow_extra_width =
-                            f32_max(size_content_size_contribution.width - final_size.width, 0.0);
-                        f32_max(inset_relative_size.width - relative_location.x, 0.0) + overflow_extra_width
-                    } else {
-                        relative_location.x + size_content_size_contribution.width
-                    },
-                    height: relative_location.y + size_content_size_contribution.height,
-                };
-                content_size = content_size.f32_max(content_size_contribution);
-            }
+            OutOfFlowItem { node: child, order: order as u32, static_position },
+            containing_block,
+        ) {
+            content_size = content_size.f32_max(output.content_size);
         }
     }
 
