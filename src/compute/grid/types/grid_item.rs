@@ -1,5 +1,6 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
+use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
 use crate::compute::common::stretch::resolve_stretch_size_constraints;
@@ -423,6 +424,38 @@ impl GridItem {
             grid_area_minus_item_margins_size,
             padding_border_size,
         );
+        let child_writing_mode = tree.get_writing_mode(self.node);
+        let normal_auto_size = if self.is_compressible_replaced {
+            AutoSizeBehavior::FitContent
+        } else {
+            AutoSizeBehavior::StretchImplicit
+        };
+        let logical_auto_size = InBothAbstractAxis {
+            inline: resolve_self_alignment(
+                self.used_alignment(AbstractAxis::Inline),
+                AlignSelf::START,
+                normal_auto_size,
+            )
+            .auto_size,
+            block: resolve_self_alignment(self.used_alignment(AbstractAxis::Block), AlignSelf::START, normal_auto_size)
+                .auto_size,
+        };
+        let (mut horizontal_auto_size, mut vertical_auto_size) = if self.parent_writing_direction.mode.is_horizontal() {
+            (logical_auto_size.inline, logical_auto_size.block)
+        } else {
+            (logical_auto_size.block, logical_auto_size.inline)
+        };
+        if self.margin.left.is_auto() || self.margin.right.is_auto() {
+            horizontal_auto_size = AutoSizeBehavior::FitContent;
+        }
+        if self.margin.top.is_auto() || self.margin.bottom.is_auto() {
+            vertical_auto_size = AutoSizeBehavior::FitContent;
+        }
+        let (inline_auto_behavior, block_auto_behavior) = if child_writing_mode.is_horizontal() {
+            (horizontal_auto_size, vertical_auto_size)
+        } else {
+            (vertical_auto_size, horizontal_auto_size)
+        };
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: self
                 .size
@@ -440,9 +473,9 @@ impl GridItem {
                 .maybe_add(box_sizing_adjustment)
                 .or(stretch.max),
             size_is_auto: self.size.map(|dimension| dimension.is_auto()),
-            writing_mode: tree.get_writing_mode(self.node),
-            inline_auto_behavior: AutoSizeBehavior::FitContent,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
+            writing_mode: child_writing_mode,
+            inline_auto_behavior,
+            block_auto_behavior,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_size,
@@ -450,21 +483,8 @@ impl GridItem {
         let inherent_size = resolved.size;
         let min_size = resolved.min_size;
         let max_size = resolved.max_size;
-        let (horizontal_alignment, vertical_alignment) = if self.parent_writing_direction.mode.is_horizontal() {
-            (self.justify_self, self.align_self)
-        } else {
-            (self.align_self, self.justify_self)
-        };
-
-        // If node is absolutely positioned and width is not set explicitly, then deduce it
-        // from left, right and container_content_box if both are set.
         let width = inherent_size.width.or_else(|| {
-            // Apply width based on stretch alignment if:
-            //  - Alignment style is "stretch"
-            //  - The node is not absolutely positioned
-            //  - The node does not have auto margins in this axis.
-            if !self.margin.left.is_auto() && !self.margin.right.is_auto() && horizontal_alignment == AlignSelf::STRETCH
-            {
+            if !horizontal_auto_size.is_content_based(aspect_ratio.ratio.is_some()) {
                 return grid_area_minus_item_margins_size.width;
             }
 
@@ -475,11 +495,7 @@ impl GridItem {
             .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
 
         let height = height.or_else(|| {
-            // Apply height based on stretch alignment if:
-            //  - Alignment style is "stretch"
-            //  - The node is not absolutely positioned
-            //  - The node does not have auto margins in this axis.
-            if !self.margin.top.is_auto() && !self.margin.bottom.is_auto() && vertical_alignment == AlignSelf::STRETCH {
+            if !vertical_auto_size.is_content_based(aspect_ratio.ratio.is_some()) {
                 return grid_area_minus_item_margins_size.height;
             }
 

@@ -1,7 +1,7 @@
 //! Alignment of tracks and final positioning of items
 use super::types::GridTrack;
 use crate::compute::common::alignment::{
-    apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
+    apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment, resolve_self_alignment_safety,
 };
 use crate::compute::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
@@ -141,6 +141,7 @@ pub(super) fn align_and_position_item(
 
     let overflow = style.overflow();
     let scrollbar_width = style.scrollbar_width();
+    let is_compressible_replaced = style.is_compressible_replaced();
     let item_direction = style.direction();
     let inline_self = GridItemStyle::justify_self(&style).map(|align| {
         align.resolve_axis_relative(
@@ -260,29 +261,9 @@ pub(super) fn align_and_position_item(
     min_size.width = min_size.width.or(intrinsic.min);
     max_size.width = max_size.width.or(intrinsic.max);
 
-    // Resolve default alignment styles if they are set on neither the parent or the node itself
-    // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
-    // and the then height is calculated from the width according the aspect ratio
-    // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
-    let logical_inherent_size = flow.to_logical_size(inherent_size);
     let mut alignment_styles = InBothAbstractAxis {
-        inline: inline_self.or(logical_container_alignment.inline).unwrap_or_else(|| {
-            if logical_inherent_size.inline_size.is_some() {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
-        block: block_self.or(logical_container_alignment.block).unwrap_or_else(|| {
-            if logical_inherent_size.block_size.is_some()
-                || item_writing_mode.to_logical(raw_size).block_size.is_intrinsic()
-                || aspect_ratio.ratio.is_some()
-            {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
+        inline: inline_self.or(logical_container_alignment.inline).unwrap_or(AlignSelf::NORMAL),
+        block: block_self.or(logical_container_alignment.block).unwrap_or(AlignSelf::NORMAL),
     };
     if let Some(fallback) = baseline_fallback.inline {
         alignment_styles.inline = fallback;
@@ -290,28 +271,27 @@ pub(super) fn align_and_position_item(
     if let Some(fallback) = baseline_fallback.block {
         alignment_styles.block = fallback;
     }
-    let physical_alignment_styles = flow.to_physical_axes(alignment_styles);
-    let (inline_alignment, inline_margins_are_non_auto) = match item_writing_mode.inline_axis() {
-        AbsoluteAxis::Horizontal => {
-            (physical_alignment_styles.horizontal, margin.left.is_some() && margin.right.is_some())
-        }
-        AbsoluteAxis::Vertical => (physical_alignment_styles.vertical, margin.top.is_some() && margin.bottom.is_some()),
+    let normal_auto_size =
+        if is_compressible_replaced { AutoSizeBehavior::FitContent } else { AutoSizeBehavior::StretchImplicit };
+    let resolved_alignment = InBothAbstractAxis {
+        inline: resolve_self_alignment(alignment_styles.inline, AlignSelf::START, normal_auto_size),
+        block: resolve_self_alignment(alignment_styles.block, AlignSelf::START, normal_auto_size),
     };
-    let (block_alignment, block_margins_are_non_auto) = match item_writing_mode.block_axis() {
-        AbsoluteAxis::Horizontal => {
-            (physical_alignment_styles.horizontal, margin.left.is_some() && margin.right.is_some())
-        }
-        AbsoluteAxis::Vertical => (physical_alignment_styles.vertical, margin.top.is_some() && margin.bottom.is_some()),
-    };
-    let block_auto_behavior = if block_margins_are_non_auto && block_alignment == AlignSelf::STRETCH {
-        AutoSizeBehavior::StretchExplicit
-    } else {
-        AutoSizeBehavior::FitContent
-    };
-    let inline_auto_behavior = if inline_margins_are_non_auto && inline_alignment == AlignSelf::STRETCH {
-        AutoSizeBehavior::StretchExplicit
-    } else {
-        AutoSizeBehavior::FitContent
+    alignment_styles =
+        InBothAbstractAxis { inline: resolved_alignment.inline.position, block: resolved_alignment.block.position };
+    let mut physical_auto_size = flow.to_physical_axes(InBothAbstractAxis {
+        inline: resolved_alignment.inline.auto_size,
+        block: resolved_alignment.block.auto_size,
+    });
+    if margin.left.is_none() || margin.right.is_none() {
+        physical_auto_size.horizontal = AutoSizeBehavior::FitContent;
+    }
+    if margin.top.is_none() || margin.bottom.is_none() {
+        physical_auto_size.vertical = AutoSizeBehavior::FitContent;
+    }
+    let (inline_auto_behavior, block_auto_behavior) = match item_writing_mode.inline_axis() {
+        AbsoluteAxis::Horizontal => (physical_auto_size.horizontal, physical_auto_size.vertical),
+        AbsoluteAxis::Vertical => (physical_auto_size.vertical, physical_auto_size.horizontal),
     };
     let mut resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
@@ -345,11 +325,7 @@ pub(super) fn align_and_position_item(
     let raw_logical_max_size = item_writing_mode.to_logical(raw_max_size);
 
     let width = inherent_size.width.or_else(|| {
-        // Apply width based on stretch alignment if:
-        //  - Alignment style is "stretch"
-        //  - The node does not have auto margins in this axis.
-        if margin.left.is_some() && margin.right.is_some() && physical_alignment_styles.horizontal == AlignSelf::STRETCH
-        {
+        if !physical_auto_size.horizontal.is_content_based(aspect_ratio.ratio.is_some()) {
             return Some(grid_area_minus_item_margins_size.width);
         }
 
@@ -406,10 +382,7 @@ pub(super) fn align_and_position_item(
     let Size { width, height } = resolved_size;
 
     let height = height.or_else(|| {
-        // Apply height based on stretch alignment if:
-        //  - Alignment style is "stretch"
-        //  - The node does not have auto margins in this axis.
-        if margin.top.is_some() && margin.bottom.is_some() && physical_alignment_styles.vertical == AlignSelf::STRETCH {
+        if !physical_auto_size.vertical.is_content_based(aspect_ratio.ratio.is_some()) {
             return Some(grid_area_minus_item_margins_size.height);
         }
 
@@ -552,6 +525,7 @@ pub(super) fn static_position_for_grid_area(
                 (start + size, StaticPositionEdge::End)
             }
             AlignItemsKeyword::Start
+            | AlignItemsKeyword::Normal
             | AlignItemsKeyword::FlexStart
             | AlignItemsKeyword::Baseline
             | AlignItemsKeyword::Stretch => (start, StaticPositionEdge::Start),
@@ -677,7 +651,10 @@ pub(super) fn align_item_within_area(
 
     // Compute offset in the axis
     let alignment_based_offset = match alignment_keyword {
-        AlignItemsKeyword::Start | AlignItemsKeyword::FlexStart | AlignItemsKeyword::Stretch => resolved_margin.start,
+        AlignItemsKeyword::Normal
+        | AlignItemsKeyword::Start
+        | AlignItemsKeyword::FlexStart
+        | AlignItemsKeyword::Stretch => resolved_margin.start,
         AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => grid_area_size - resolved_size - resolved_margin.end,
         AlignItemsKeyword::Baseline => match baseline_group {
             BaselineGroup::Major => resolved_margin.start,

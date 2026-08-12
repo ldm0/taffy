@@ -311,8 +311,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         in_flow_children_iter,
         flow.writing_direction(),
         style.grid_auto_flow(),
-        align_items.unwrap_or(AlignItems::STRETCH),
-        justify_items.unwrap_or(AlignItems::STRETCH),
+        align_items.unwrap_or(AlignItems::NORMAL),
+        justify_items.unwrap_or(AlignItems::NORMAL),
         &name_resolver,
     );
     for item in &mut items {

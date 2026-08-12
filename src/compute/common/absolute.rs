@@ -148,6 +148,7 @@ impl LogicalAlignment {
         let container_start = self.container_start.get(axis);
         match alignment.map(AlignSelf::keyword) {
             None
+            | Some(AlignItemsKeyword::Normal)
             | Some(AlignItemsKeyword::Start)
             | Some(AlignItemsKeyword::FlexStart)
             | Some(AlignItemsKeyword::Baseline)
@@ -185,7 +186,9 @@ impl LogicalAlignment {
     /// modifier.
     #[inline(always)]
     fn has_default_overflow(self, axis: AbstractAxis) -> bool {
-        self.values.get(axis).is_some_and(|alignment| alignment.safety == AlignmentSafety::Default)
+        self.values
+            .get(axis)
+            .is_some_and(|alignment| alignment.safety == AlignmentSafety::Default && !alignment.is_normal())
     }
 
     /// Whether this axis explicitly requests stretch alignment.
@@ -197,7 +200,10 @@ impl LogicalAlignment {
     /// Whether this axis uses the initial `normal` alignment behavior.
     #[inline(always)]
     fn is_normal(self, axis: AbstractAxis) -> bool {
-        self.values.get(axis).is_none()
+        match self.values.get(axis) {
+            None => true,
+            Some(alignment) => alignment.is_normal(),
+        }
     }
 }
 
@@ -559,6 +565,7 @@ pub(crate) fn layout_out_of_flow_item(
     let raw_size = child_style.size();
     let raw_min_size = child_style.min_size();
     let raw_max_size = child_style.max_size();
+    let is_compressible_replaced = child_style.is_compressible_replaced();
     drop(child_style);
 
     let mut physical_static_position = item.static_position.to_physical(writing_direction, outer_size);
@@ -584,7 +591,11 @@ pub(crate) fn layout_out_of_flow_item(
         } else if alignment.is_stretch(axis) {
             AutoSizeBehavior::StretchExplicit
         } else if alignment.is_normal(axis) {
-            AutoSizeBehavior::StretchImplicit
+            if is_compressible_replaced {
+                AutoSizeBehavior::FitContent
+            } else {
+                AutoSizeBehavior::StretchImplicit
+            }
         } else {
             AutoSizeBehavior::FitContent
         }

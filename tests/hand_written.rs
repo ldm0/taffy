@@ -17,6 +17,7 @@ mod hand_written {
     mod logical_constraint_space;
     mod measure;
     mod min_max_overrides;
+    mod normal_alignment;
     mod orthogonal_constraint_space;
     mod relative_position;
     mod relayout;
