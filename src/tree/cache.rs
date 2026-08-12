@@ -5,7 +5,8 @@
 use crate::geometry::{LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
-    AutoSizeBehavior, IntrinsicSizeResult, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose,
+    AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RunMode, SizingMode,
+    SizingPurpose,
 };
 use crate::RequestedAxis;
 
@@ -56,6 +57,12 @@ fn logical_size_option_cache_key(input: LogicalSize<Option<f32>>) -> u64 {
     (option_cache_key(input.inline_size) as u64) << 32 | option_cache_key(input.block_size) as u64
 }
 
+/// Pack a physical optional size into a cache key with width first.
+#[inline(always)]
+fn size_option_cache_key(input: Size<Option<f32>>) -> u64 {
+    (option_cache_key(input.width) as u64) << 32 | option_cache_key(input.height) as u64
+}
+
 /// Pack `AvailableSpace` into `u32`
 #[inline(always)]
 fn available_space_cache_key(input: AvailableSpace) -> u32 {
@@ -95,6 +102,8 @@ struct CacheKey {
     kd_available_space: u64,
     /// The containing block size in its own logical axes.
     logical_parent_size: u64,
+    /// Physical size of the initial containing block inherited by descendants.
+    initial_containing_block_size: u64,
     /// Writing mode that owns the containing block size.
     parent_writing_mode: WritingMode,
     /// Whether inherent size styles participate in this computation.
@@ -106,15 +115,9 @@ struct CacheKey {
 }
 
 impl CacheKey {
+    /// Construct a cache key for one node input and layout-pass environment.
     #[inline(always)]
-    /// Return the inline parent size together with the requested-axis bits.
-    fn inline_parent_size_and_axis(&self) -> u64 {
-        self.logical_parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
-    }
-}
-
-impl From<&LayoutInput> for CacheKey {
-    fn from(input: &LayoutInput) -> Self {
+    fn new(input: &LayoutInput, environment: LayoutEnvironment) -> Self {
         // Pack axis enum into spare bits in the known_dimensions and available_space values
         let extra_bits = match input.axis {
             RequestedAxis::Horizontal => SIGN_BIT_1,
@@ -128,11 +131,24 @@ impl From<&LayoutInput> for CacheKey {
                 input.parent_writing_mode.to_logical(input.parent_size),
             ) & NON_SIGN_BITS_MASK)
                 | extra_bits,
+            initial_containing_block_size: size_option_cache_key(environment.initial_containing_block_size),
             parent_writing_mode: input.parent_writing_mode,
             sizing_mode: input.sizing_mode,
             sizing_purpose: input.sizing_purpose,
             block_auto_behavior: input.block_auto_behavior,
         }
+    }
+
+    #[inline(always)]
+    /// Return the inline parent size together with the requested-axis bits.
+    fn inline_parent_size_and_axis(&self) -> u64 {
+        self.logical_parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
+    }
+}
+
+impl From<&LayoutInput> for CacheKey {
+    fn from(input: &LayoutInput) -> Self {
+        Self::new(input, LayoutEnvironment::NONE)
     }
 }
 
@@ -264,10 +280,18 @@ impl Cache {
     /// Try to retrieve a cached result from the cache
     #[inline]
     pub fn get(&self, input: &LayoutInput) -> Option<LayoutOutput> {
-        let key = CacheKey::from(input);
+        self.get_with_environment(input, LayoutEnvironment::NONE)
+    }
+
+    /// Try to retrieve a cached result for a specific layout-pass environment.
+    #[inline]
+    pub fn get_with_environment(&self, input: &LayoutInput, environment: LayoutEnvironment) -> Option<LayoutOutput> {
+        let key = CacheKey::new(input, environment);
         match input.run_mode {
             RunMode::PerformLayout => self.final_layout_entry.filter(|entry| entry.key == key).map(|e| e.content),
-            RunMode::ComputeSize => self.get_size(input).map(LayoutOutput::from_intrinsic_size_result),
+            RunMode::ComputeSize => {
+                self.get_size_with_environment(input, environment).map(LayoutOutput::from_intrinsic_size_result)
+            }
             RunMode::PerformHiddenLayout => None,
         }
     }
@@ -276,11 +300,23 @@ impl Cache {
     /// caches.
     #[inline]
     pub fn get_size(&self, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
+        self.get_size_with_environment(input, LayoutEnvironment::NONE)
+    }
+
+    /// Try to retrieve an intrinsic size for a specific layout-pass
+    /// environment.
+    #[inline]
+    pub fn get_size_with_environment(
+        &self,
+        input: &LayoutInput,
+        environment: LayoutEnvironment,
+    ) -> Option<IntrinsicSizeResult> {
         debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
-        let key = CacheKey::from(input);
+        let key = CacheKey::new(input, environment);
         for entry in self.measure_entries.iter().flatten() {
             if entry.key.kd_available_space == key.kd_available_space
                 && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
+                && entry.key.initial_containing_block_size == key.initial_containing_block_size
                 && entry.key.parent_writing_mode == key.parent_writing_mode
                 && entry.key.sizing_mode == key.sizing_mode
                 && entry.key.sizing_purpose == key.sizing_purpose
@@ -309,14 +345,24 @@ impl Cache {
 
     /// Store a computed size in the cache
     pub fn store(&mut self, input: &LayoutInput, layout_output: LayoutOutput) {
-        let key = CacheKey::from(input);
+        self.store_with_environment(input, layout_output, LayoutEnvironment::NONE);
+    }
+
+    /// Store a computed result for a specific layout-pass environment.
+    pub fn store_with_environment(
+        &mut self,
+        input: &LayoutInput,
+        layout_output: LayoutOutput,
+        environment: LayoutEnvironment,
+    ) {
+        let key = CacheKey::new(input, environment);
         match input.run_mode {
             RunMode::PerformLayout => {
                 self.is_empty = false;
                 self.final_layout_entry = Some(CacheEntry { key, content: layout_output })
             }
             RunMode::ComputeSize => {
-                self.store_size(input, layout_output.into_intrinsic_size_result());
+                self.store_size_with_environment(input, layout_output.into_intrinsic_size_result(), environment);
             }
             RunMode::PerformHiddenLayout => {}
         }
@@ -325,9 +371,19 @@ impl Cache {
     /// Store a dedicated intrinsic size result in the appropriate measurement
     /// cache.
     pub fn store_size(&mut self, input: &LayoutInput, result: IntrinsicSizeResult) {
+        self.store_size_with_environment(input, result, LayoutEnvironment::NONE);
+    }
+
+    /// Store an intrinsic result for a specific layout-pass environment.
+    pub fn store_size_with_environment(
+        &mut self,
+        input: &LayoutInput,
+        result: IntrinsicSizeResult,
+        environment: LayoutEnvironment,
+    ) {
         debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
         self.is_empty = false;
-        let key = CacheKey::from(input);
+        let key = CacheKey::new(input, environment);
         let entry = CacheEntry {
             key,
             content: CachedMeasurement {
@@ -392,8 +448,8 @@ mod tests {
     use crate::geometry::{Line, Size, WritingMode};
     use crate::style::AvailableSpace;
     use crate::tree::{
-        AutoSizeBehavior, IntrinsicSizeResult, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode,
-        SizingPurpose,
+        AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RequestedAxis, RunMode,
+        SizingMode, SizingPurpose,
     };
 
     fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
@@ -436,6 +492,25 @@ mod tests {
         cache.store_size(&input, expected);
 
         assert_eq!(cache.get_size(&input), Some(expected));
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_initial_containing_block_sizes() {
+        let mut cache = Cache::new();
+        let input = input(SizingPurpose::IntrinsicContribution);
+        let initial =
+            LayoutEnvironment { initial_containing_block_size: Size { width: Some(800.0), height: Some(600.0) } };
+        cache.store_with_environment(
+            &input,
+            LayoutOutput::from_outer_size(Size { width: 80.0, height: 600.0 }),
+            initial,
+        );
+
+        let resized =
+            LayoutEnvironment { initial_containing_block_size: Size { width: Some(800.0), height: Some(400.0) } };
+
+        assert!(cache.get_with_environment(&input, resized).is_none());
+        assert_eq!(cache.get_with_environment(&input, initial).unwrap().size.height, 600.0);
     }
 
     #[test]
