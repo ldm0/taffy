@@ -157,10 +157,8 @@ pub fn compute_replaced_layout(
     let mut preferred_size =
         raw_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
     let mut min_size = raw_min_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
-    let mut max_size = raw_max_size
-        .maybe_resolve(preferred_percentage_basis, &resolve_calc_value)
-        .maybe_sub(box_sizing_adjustment)
-        .maybe_max(min_size);
+    let mut max_size =
+        raw_max_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
 
     for (raw, resolved, contained) in [
         (raw_size, &mut preferred_size, contained_content_size),
@@ -198,6 +196,12 @@ pub fn compute_replaced_layout(
             max_size.height = transferred_height;
         }
     }
+
+    // Intrinsic min/max keywords resolve after the directly resolvable
+    // constraints because their value may transfer from the opposite
+    // preferred axis. Establish the CSS min-over-max precedence only after
+    // those late constraints are present.
+    max_size = max_size.maybe_max(min_size);
 
     // A content-size probe ignores preferred and minimum constraints in the
     // requested axis. Opposite-axis constraints remain available for ratio
@@ -806,6 +810,41 @@ mod tests {
         assert_eq!(measure(&max_height), Size { width: 70.0, height: 70.0 });
         max_height.max_size.height = Dimension::max_content();
         assert_eq!(measure(&max_height), Size { width: 70.0, height: 70.0 });
+    }
+
+    /// Regression for
+    /// <https://wpt.live/css/css-sizing/replaced-aspect-ratio-stretch-fit-003.html>.
+    ///
+    /// An intrinsic minimum resolved from the opposite preferred axis is a
+    /// late constraint. It must still floor an authored maximum before the
+    /// replaced-size constraint violation table is applied.
+    #[test]
+    fn transferred_intrinsic_minimum_takes_precedence_over_authored_maximum() {
+        let style: TestStyle = Style {
+            size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+            min_size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+            max_size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+            ..Style::default()
+        };
+        let mut input = inputs(Size { width: Some(100.0), height: Some(100.0) });
+        input.available_space =
+            Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(100.0) };
+
+        let size = compute_replaced_layout(
+            input,
+            &style,
+            ReplacedSizingContext::new(
+                WritingMode::HorizontalTb,
+                ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+                SizeContainment::NONE,
+                ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+                Size::NONE,
+            ),
+            |_, _| 0.0,
+        )
+        .size;
+
+        assert_eq!(size, Size { width: 100.0, height: 100.0 });
     }
 
     #[test]
