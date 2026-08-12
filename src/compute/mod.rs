@@ -107,6 +107,14 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     );
     let mut known_dimensions = root_inputs.known_dimensions;
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
+    let (root_padding, root_border) = {
+        let style = tree.get_core_container_style(root);
+        (
+            style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+            style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
+        )
+    };
+    let root_padding_border_size = (root_padding + root_border).sum_axes();
 
     #[cfg(feature = "block_layout")]
     {
@@ -119,12 +127,9 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         if style.is_block() {
             // Pull these out earlier to avoid borrowing issues
             let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let padding_border_size = (padding + border).sum_axes();
             let box_sizing = style.box_sizing();
             let box_sizing_adjustment =
-                if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+                if box_sizing == BoxSizing::ContentBox { root_padding_border_size } else { Size::ZERO };
 
             let raw_size = style.size();
             let resolved = resolve_size_constraints(SizeConstraintInput {
@@ -144,7 +149,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 block_auto_behavior: root_inputs.block_auto_behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
-                padding_border: padding_border_size,
+                padding_border: root_padding_border_size,
             });
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
@@ -166,11 +171,15 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 .or(min_max_definite_size)
                 .or(clamped_style_size)
                 .or(available_space_based_size)
-                .maybe_max(padding_border_size);
+                .maybe_max(root_padding_border_size);
 
             known_dimensions = styled_based_known_dimensions;
         }
     }
+
+    // The root seam synthesizes these dimensions itself; floor every axis it
+    // marks as known before handing the exact used size to a child algorithm.
+    known_dimensions = known_dimensions.maybe_max(root_padding_border_size);
 
     // Recursively compute node layout
     let output = tree.perform_child_layout(
@@ -185,8 +194,6 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         ),
     );
     let style = tree.get_core_container_style(root);
-    let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-    let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let scrollbar_size = Size {
         width: if style.overflow().y == Overflow::Scroll { style.scrollbar_width() } else { 0.0 },
@@ -211,8 +218,8 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             #[cfg(feature = "content_size")]
             content_size: output.content_size,
             scrollbar_size,
-            padding,
-            border,
+            padding: root_padding,
+            border: root_border,
             // TODO: support auto margins for root node?
             margin,
         },

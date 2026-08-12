@@ -1,6 +1,6 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
+use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -14,6 +14,110 @@ pub(crate) struct ResolvedSizeConstraints {
     pub min_size: Size<Option<f32>>,
     /// Used maximum constraint for the requested transfer mode.
     pub max_size: Size<Option<f32>>,
+    /// Authored and transferred constraint sources before the used min/max
+    /// pair is collapsed.
+    constraint_sources: Size<ResolvedAxisConstraints>,
+}
+
+/// Resolved min/max sources for one physical axis.
+///
+/// CSS Sizing applies an automatic content-based minimum before it merges
+/// constraints transferred through `aspect-ratio`. Retaining both sources is
+/// therefore observable: an authored maximum caps the automatic minimum, but
+/// a transferred maximum does not.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ResolvedAxisConstraints {
+    /// Minimum authored directly in this axis.
+    authored_min: Option<f32>,
+    /// Maximum authored directly in this axis.
+    authored_max: Option<f32>,
+    /// Minimum projected from the opposite axis through the preferred ratio.
+    transferred_min: Option<f32>,
+    /// Maximum projected from the opposite axis through the preferred ratio.
+    transferred_max: Option<f32>,
+}
+
+impl ResolvedAxisConstraints {
+    /// No authored or transferred constraints.
+    pub(crate) const NONE: Self =
+        Self { authored_min: None, authored_max: None, transferred_min: None, transferred_max: None };
+
+    /// Merge late-resolved authored constraints and an automatic minimum into
+    /// the used min/max pair for this axis.
+    pub(crate) fn resolve(
+        self,
+        late_authored_min: Option<f32>,
+        late_authored_max: Option<f32>,
+        automatic_min: Option<f32>,
+    ) -> (Option<f32>, Option<f32>) {
+        let authored_min = maximum_constraint(self.authored_min, late_authored_min);
+        let authored_max = minimum_constraint(self.authored_max, late_authored_max);
+        let automatic_min = automatic_min.map(|minimum| minimum.min(authored_max.unwrap_or(f32::INFINITY)));
+        let authored_and_automatic_min = maximum_constraint(authored_min, automatic_min);
+        let used_min = merge_minimum(authored_and_automatic_min, self.transferred_min, authored_max);
+        let used_max = merge_maximum(authored_max, self.transferred_max, used_min);
+        (used_min, used_max)
+    }
+
+    /// Add late-resolved values of authored intrinsic sizing keywords.
+    fn with_late_authored_constraints(mut self, min: Option<f32>, max: Option<f32>) -> ResolvedAxisConstraints {
+        self.authored_min = maximum_constraint(self.authored_min, min);
+        self.authored_max = minimum_constraint(self.authored_max, max);
+        self
+    }
+}
+
+impl ResolvedSizeConstraints {
+    /// No preferred size or min/max constraints.
+    pub(crate) const NONE: Self = Self {
+        size: Size::NONE,
+        aspect_ratio_applied: Size { width: false, height: false },
+        min_size: Size::NONE,
+        max_size: Size::NONE,
+        constraint_sources: Size { width: ResolvedAxisConstraints::NONE, height: ResolvedAxisConstraints::NONE },
+    };
+
+    /// Return the source-preserving constraints for the logical block axis.
+    pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
+        writing_mode.to_logical(self.constraint_sources).block_size
+    }
+
+    /// Return the source-preserving constraints for one physical axis.
+    pub(crate) const fn axis_constraints(self, axis: AbsoluteAxis) -> ResolvedAxisConstraints {
+        match axis {
+            AbsoluteAxis::Horizontal => self.constraint_sources.width,
+            AbsoluteAxis::Vertical => self.constraint_sources.height,
+        }
+    }
+
+    /// Merge values of authored intrinsic min/max keywords that became known
+    /// after the initial length/percentage resolution.
+    pub(crate) fn apply_late_authored_constraints(&mut self, min_size: Size<Option<f32>>, max_size: Size<Option<f32>>) {
+        self.constraint_sources.width =
+            self.constraint_sources.width.with_late_authored_constraints(min_size.width, max_size.width);
+        self.constraint_sources.height =
+            self.constraint_sources.height.with_late_authored_constraints(min_size.height, max_size.height);
+        let (min_width, max_width) = self.constraint_sources.width.resolve(None, None, None);
+        let (min_height, max_height) = self.constraint_sources.height.resolve(None, None, None);
+        self.min_size = Size { width: min_width, height: min_height };
+        self.max_size = Size { width: max_width, height: max_height };
+    }
+
+    /// Apply CSS Sizing's aspect-ratio automatic minimum in one physical
+    /// axis while preserving the authored/transferred ordering.
+    pub(crate) fn apply_automatic_minimum(&mut self, axis: AbsoluteAxis, automatic_minimum: Option<f32>) {
+        let (minimum, maximum) = self.axis_constraints(axis).resolve(None, None, automatic_minimum);
+        match axis {
+            AbsoluteAxis::Horizontal => {
+                self.min_size.width = minimum;
+                self.max_size.width = maximum;
+            }
+            AbsoluteAxis::Vertical => {
+                self.min_size.height = minimum;
+                self.max_size.height = maximum;
+            }
+        }
+    }
 }
 
 /// Controls whether min/max constraints from the opposite axis participate in
@@ -88,14 +192,24 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         TransferredSizesMode::Ignore => (Size::NONE, Size::NONE),
     };
 
-    let min_size = Size {
-        width: merge_minimum(min_size.width, transferred_min.width, max_size.width),
-        height: merge_minimum(min_size.height, transferred_min.height, max_size.height),
+    let constraint_sources = Size {
+        width: ResolvedAxisConstraints {
+            authored_min: min_size.width,
+            authored_max: max_size.width,
+            transferred_min: transferred_min.width,
+            transferred_max: transferred_max.width,
+        },
+        height: ResolvedAxisConstraints {
+            authored_min: min_size.height,
+            authored_max: max_size.height,
+            transferred_min: transferred_min.height,
+            transferred_max: transferred_max.height,
+        },
     };
-    let max_size = Size {
-        width: merge_maximum(max_size.width, transferred_max.width, min_size.width),
-        height: merge_maximum(max_size.height, transferred_max.height, min_size.height),
-    };
+    let (min_width, max_width) = constraint_sources.width.resolve(None, None, None);
+    let (min_height, max_height) = constraint_sources.height.resolve(None, None, None);
+    let min_size = Size { width: min_width, height: min_height };
+    let max_size = Size { width: max_width, height: max_height };
 
     let resolved_size = apply_preferred_aspect_ratio(
         size,
@@ -110,7 +224,7 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         height: size.height.is_none() && resolved_size.height.is_some(),
     };
 
-    ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size }
+    ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size, constraint_sources }
 }
 
 /// Apply a preferred ratio while preserving the constraint space's ordering
@@ -194,6 +308,24 @@ fn merge_maximum(explicit_max: Option<f32>, transferred_max: Option<f32>, used_m
     }
 }
 
+/// Combine lower bounds, where an absent constraint has no effect.
+fn maximum_constraint(lhs: Option<f32>, rhs: Option<f32>) -> Option<f32> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => Some(lhs.max(rhs)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+/// Combine upper bounds, where an absent constraint represents infinity.
+fn minimum_constraint(lhs: Option<f32>, rhs: Option<f32>) -> Option<f32> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +384,29 @@ mod tests {
 
         assert_eq!(resolved.min_size, Size { width: Some(10.0), height: Some(150.0) });
         assert_eq!(resolved.max_size, Size { width: Some(20.0), height: Some(150.0) });
+    }
+
+    #[test]
+    fn authored_maximum_caps_automatic_minimum_before_transfer() {
+        let constraints = ResolvedAxisConstraints {
+            authored_min: None,
+            authored_max: Some(80.0),
+            transferred_min: None,
+            transferred_max: Some(50.0),
+        };
+
+        assert_eq!(constraints.resolve(None, None, Some(100.0)), (Some(80.0), Some(80.0)));
+    }
+
+    #[test]
+    fn transferred_maximum_does_not_cap_automatic_minimum() {
+        let constraints = ResolvedAxisConstraints {
+            authored_min: None,
+            authored_max: None,
+            transferred_min: None,
+            transferred_max: Some(50.0),
+        };
+
+        assert_eq!(constraints.resolve(None, None, Some(100.0)), (Some(100.0), Some(100.0)));
     }
 }

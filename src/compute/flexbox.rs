@@ -26,15 +26,18 @@ use crate::{BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
 use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput,
+    TransferredSizesMode,
 };
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    apply_contained_intrinsic_size_constraints, measure_intrinsic_block_size_constraints,
-    resolve_intrinsic_width_constraints, BlockSizeProperties, ContentBasedBlockSize,
+    apply_contained_intrinsic_size_constraints, measure_aspect_ratio_automatic_minimum,
+    measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
+    ContentBasedBlockSize,
 };
 use super::common::stretch::{resolve_stretch_size_constraints, StretchSizeProperties};
+use super::common::used_size::resolve_used_size;
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
 /// through the preferred main size.
@@ -512,39 +515,47 @@ pub fn compute_flexbox_layout(
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
 
-    let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
-        SizingMode::InherentSize => {
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                min_size: raw_min_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                max_size: raw_max_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: padding_border_sum,
-            });
-            let resolved = apply_contained_intrinsic_size_constraints(
-                resolved,
-                raw_size,
-                raw_min_size,
-                raw_max_size,
-                contained_outer_size,
-            );
-            let min_size = resolved.min_size;
-            let max_size = resolved.max_size;
-            let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
-            (min_size, max_size, preferred_size, resolved.aspect_ratio_applied.width)
-        }
-    };
+    let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio, block_axis_constraints) =
+        match inputs.sizing_mode {
+            SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false, ResolvedAxisConstraints::NONE),
+            SizingMode::InherentSize => {
+                let resolved = resolve_size_constraints(SizeConstraintInput {
+                    size: raw_size
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    min_size: raw_min_size
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    max_size: raw_max_size
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    block_auto_behavior: inputs.block_auto_behavior,
+                    transferred_sizes_mode: TransferredSizesMode::Normal,
+                    aspect_ratio,
+                    padding_border: padding_border_sum,
+                });
+                let resolved = apply_contained_intrinsic_size_constraints(
+                    resolved,
+                    raw_size,
+                    raw_min_size,
+                    raw_max_size,
+                    contained_outer_size,
+                );
+                let min_size = resolved.min_size;
+                let max_size = resolved.max_size;
+                let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
+                (
+                    min_size,
+                    max_size,
+                    preferred_size,
+                    resolved.aspect_ratio_applied.width,
+                    resolved.block_axis_constraints(writing_mode),
+                )
+            }
+        };
+    let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
 
     // If both min and max in a given axis are set and max <= min then this determines the size in that axis
     let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
@@ -558,8 +569,13 @@ pub fn compute_flexbox_layout(
 
     // The size of the container should be floored by the padding and border
     let contained_outer_size = contained_outer_size.maybe_clamp(min_size, max_size);
-    let styled_based_known_dimensions = known_dimensions
-        .or(min_max_definite_size.or(clamped_style_size).or(contained_outer_size).maybe_max(padding_border_sum));
+    let styled_based_known_dimensions = resolve_used_size(
+        known_dimensions,
+        min_max_definite_size.or(clamped_style_size).or(contained_outer_size),
+        Size::NONE,
+        Size::NONE,
+        padding_border_sum,
+    );
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
@@ -1110,11 +1126,24 @@ fn generate_anonymous_flex_items(
                 aspect_ratio,
                 padding_border: pb_sum,
             };
-            let constraints_with_transfer = resolve_size_constraints(constraint_input);
-            let constraints_without_transfer = resolve_size_constraints(SizeConstraintInput {
+            let mut constraints_with_transfer = resolve_size_constraints(constraint_input);
+            let mut constraints_without_transfer = resolve_size_constraints(SizeConstraintInput {
                 transferred_sizes_mode: TransferredSizesMode::Ignore,
                 ..constraint_input
             });
+            for axis in [AbsoluteAxis::Horizontal, AbsoluteAxis::Vertical] {
+                let automatic_minimum = measure_aspect_ratio_automatic_minimum(
+                    tree,
+                    child,
+                    LayoutInput { axis: axis.into(), ..intrinsic_inputs },
+                    axis,
+                    pb_sum,
+                    constraints_with_transfer,
+                );
+                constraints_with_transfer.apply_automatic_minimum(axis, automatic_minimum.value);
+                constraints_without_transfer.apply_automatic_minimum(axis, automatic_minimum.value);
+                depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
+            }
             size = constraints_with_transfer.size;
 
             Some(FlexItem {
@@ -1796,11 +1825,7 @@ fn determine_container_main_size(
     } else {
         Default::default()
     }
-    .resolve_against(
-        specified_outer_main_size,
-        constants.min_size.main(constants.dir),
-        constants.max_size.main(constants.dir),
-    );
+    .resolve_against(specified_outer_main_size, constants.content_based_block_size.resolved_constraints());
 
     let outer_main_size = intrinsic_constraints
         .preferred
@@ -2611,11 +2636,7 @@ fn determine_container_cross_size(
     } else {
         Default::default()
     }
-    .resolve_against(
-        node_size.cross(constants.dir),
-        constants.min_size.cross(constants.dir),
-        constants.max_size.cross(constants.dir),
-    );
+    .resolve_against(node_size.cross(constants.dir), constants.content_based_block_size.resolved_constraints());
     let outer_container_size = intrinsic_constraints
         .preferred
         .unwrap_or(intrinsic_outer_cross_size)
@@ -3043,7 +3064,7 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         });
-        let authored_min_size = resolved.min_size;
+        let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
         let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
         let mut max_size = resolved.max_size;
         let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
@@ -3130,7 +3151,7 @@ fn perform_absolute_layout_on_absolute_children(
         );
         intrinsic_block_constraints.apply_to_block_axis(
             child_writing_mode,
-            authored_min_size,
+            block_axis_constraints,
             padding_border_sum,
             &mut known_dimensions,
             &mut min_size,

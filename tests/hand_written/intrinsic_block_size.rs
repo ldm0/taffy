@@ -33,6 +33,44 @@ fn layout_subject_with_content_size(
     tree.layout(subject).unwrap().size
 }
 
+fn layout_subject_in_formatting_context(
+    parent_display: Display,
+    subject_style: Style,
+    writing_mode: WritingMode,
+    content_size: Size<f32>,
+) -> Size<f32> {
+    let mut tree = new_test_tree();
+    let content = tree
+        .new_leaf(Style {
+            size: Size::from_lengths(content_size.width, content_size.height),
+            flex_shrink: 0.0,
+            ..Default::default()
+        })
+        .unwrap();
+    let subject = tree.new_with_children(subject_style, &[content]).unwrap();
+    tree.set_writing_mode(subject, writing_mode).unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: parent_display,
+                size: Size::from_lengths(300.0, 300.0),
+                align_items: Some(AlignItems::START),
+                justify_items: Some(AlignItems::START),
+                ..Default::default()
+            },
+            &[subject],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::Definite(300.0) },
+        test_measure_function,
+    )
+    .unwrap();
+    tree.layout(subject).unwrap().size
+}
+
 fn layout_subject(subject_style: Style, writing_mode: WritingMode) -> Size<f32> {
     layout_subject_with_content_size(subject_style, writing_mode, Size { width: 100.0, height: 100.0 })
 }
@@ -163,6 +201,91 @@ fn automatic_minimum_is_capped_by_the_authored_maximum() {
                 "{display:?} preferred={preferred:?}",
             );
         }
+    }
+}
+
+#[test]
+fn transferred_maximum_does_not_cap_the_automatic_minimum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let horizontal = layout_subject_with_content_size(
+            Style {
+                display,
+                size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+                max_size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                aspect_ratio: Some(2.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size { width: 100.0, height: 100.0 },
+        );
+        assert_eq!(horizontal, Size { width: 100.0, height: 100.0 }, "{display:?} horizontal");
+
+        let vertical = layout_subject_with_content_size(
+            Style {
+                display,
+                size: Size { width: Dimension::auto(), height: Dimension::length(200.0) },
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(0.5),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::VerticalRl,
+            Size { width: 100.0, height: 100.0 },
+        );
+        assert_eq!(vertical, Size { width: 100.0, height: 100.0 }, "{display:?} vertical");
+    }
+}
+
+#[test]
+fn inline_transferred_maximum_does_not_cap_the_automatic_minimum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let size = layout_subject_with_content_size(
+            Style {
+                display,
+                size: Size { width: Dimension::auto(), height: Dimension::length(200.0) },
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(0.5),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size { width: 100.0, height: 100.0 },
+        );
+        assert_eq!(size, Size { width: 100.0, height: 100.0 }, "{display:?}");
+    }
+}
+
+#[test]
+fn automatic_minimum_order_is_shared_by_parent_formatting_contexts() {
+    for parent_display in [Display::Block, Display::Flex, Display::Grid] {
+        let inline = layout_subject_in_formatting_context(
+            parent_display,
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::length(200.0) },
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(0.5),
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size { width: 100.0, height: 100.0 },
+        );
+        assert_eq!(inline, Size { width: 100.0, height: 100.0 }, "{parent_display:?} inline");
+
+        let block = layout_subject_in_formatting_context(
+            parent_display,
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+                max_size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                aspect_ratio: Some(2.0),
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size { width: 100.0, height: 100.0 },
+        );
+        assert_eq!(block, Size { width: 100.0, height: 100.0 }, "{parent_display:?} block");
     }
 }
 
