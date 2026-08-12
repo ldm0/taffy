@@ -149,3 +149,32 @@ fn float_beside_existing_float_moves_down_instead_of_overflowing() {
     assert_eq!(taffy.layout(right).unwrap().location, Point { x: 40.0, y: 50.0 });
     assert_eq!(taffy.layout(left2).unwrap().location, Point { x: 0.0, y: 100.0 });
 }
+
+/// Regression for
+/// <https://wpt.live/css/css-sizing/aspect-ratio/floats-aspect-ratio-001.html>.
+///
+/// The first 100x50 opportunity is too short for the square formatting
+/// context produced at that width. Layout must retry the next two-dimensional
+/// opportunity, whose 40px inline size produces a 40x40 square beside the
+/// second float band.
+#[test]
+fn independent_formatting_context_ratio_uses_the_available_float_band() {
+    let mut taffy = new_test_tree();
+    let left = taffy.new_leaf(float_block(50.0, 50.0, Float::Left)).unwrap();
+    let right = taffy.new_leaf(float_block(50.0, 50.0, Float::Right)).unwrap();
+    let next_left = taffy.new_leaf(float_block(160.0, 50.0, Float::Left)).unwrap();
+    let independent =
+        taffy.new_leaf(Style { display: Display::FlowRoot, aspect_ratio: Some(1.0), ..Default::default() }).unwrap();
+    let root = taffy.new_with_children(root_style(200.0), &[left, right, next_left, independent]).unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(
+        (
+            taffy.layout(next_left).unwrap().location,
+            taffy.layout(independent).unwrap().location,
+            taffy.layout(independent).unwrap().size,
+        ),
+        (Point { x: 0.0, y: 50.0 }, Point { x: 160.0, y: 50.0 }, Size { width: 40.0, height: 40.0 },)
+    );
+}
