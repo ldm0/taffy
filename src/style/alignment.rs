@@ -4,7 +4,7 @@
 //! structs with two orthogonal fields: a *position* keyword
 //! ([`AlignItemsKeyword`] / [`AlignContentKeyword`]) and an *overflow-position*
 //! modifier ([`AlignmentSafety`]). The pre-existing CSS spellings — `Start`, `End`,
-//! `FlexStart`, `FlexEnd`, `Center`, `Stretch`, `SpaceBetween`, …, `SafeStart`,
+//! `Normal`, `FlexStart`, `FlexEnd`, `Center`, `Stretch`, `SpaceBetween`, …, `SafeStart`,
 //! `SafeEnd`, `SafeFlexStart`, `SafeFlexEnd`, `SafeCenter` — are exposed as associated
 //! constants on the structs, so call sites read identically to the previous enum form.
 
@@ -23,6 +23,8 @@ use crate::style::Direction;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(u8)]
 pub enum AlignItemsKeyword {
+    /// Use the context-dependent default alignment for this formatting model.
+    Normal,
     /// Items are packed toward the start of the axis.
     Start,
     /// Items are packed toward the end of the axis.
@@ -142,6 +144,8 @@ pub struct AlignItems {
 }
 
 impl AlignItems {
+    /// Use the context-dependent default alignment for this formatting model.
+    pub const NORMAL: Self = Self { keyword: AlignItemsKeyword::Normal, safety: AlignmentSafety::Default };
     /// Items are packed toward the start of the axis.
     pub const START: Self = Self { keyword: AlignItemsKeyword::Start, safety: AlignmentSafety::Default };
     /// Items are packed toward the end of the axis.
@@ -220,6 +224,24 @@ impl AlignItems {
     #[inline]
     pub const fn keyword(self) -> AlignItemsKeyword {
         self.keyword
+    }
+
+    /// Returns `true` when this value retains the context-dependent `normal`
+    /// alignment behavior.
+    #[inline]
+    pub const fn is_normal(self) -> bool {
+        matches!(self.keyword, AlignItemsKeyword::Normal)
+    }
+
+    /// Resolve `normal` to the behavior supplied by the current formatting
+    /// model, leaving every authored non-normal value unchanged.
+    #[inline]
+    pub const fn resolve_normal(self, normal_behavior: Self) -> Self {
+        if self.is_normal() {
+            normal_behavior
+        } else {
+            self
+        }
     }
 
     /// Returns `true` for either first- or last-baseline alignment.
@@ -324,6 +346,7 @@ impl FromCss for AlignItems {
                     _ => Err(input.new_unexpected_token_error(Token::Ident(pos))),
                 }
             },
+            "normal" => Ok(Self::NORMAL),
             "start" => Ok(Self::START),
             "end" => Ok(Self::END),
             "flex-start" => Ok(Self::FLEX_START),
@@ -568,6 +591,7 @@ pub type JustifyContent = AlignContent;
 /// `unknown_variant` errors. Mirrors the spellings produced by `Serialize`.
 #[cfg(feature = "serde")]
 const ALIGN_ITEMS_NAMES: &[&str] = &[
+    "Normal",
     "Start",
     "End",
     "FlexStart",
@@ -604,6 +628,7 @@ const ALIGN_ITEMS_NAMES: &[&str] = &[
 impl serde::Serialize for AlignItems {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let name = match (self.keyword, self.safety) {
+            (AlignItemsKeyword::Normal, _) => "Normal",
             (AlignItemsKeyword::Start, AlignmentSafety::Default) => "Start",
             (AlignItemsKeyword::End, AlignmentSafety::Default) => "End",
             (AlignItemsKeyword::FlexStart, AlignmentSafety::Default) => "FlexStart",
@@ -650,6 +675,7 @@ impl<'de> serde::Deserialize<'de> for AlignItems {
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 Ok(match v {
+                    "Normal" => AlignItems::NORMAL,
                     "Start" => AlignItems::START,
                     "End" => AlignItems::END,
                     "FlexStart" => AlignItems::FLEX_START,
@@ -812,6 +838,7 @@ mod tests {
         assert!(!AlignItems::FLEX_START.is_safe());
         assert!(!AlignItems::FLEX_END.is_safe());
         assert!(!AlignItems::CENTER.is_safe());
+        assert!(!AlignItems::NORMAL.is_safe());
         assert!(!AlignItems::BASELINE.is_safe());
         assert!(!AlignItems::LAST_BASELINE.is_safe());
         assert!(!AlignItems::STRETCH.is_safe());
@@ -840,11 +867,18 @@ mod tests {
 
     #[test]
     fn align_items_keyword_passthrough() {
+        assert_eq!(AlignItems::NORMAL.keyword(), AlignItemsKeyword::Normal);
         assert_eq!(AlignItems::START.keyword(), AlignItemsKeyword::Start);
         assert_eq!(AlignItems::STRETCH.keyword(), AlignItemsKeyword::Stretch);
         assert_eq!(AlignItems::BASELINE.keyword(), AlignItemsKeyword::Baseline);
         assert_eq!(AlignItems::LAST_BASELINE.keyword(), AlignItemsKeyword::LastBaseline);
         assert_eq!(AlignItems::FLEX_START.keyword(), AlignItemsKeyword::FlexStart);
+    }
+
+    #[test]
+    fn align_items_resolves_only_normal() {
+        assert_eq!(AlignItems::NORMAL.resolve_normal(AlignItems::STRETCH), AlignItems::STRETCH);
+        assert_eq!(AlignItems::CENTER.resolve_normal(AlignItems::STRETCH), AlignItems::CENTER);
     }
 
     #[test]
@@ -958,6 +992,7 @@ mod tests {
     #[cfg(feature = "parse")]
     #[test]
     fn parse_align_items_plain() {
+        assert_eq!("normal".parse::<AlignItems>().unwrap(), AlignItems::NORMAL);
         assert_eq!("start".parse::<AlignItems>().unwrap(), AlignItems::START);
         assert_eq!("end".parse::<AlignItems>().unwrap(), AlignItems::END);
         assert_eq!("flex-start".parse::<AlignItems>().unwrap(), AlignItems::FLEX_START);
@@ -1011,6 +1046,8 @@ mod tests {
     #[cfg(feature = "parse")]
     #[test]
     fn parse_align_items_rejects_invalid_safe_combos() {
+        assert!("safe normal".parse::<AlignItems>().is_err());
+        assert!("unsafe normal".parse::<AlignItems>().is_err());
         assert!("safe stretch".parse::<AlignItems>().is_err());
         assert!("safe baseline".parse::<AlignItems>().is_err());
         assert!("safe space-between".parse::<AlignItems>().is_err());
@@ -1070,6 +1107,7 @@ mod tests {
     #[test]
     fn serde_align_items_round_trip() {
         let cases = [
+            (AlignItems::NORMAL, "\"Normal\""),
             (AlignItems::START, "\"Start\""),
             (AlignItems::END, "\"End\""),
             (AlignItems::FLEX_START, "\"FlexStart\""),

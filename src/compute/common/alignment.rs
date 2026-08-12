@@ -1,5 +1,37 @@
 //! Generic CSS alignment code that is shared between both the Flexbox and CSS Grid algorithms.
 use crate::style::{AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignmentSafety};
+use crate::tree::AutoSizeBehavior;
+
+/// A self-alignment value after a formatting context has supplied the meaning
+/// of `normal`, together with the corresponding behavior for an authored
+/// `auto` size.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct ResolvedSelfAlignment {
+    /// Positional alignment used after sizing.
+    pub position: AlignItems,
+    /// Ordering between automatic sizing, stretch, and preferred ratios.
+    pub auto_size: AutoSizeBehavior,
+}
+
+/// Resolve the context-dependent sizing semantics of one self-alignment value.
+///
+/// The formatting model supplies both the positional and auto-size behavior
+/// of `normal`. Explicit `stretch` is a strong stretch; all positional values
+/// remain content-sized.
+#[inline]
+pub(crate) const fn resolve_self_alignment(
+    alignment: AlignItems,
+    normal_position: AlignItems,
+    normal_auto_size: AutoSizeBehavior,
+) -> ResolvedSelfAlignment {
+    match alignment.keyword() {
+        AlignItemsKeyword::Normal => ResolvedSelfAlignment { position: normal_position, auto_size: normal_auto_size },
+        AlignItemsKeyword::Stretch => {
+            ResolvedSelfAlignment { position: alignment, auto_size: AutoSizeBehavior::StretchExplicit }
+        }
+        _ => ResolvedSelfAlignment { position: alignment, auto_size: AutoSizeBehavior::FitContent },
+    }
+}
 
 /// A content-alignment keyword after context-dependent fallbacks have been
 /// resolved. Baseline preferences deliberately cannot reach numeric offset
