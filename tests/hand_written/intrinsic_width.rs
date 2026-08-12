@@ -71,6 +71,140 @@ fn fit_content_clamps_to_available_width() {
 }
 
 #[test]
+fn parameterized_fit_content_clamps_authored_lengths_and_percentages() {
+    for (limit, expected) in [(100.0, 160.0), (200.0, 200.0), (300.0, 240.0)] {
+        assert_eq!(
+            layout_child(
+                Display::Block,
+                Style {
+                    size: Size {
+                        width: Dimension::fit_content_function(LengthPercentage::length(limit)),
+                        height: Dimension::length(20.0),
+                    },
+                    ..Default::default()
+                },
+            ),
+            expected,
+            "fit-content({limit}px)",
+        );
+    }
+
+    assert_eq!(
+        layout_child(
+            Display::Block,
+            Style {
+                size: Size {
+                    width: Dimension::fit_content_function(LengthPercentage::percent(0.5)),
+                    height: Dimension::length(20.0),
+                },
+                ..Default::default()
+            },
+        ),
+        160.0,
+    );
+}
+
+#[test]
+fn parameterized_fit_content_applies_to_min_and_max_constraints() {
+    let limit = Dimension::fit_content_function(LengthPercentage::length(200.0));
+    assert_eq!(
+        layout_child(
+            Display::Block,
+            Style {
+                size: Size::from_lengths(100.0, 20.0),
+                min_size: Size { width: limit, height: Dimension::auto() },
+                ..Default::default()
+            },
+        ),
+        200.0,
+    );
+    assert_eq!(
+        layout_child(
+            Display::Block,
+            Style {
+                size: Size::from_lengths(300.0, 20.0),
+                max_size: Size { width: limit, height: Dimension::auto() },
+                ..Default::default()
+            },
+        ),
+        200.0,
+    );
+}
+
+#[test]
+fn parameterized_fit_content_uses_the_selected_sizing_box() {
+    for (box_sizing, expected) in [(BoxSizing::ContentBox, 220.0), (BoxSizing::BorderBox, 200.0)] {
+        assert_eq!(
+            layout_child(
+                Display::Block,
+                Style {
+                    box_sizing,
+                    size: Size {
+                        width: Dimension::fit_content_function(LengthPercentage::length(200.0)),
+                        height: Dimension::length(20.0),
+                    },
+                    padding: Rect::length(10.0),
+                    ..Default::default()
+                },
+            ),
+            expected,
+            "{box_sizing:?}",
+        );
+    }
+}
+
+fn cyclic_fit_content_contribution(outer_width: Dimension, child_style: Style, child_context: TestNodeContext) -> f32 {
+    let mut tree = new_test_tree();
+    let child = tree.new_leaf_with_context(child_style, child_context).unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: outer_width, height: Dimension::length(20.0) },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::Definite(20.0) },
+        test_measure_function,
+    )
+    .unwrap();
+    tree.layout(root).unwrap().size.width
+}
+
+#[test]
+fn cyclic_fit_content_percentages_use_property_specific_intrinsic_fallbacks() {
+    let fit_percent = Dimension::fit_content_function(LengthPercentage::percent(0.5));
+    let preferred = Style { size: Size { width: fit_percent, height: Dimension::length(20.0) }, ..Default::default() };
+    assert_eq!(cyclic_fit_content_contribution(Dimension::min_content(), preferred.clone(), text_context()), 160.0,);
+    assert_eq!(cyclic_fit_content_contribution(Dimension::max_content(), preferred, text_context()), 240.0,);
+
+    let minimum = Style {
+        size: Size::from_lengths(50.0, 20.0),
+        min_size: Size { width: fit_percent, height: Dimension::auto() },
+        ..Default::default()
+    };
+    assert_eq!(cyclic_fit_content_contribution(Dimension::min_content(), minimum, text_context()), 160.0,);
+
+    let maximum = Style {
+        size: Size::from_lengths(200.0, 20.0),
+        max_size: Size { width: fit_percent, height: Dimension::auto() },
+        ..Default::default()
+    };
+    assert_eq!(
+        cyclic_fit_content_contribution(
+            Dimension::min_content(),
+            maximum,
+            TestNodeContext::ahem_text("aaaaaaaaaa".to_owned(), WritingMode::Horizontal),
+        ),
+        100.0,
+    );
+}
+
+#[test]
 fn intrinsic_min_and_max_clamp_preferred_width() {
     assert_eq!(
         layout_child(
@@ -368,12 +502,26 @@ fn intrinsic_dimension_keywords_parse_without_colliding_with_grid_fit_content() 
     ] {
         assert_eq!(Dimension::from_str(css).unwrap(), expected, "{css}");
     }
+
+    for (css, expected) in [
+        ("fit-content(100px)", Dimension::fit_content_function(LengthPercentage::length(100.0))),
+        ("fit-content(50%)", Dimension::fit_content_function(LengthPercentage::percent(0.5))),
+    ] {
+        assert_eq!(Dimension::from_str(css).unwrap(), expected, "{css}");
+    }
 }
 
 #[cfg(feature = "serde")]
 #[test]
 fn intrinsic_dimension_tags_round_trip_through_serde() {
-    for value in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content(), Dimension::stretch()] {
+    for value in [
+        Dimension::min_content(),
+        Dimension::max_content(),
+        Dimension::fit_content(),
+        Dimension::fit_content_function(LengthPercentage::length(100.0)),
+        Dimension::fit_content_function(LengthPercentage::percent(0.5)),
+        Dimension::stretch(),
+    ] {
         let serialized = serde_json::to_string(&value).unwrap();
         assert_eq!(serde_json::from_str::<Dimension>(&serialized).unwrap(), value);
     }

@@ -1,7 +1,7 @@
 //! Style types for representing lengths / sizes
 use super::CompactLength;
 use crate::geometry::Rect;
-use crate::style_helpers::{FromLength, FromPercent, TaffyAuto, TaffyZero};
+use crate::style_helpers::{FromLength, FromPercent, TaffyAuto, TaffyFitContent, TaffyZero};
 #[cfg(feature = "parse")]
 use crate::util::parse::{from_str_from_css, CssParseResult, FromCss, Parser, Token};
 
@@ -265,6 +265,9 @@ impl FromCss for Dimension {
             Token::Ident(ident) if ident == "max-content" => Ok(Self::max_content()),
             Token::Ident(ident) if ident == "fit-content" => Ok(Self::fit_content()),
             Token::Ident(ident) if ident == "stretch" || ident == "-webkit-fill-available" => Ok(Self::stretch()),
+            Token::Function(ref name) if name.as_ref() == "fit-content" => {
+                parser.parse_nested_block(|parser| LengthPercentage::from_css(parser).map(Self::fit_content_function))
+            }
             token => Err(parser.new_unexpected_token_error(token))?,
         }
     }
@@ -318,6 +321,30 @@ impl Dimension {
     #[inline(always)]
     pub const fn fit_content() -> Self {
         Self(CompactLength::fit_content_keyword())
+    }
+
+    /// Use the fit-content formula with an authored length-percentage limit.
+    #[inline(always)]
+    pub fn fit_content_function(limit: LengthPercentage) -> Self {
+        #[cfg(feature = "calc")]
+        if limit.0.is_calc() {
+            // A generic LengthPercentage cannot expose whether its opaque calc
+            // tree contains a percentage, so preserve the conservative answer.
+            // Browser integrations that know can call `fit_content_calc`.
+            return Self(CompactLength::fit_content_calc(limit.0.calc_value(), true));
+        }
+        Self(<CompactLength as TaffyFitContent>::fit_content(limit))
+    }
+
+    /// Use an opaque calc expression as the limit of the fit-content formula.
+    ///
+    /// Integrations that can inspect their calc representation should pass an
+    /// exact percentage-dependency bit. This preserves the CSS cyclic
+    /// percentage rules without requiring Taffy to own the expression tree.
+    #[inline(always)]
+    #[cfg(feature = "calc")]
+    pub fn fit_content_calc(ptr: *const (), may_have_percentage_dependence: bool) -> Self {
+        Self(CompactLength::fit_content_calc(ptr, may_have_percentage_dependence))
     }
 
     /// Stretch the margin box to fill the available space in this axis.
@@ -384,7 +411,47 @@ impl Dimension {
     /// Returns true if this is the bare `fit-content` sizing keyword.
     #[inline(always)]
     pub fn is_fit_content(self) -> bool {
+        self.is_fit_content_keyword()
+    }
+
+    /// Returns true if this is the bare `fit-content` sizing keyword.
+    #[inline(always)]
+    pub fn is_fit_content_keyword(self) -> bool {
         self.0.is_fit_content_keyword()
+    }
+
+    /// Returns true if this is a parameterized `fit-content(...)` value.
+    #[inline(always)]
+    pub fn is_fit_content_function(self) -> bool {
+        self.0.is_fit_content()
+    }
+
+    /// Resolve the argument of a parameterized `fit-content(...)` value.
+    ///
+    /// A percentage-dependent argument remains unresolved without a basis. An
+    /// absolute calc expression is evaluated with a zero dummy basis, which is
+    /// safe because the embedding adapter declared that it has no percentage
+    /// dependence.
+    #[inline(always)]
+    pub fn resolve_fit_content_limit(
+        self,
+        percentage_basis: Option<f32>,
+        calc_resolver: impl Fn(*const (), f32) -> f32,
+    ) -> Option<f32> {
+        match self.0.tag() {
+            CompactLength::FIT_CONTENT_PX_TAG => Some(self.0.value()),
+            CompactLength::FIT_CONTENT_PERCENT_TAG => percentage_basis.map(|basis| basis * self.0.value()),
+            #[cfg(feature = "calc")]
+            _ if self.0.is_fit_content_calc() => {
+                let basis = if self.0.fit_content_calc_uses_percentage() {
+                    percentage_basis?
+                } else {
+                    percentage_basis.unwrap_or(0.0)
+                };
+                Some(calc_resolver(self.0.calc_value(), basis))
+            }
+            _ => None,
+        }
     }
 
     /// Returns true if this is the `stretch` sizing keyword.
@@ -407,7 +474,10 @@ impl Dimension {
     /// content contributions or available space.
     #[inline(always)]
     pub fn is_intrinsic(self) -> bool {
-        self.is_min_content() || self.is_max_content() || self.is_fit_content()
+        self.is_min_content()
+            || self.is_max_content()
+            || self.is_fit_content_keyword()
+            || self.is_fit_content_function()
     }
 
     /// Get the raw `CompactLength` tag
@@ -437,6 +507,8 @@ impl<'de> serde::Deserialize<'de> for Dimension {
                 | CompactLength::CONTENT_TAG
                 | CompactLength::MIN_CONTENT_TAG
                 | CompactLength::MAX_CONTENT_TAG
+                | CompactLength::FIT_CONTENT_PX_TAG
+                | CompactLength::FIT_CONTENT_PERCENT_TAG
                 | CompactLength::FIT_CONTENT_KEYWORD_TAG
                 | CompactLength::STRETCH_TAG
         ) {
@@ -444,6 +516,12 @@ impl<'de> serde::Deserialize<'de> for Dimension {
         } else {
             Err(serde::de::Error::custom("Invalid tag"))
         }
+    }
+}
+
+impl TaffyFitContent for Dimension {
+    fn fit_content(limit: LengthPercentage) -> Self {
+        Self::fit_content_function(limit)
     }
 }
 
@@ -468,5 +546,39 @@ impl Rect<Dimension> {
             top: Dimension(CompactLength::percent(top)),
             bottom: Dimension(CompactLength::percent(bottom)),
         }
+    }
+}
+
+#[cfg(all(test, feature = "calc"))]
+mod tests {
+    use super::Dimension;
+
+    #[repr(align(8))]
+    struct AlignedCalc;
+
+    #[test]
+    fn fit_content_calc_preserves_its_pointer_and_percentage_dependency() {
+        let expression = AlignedCalc;
+        let pointer = &expression as *const AlignedCalc as *const ();
+
+        let absolute = Dimension::fit_content_calc(pointer, false);
+        assert_eq!(
+            absolute.resolve_fit_content_limit(None, |actual, basis| {
+                assert_eq!(actual, pointer);
+                assert_eq!(basis, 0.0);
+                25.0
+            }),
+            Some(25.0),
+        );
+
+        let percentage = Dimension::fit_content_calc(pointer, true);
+        assert_eq!(percentage.resolve_fit_content_limit(None, |_, _| unreachable!()), None);
+        assert_eq!(
+            percentage.resolve_fit_content_limit(Some(200.0), |actual, basis| {
+                assert_eq!(actual, pointer);
+                basis * 0.5 + 10.0
+            }),
+            Some(110.0),
+        );
     }
 }
