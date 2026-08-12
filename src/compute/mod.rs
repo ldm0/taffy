@@ -67,11 +67,11 @@ pub use self::grid::compute_grid_layout;
 #[cfg(feature = "float_layout")]
 pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
-use crate::geometry::{Line, Point, Size};
+use crate::geometry::{Line, LogicalStaticPosition, Point, Size};
 use crate::style::{AvailableSpace, CoreStyle, Overflow};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt,
-    NodeId, RoundTree, RunMode, SizingMode, SizingPurpose,
+    NodeId, OutOfFlowContainingBlock, RoundTree, RunMode, SizingMode, SizingPurpose,
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
@@ -82,6 +82,29 @@ use crate::{AutoSizeBehavior, CacheTree, RequestedAxis};
 use crate::{AbsoluteAxis, MaybeMath};
 
 pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
+
+/// Size and place one absolutely positioned descendant in an explicitly
+/// supplied containing area.
+///
+/// Custom formatting contexts should emit the size-independent static
+/// position first, then call this function from the actual containing block.
+/// This keeps inset, intrinsic-size, aspect-ratio and auto-margin semantics in
+/// the same resolver used by Taffy's block, flex and grid algorithms.
+#[cfg(any(feature = "block_layout", feature = "flexbox"))]
+pub fn compute_out_of_flow_layout(
+    tree: &mut impl LayoutPartialTree,
+    node: NodeId,
+    order: u32,
+    static_position: LogicalStaticPosition,
+    containing_block: OutOfFlowContainingBlock,
+) -> Option<Size<f32>> {
+    common::absolute::layout_out_of_flow_item(
+        tree,
+        common::absolute::OutOfFlowItem { node, order, static_position },
+        containing_block,
+    )
+    .map(|output| output.content_size)
+}
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {

@@ -1,7 +1,6 @@
 //! Computes the CSS block layout algorithm in the case that the block container being laid out contains only block-level boxes
 use crate::geometry::{
-    AbsoluteAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size,
-    StaticPositionEdge, WritingDirection,
+    Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size, WritingDirection,
 };
 use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
@@ -20,17 +19,15 @@ use crate::{
     TextAlign, WritingMode,
 };
 
-use super::common::absolute::{fit_content_width, logical_inset_modified_containing_block_size};
-use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
-};
+use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
+use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
-    measure_aspect_ratio_automatic_minimum, measure_intrinsic_block_size_constraints,
-    resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
+    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints, resolve_node_size_constraints,
     BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
+use crate::tree::OutOfFlowContainingBlock;
 
 #[cfg(feature = "float_layout")]
 use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
@@ -932,7 +929,21 @@ fn generate_item_list(
 ) -> Vec<BlockItem> {
     let writing_mode = writing_direction.mode;
     let physical_node_inner_size = writing_mode.to_physical(node_inner_size);
-    let child_ids: Vec<_> = tree.child_ids(node).collect();
+    let numeric_children: Vec<_> = tree.child_ids(node).collect();
+    let candidate_count = tree.out_of_flow_candidate_count(node);
+    let candidates: Vec<_> = (0..candidate_count).map(|index| tree.get_out_of_flow_candidate(node, index)).collect();
+    let mut child_ids = Vec::with_capacity(numeric_children.len() + candidates.len());
+    for insertion_index in 0..=numeric_children.len() {
+        child_ids.extend(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.insertion_index.min(numeric_children.len()) == insertion_index)
+                .map(|candidate| candidate.node),
+        );
+        if let Some(child) = numeric_children.get(insertion_index) {
+            child_ids.push(*child);
+        }
+    }
     child_ids
         .into_iter()
         .filter_map(|child_node_id| {
@@ -2022,87 +2033,7 @@ fn perform_final_layout_on_in_flow_children(
     )
 }
 
-/// Resolve auto margins in one axis of an absolutely positioned box.
-///
-/// Auto margins only participate when both insets in the axis are definite.
-/// In the inline axis, negative free space is assigned to the non-dominant
-/// side so the direction's start edge remains visible. In the block axis it
-/// is shared equally, matching CSS Positioned Layout and browser behavior.
-#[inline]
-fn resolve_absolute_axis_margins(
-    margin: Line<Option<f32>>,
-    inset: Line<Option<f32>>,
-    area_size: f32,
-    box_size: f32,
-    share_negative_space: bool,
-    start_is_dominant: bool,
-) -> Line<f32> {
-    if inset.start.is_none() || inset.end.is_none() {
-        return Line { start: margin.start.unwrap_or(0.0), end: margin.end.unwrap_or(0.0) };
-    }
-
-    let free_space = area_size
-        - inset.start.unwrap()
-        - inset.end.unwrap()
-        - box_size
-        - margin.start.unwrap_or(0.0)
-        - margin.end.unwrap_or(0.0);
-
-    match (margin.start, margin.end) {
-        (Some(start), Some(end)) => Line { start, end },
-        (None, Some(end)) => Line { start: free_space, end },
-        (Some(start), None) => Line { start, end: free_space },
-        (None, None) if free_space > 0.0 || share_negative_space => {
-            let start = free_space / 2.0;
-            Line { start, end: free_space - start }
-        }
-        (None, None) if start_is_dominant => Line { start: 0.0, end: free_space },
-        (None, None) => Line { start: free_space, end: 0.0 },
-    }
-}
-
-/// Resolve a static-position anchor to the out-of-flow box's physical
-/// border-box origin after its size and margins are known.
-#[inline]
-fn resolve_static_position_location(
-    static_position: LogicalStaticPosition,
-    writing_direction: WritingDirection,
-    containing_outer_size: Size<f32>,
-    box_size: Size<f32>,
-    margin: Rect<f32>,
-) -> Point<f32> {
-    #[inline(always)]
-    fn axis_start(anchor: f32, edge: StaticPositionEdge, size: f32, margin_start: f32, margin_end: f32) -> f32 {
-        match edge {
-            StaticPositionEdge::Start => anchor + margin_start,
-            StaticPositionEdge::Center => anchor + (margin_start - margin_end - size) / 2.0,
-            StaticPositionEdge::End => anchor - size - margin_end,
-        }
-    }
-
-    let logical_size = writing_direction.mode.to_logical(box_size);
-    let logical_margin = writing_direction.to_logical_box_strut(margin);
-    let logical_location = LogicalOffset {
-        inline_offset: axis_start(
-            static_position.offset.inline_offset,
-            static_position.inline_edge,
-            logical_size.inline_size,
-            logical_margin.inline_start,
-            logical_margin.inline_end,
-        ),
-        block_offset: axis_start(
-            static_position.offset.block_offset,
-            static_position.block_edge,
-            logical_size.block_size,
-            logical_margin.block_start,
-            logical_margin.block_end,
-        ),
-    };
-    writing_direction.converter(containing_outer_size).to_physical_point(logical_location, box_size)
-}
-
-/// Perform absolute layout on all absolutely positioned children.
-#[inline]
+/// Lay out positioned children through the shared out-of-flow resolver.
 fn perform_absolute_layout_on_absolute_children(
     tree: &mut impl LayoutBlockContainer,
     containing_block_node_id: NodeId,
@@ -2112,388 +2043,32 @@ fn perform_absolute_layout_on_absolute_children(
     writing_direction: WritingDirection,
     containing_outer_size: Size<f32>,
 ) -> Size<f32> {
-    let direction = writing_direction.direction;
-    let writing_mode = writing_direction.mode;
-    let converter = writing_direction.converter(containing_outer_size);
-    let area_width = area_size.width;
-    let area_height = area_size.height;
-    let percentage_basis = writing_mode.to_logical(area_size).inline_size;
-
-    #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
-    let mut absolute_content_size = Size::ZERO;
+    let containing_block =
+        OutOfFlowContainingBlock { outer_size: containing_outer_size, area_offset, area_size, writing_direction };
+    let mut content_size = Size::ZERO;
 
     for item in items.iter().filter(|item| item.position == Position::Absolute) {
+        if !tree.is_out_of_flow_containing_block(containing_block_node_id, item.node_id) {
+            continue;
+        }
+        let containing_block =
+            tree.get_out_of_flow_containing_block(containing_block_node_id, item.node_id, containing_block);
         let static_position = tree
             .get_out_of_flow_static_position(
                 containing_block_node_id,
                 item.node_id,
-                containing_outer_size,
-                writing_direction,
+                containing_block.outer_size,
+                containing_block.writing_direction,
             )
             .unwrap_or(item.static_position);
-        let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
-        let child_writing_mode = tree.get_writing_mode(item.node_id);
-        let child_style = tree.get_block_child_style(item.node_id);
-
-        // Skip items that are display:none or are not position:absolute
-        if child_style.box_generation_mode() == BoxGenerationMode::None || child_style.position() != Position::Absolute
-        {
-            continue;
-        }
-
-        let margin = child_style
-            .margin()
-            .map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
-        let padding = child_style.padding().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
-        let border = child_style.border().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
-        let padding_border_sum = (padding + border).sum_axes();
-        let overflow = child_style.overflow();
-        let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
-        let box_sizing = child_style.box_sizing();
-        let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
-
-        // Resolve inset
-        let left = child_style.inset().left.maybe_resolve(area_width, |val, basis| tree.calc(val, basis));
-        let right = child_style.inset().right.maybe_resolve(area_width, |val, basis| tree.calc(val, basis));
-        let top = child_style.inset().top.maybe_resolve(area_height, |val, basis| tree.calc(val, basis));
-        let bottom = child_style.inset().bottom.maybe_resolve(area_height, |val, basis| tree.calc(val, basis));
-        let block_auto_behavior = match child_writing_mode.block_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
-            _ => AutoSizeBehavior::FitContent,
-        };
-        let inline_auto_behavior = match child_writing_mode.inline_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
-            _ => AutoSizeBehavior::FitContent,
-        };
-
-        // Keep the unresolved values: intrinsic widths need the absolute
-        // containing block after insets and non-auto margins are known.
-        let raw_size = child_style.size();
-        let raw_min_size = child_style.min_size();
-        let raw_max_size = child_style.max_size();
-
-        // Compute numeric known dimensions from min/max/inherent size styles.
-        let mut style_size =
-            raw_size.maybe_resolve(area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
-        let mut min_size =
-            raw_min_size.maybe_resolve(area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
-        let mut max_size =
-            raw_max_size.maybe_resolve(area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
-
-        drop(child_style);
-
-        let static_anchor = converter.to_physical_point(static_position.offset, Size::ZERO);
-        let static_position_in_area = LogicalStaticPosition {
-            offset: writing_direction.converter(area_size).to_logical_point(
-                Point { x: static_anchor.x - area_offset.x, y: static_anchor.y - area_offset.y },
-                Size::ZERO,
-            ),
-            ..static_position
-        };
-        let inset_modified_containing_block = logical_inset_modified_containing_block_size(
-            area_size,
-            Rect { left, right, top, bottom },
-            static_position_in_area,
-            writing_direction,
-        );
-        let inset_modified_size =
-            (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
-        let available_width = inset_modified_size.width;
-        let available_height = inset_modified_size.height;
-        let stretch = resolve_stretch_size_constraints(
-            raw_size,
-            raw_min_size,
-            raw_max_size,
-            inset_modified_size.map(Some),
-            padding_border_sum,
-        );
-        style_size = style_size.or(stretch.preferred);
-        min_size = min_size.or(stretch.min);
-        max_size = max_size.or(stretch.max);
-        let intrinsic_inputs = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::IntrinsicContribution,
-            axis: RequestedAxis::Horizontal,
-            inline_auto_behavior: AutoSizeBehavior::FitContent,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
-            known_dimensions: Size { width: None, height: style_size.height },
-            definite_dimensions: Size::NONE,
-            parent_size: area_size.map(Some),
-            parent_writing_mode: writing_mode,
-            available_space: Size {
-                width: AvailableSpace::Definite(available_width),
-                height: AvailableSpace::Definite(available_height),
-            },
-            block_margins_are_collapsible: Line::FALSE,
-        };
-        let intrinsic = resolve_intrinsic_width_constraints(
+        if let Some(output) = layout_out_of_flow_item(
             tree,
-            item.node_id,
-            intrinsic_inputs,
-            raw_size.width,
-            raw_min_size.width,
-            raw_max_size.width,
-            intrinsic_inputs.available_space.width,
-        );
-        style_size.width = style_size.width.or(intrinsic.preferred);
-        min_size.width = min_size.width.or(intrinsic.min);
-        max_size.width = max_size.width.or(intrinsic.max);
-
-        let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: style_size,
-            min_size,
-            max_size,
-            size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-            writing_mode: child_writing_mode,
-            inline_auto_behavior,
-            block_auto_behavior,
-            transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio,
-            padding_border: padding_border_sum,
-        });
-        let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
-        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let mut max_size = resolved.max_size;
-        let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
-
-        // Fill in width from left/right and reapply aspect ratio if:
-        //   - Width is not already known
-        //   - Item has both left and right inset properties set
-        if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
-            let new_width_raw = area_width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
-            known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
-            )
-            .maybe_clamp(min_size, max_size);
-        }
-
-        // If width is still auto then one or both horizontal insets are also auto. CSS 2.2
-        // 10.3.7 requires a shrink-to-fit width rather than the unconstrained content width.
-        // Account for the specified inset (or the static position when both are auto) and
-        // non-auto margins before clamping the available width between min/max-content.
-        if known_dimensions.width.is_none() {
-            known_dimensions.width = Some(fit_content_width(
-                tree,
-                item.node_id,
-                ChildLayoutInput::new(
-                    known_dimensions,
-                    area_size.map(Some),
-                    writing_mode,
-                    Size {
-                        width: AvailableSpace::Definite(available_width),
-                        height: AvailableSpace::Definite(
-                            available_height.maybe_clamp(min_size.height, max_size.height),
-                        ),
-                    },
-                    SizingMode::ContentSize,
-                    Line::FALSE,
-                ),
-                available_width,
-            ));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
-            )
-            .maybe_clamp(min_size, max_size);
-        }
-
-        let raw_logical_size = child_writing_mode.to_logical(raw_size);
-        let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
-        let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
-        let block_size_properties = BlockSizeProperties::new(
-            raw_logical_size.block_size,
-            raw_logical_min_size.block_size,
-            raw_logical_max_size.block_size,
-        );
-        let content_based_block_size = ContentBasedBlockSize::new(
-            block_size_properties,
-            aspect_ratio,
-            padding_border_sum,
-            block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
-            is_scroll_container,
-            None,
-        );
-        let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
-            tree,
-            item.node_id,
-            ChildLayoutInput::new(
-                known_dimensions,
-                area_size.map(Some),
-                writing_mode,
-                Size {
-                    width: AvailableSpace::Definite(available_width),
-                    height: AvailableSpace::Definite(available_height),
-                },
-                SizingMode::ContentSize,
-                Line::FALSE,
-            )
-            .with_block_auto_behavior(block_auto_behavior),
-            content_based_block_size,
-        );
-        intrinsic_block_constraints.apply_to_block_axis(
-            child_writing_mode,
-            block_axis_constraints,
-            padding_border_sum,
-            &mut known_dimensions,
-            &mut min_size,
-            &mut max_size,
-        );
-
-        // Fill in height from top/bottom only after intrinsic block sizing.
-        // A specified `height: fit-content` is content-sized and therefore
-        // must not take the automatic inset-stretch branch.
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
-            let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
-            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = apply_preferred_aspect_ratio(
-                known_dimensions,
-                raw_size.map(|dimension| dimension.is_auto()),
-                child_writing_mode,
-                inline_auto_behavior,
-                block_auto_behavior,
-                aspect_ratio,
-                padding_border_sum,
-            )
-            .maybe_clamp(min_size, max_size);
-        }
-
-        let measured_size = tree.measure_child_size_both(
-            item.node_id,
-            ChildLayoutInput::new(
-                known_dimensions,
-                area_size.map(Some),
-                writing_mode,
-                Size {
-                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
-                },
-                SizingMode::ContentSize,
-                Line::FALSE,
-            )
-            .with_block_auto_behavior(block_auto_behavior),
-        );
-
-        let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
-
-        let layout_output = tree.compute_child_layout(
-            item.node_id,
-            LayoutInput {
-                known_dimensions: final_size.map(Some),
-                definite_dimensions: known_dimensions,
-                parent_size: area_size.map(Some),
-                parent_writing_mode: writing_mode,
-                available_space: Size {
-                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
-                },
-                sizing_mode: SizingMode::ContentSize,
-                sizing_purpose: SizingPurpose::Layout,
-                axis: RequestedAxis::Both,
-                inline_auto_behavior,
-                block_auto_behavior,
-                run_mode: RunMode::PerformLayout,
-                block_margins_are_collapsible: Line::FALSE,
-            },
-        );
-
-        let horizontal_margin = resolve_absolute_axis_margins(
-            Line { start: margin.left, end: margin.right },
-            Line { start: left, end: right },
-            area_width,
-            final_size.width,
-            false,
-            !direction.is_rtl(),
-        );
-        let vertical_margin = resolve_absolute_axis_margins(
-            Line { start: margin.top, end: margin.bottom },
-            Line { start: top, end: bottom },
-            area_height,
-            final_size.height,
-            true,
-            true,
-        );
-        let resolved_margin = Rect {
-            left: horizontal_margin.start,
-            right: horizontal_margin.end,
-            top: vertical_margin.start,
-            bottom: vertical_margin.end,
-        };
-        let static_location = resolve_static_position_location(
-            static_position,
-            writing_direction,
-            containing_outer_size,
-            final_size,
-            resolved_margin,
-        );
-
-        let x_offset = match (left, right) {
-            (Some(left), Some(right)) => {
-                if direction.is_rtl() {
-                    area_size.width - final_size.width - right - resolved_margin.right
-                } else {
-                    left + resolved_margin.left
-                }
-            }
-            (Some(left), None) => left + resolved_margin.left,
-            (None, Some(right)) => area_size.width - final_size.width - right - resolved_margin.right,
-            (None, None) => static_location.x - area_offset.x,
-        };
-        let location = Point {
-            x: x_offset + area_offset.x,
-            y: top
-                .map(|top| top + resolved_margin.top)
-                .or(bottom.map(|bottom| area_size.height - final_size.height - bottom - resolved_margin.bottom))
-                .maybe_add(area_offset.y)
-                .unwrap_or(static_location.y),
-        };
-        // Note: axis intentionally switched here as scrollbars take up space in the opposite axis
-        // to the axis in which scrolling is enabled.
-        let scrollbar_size = Size {
-            width: if item.overflow.y == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-            height: if item.overflow.x == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-        };
-
-        tree.set_unrounded_layout(
-            item.node_id,
-            &Layout {
-                order: item.order,
-                size: final_size,
-                #[cfg(feature = "content_size")]
-                content_size: layout_output.content_size,
-                scrollbar_size,
-                location,
-                padding,
-                border,
-                margin: resolved_margin,
-            },
-        );
-
-        #[cfg(feature = "content_size")]
-        {
-            let relative_location = Point { x: location.x - area_offset.x, y: location.y - area_offset.y };
-            absolute_content_size = absolute_content_size.f32_max(compute_content_size_contribution(
-                relative_location,
-                final_size,
-                layout_output.content_size,
-                item.overflow,
-            ));
+            OutOfFlowItem { node: item.node_id, order: item.order, static_position },
+            containing_block,
+        ) {
+            content_size = content_size.f32_max(output.content_size);
         }
     }
 
-    absolute_content_size
+    content_size
 }

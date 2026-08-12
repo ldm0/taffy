@@ -127,8 +127,8 @@
 //! ```
 //!
 use super::{
-    ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, NodeId, RequestedAxis,
-    RunMode,
+    ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, NodeId,
+    OutOfFlowCandidate, OutOfFlowContainingBlock, RequestedAxis, RunMode,
 };
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
@@ -288,6 +288,46 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// static position from the child's original formatting context.
     fn is_out_of_flow_containing_block(&self, _container_node_id: NodeId, _child_node_id: NodeId) -> bool {
         true
+    }
+
+    /// Whether the child belongs directly to this formatting context in the
+    /// semantic box tree.
+    ///
+    /// A browser adapter may attach a positioned descendant to an ancestor in
+    /// its numeric tree. Grid placement lines and local alignment then do not
+    /// apply even though that ancestor is the actual containing block.
+    fn is_out_of_flow_direct_child(&self, _container_node_id: NodeId, _child_node_id: NodeId) -> bool {
+        true
+    }
+
+    /// Number of real out-of-flow children whose original formatting context
+    /// is `container_node_id` but whose numeric parent is a different
+    /// containing block.
+    ///
+    /// These candidates participate only in static-position generation. The
+    /// actual containing block encounters and lays out the same node through
+    /// its ordinary numeric child list.
+    fn out_of_flow_candidate_count(&self, _container_node_id: NodeId) -> usize {
+        0
+    }
+
+    /// Return one detached out-of-flow candidate in source order.
+    fn get_out_of_flow_candidate(&self, _container_node_id: NodeId, _candidate_index: usize) -> OutOfFlowCandidate {
+        panic!("get_out_of_flow_candidate called without a corresponding candidate")
+    }
+
+    /// Refine the default positioned containing area for a child.
+    ///
+    /// Browser adapters use this for containing blocks established by inline
+    /// fragments. Ordinary block, flex, grid and standalone Taffy trees use
+    /// the formatting context's supplied padding/grid area unchanged.
+    fn get_out_of_flow_containing_block(
+        &self,
+        _container_node_id: NodeId,
+        _child_node_id: NodeId,
+        default: OutOfFlowContainingBlock,
+    ) -> OutOfFlowContainingBlock {
+        default
     }
 
     /// Compute the specified node's size or full layout given the specified constraints
