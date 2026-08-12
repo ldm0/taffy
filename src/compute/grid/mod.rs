@@ -59,7 +59,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
+    let LayoutInput { known_dimensions, available_space, run_mode, .. } = inputs;
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let size_containment = tree.get_size_containment(node);
@@ -202,7 +202,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         inner_node_size.block_size = None;
     }
 
-    debug_log!("parent_size", dbg:parent_size);
     debug_log!("outer_node_size", dbg:outer_node_size);
     debug_log!("inner_node_size", dbg:inner_node_size);
 
