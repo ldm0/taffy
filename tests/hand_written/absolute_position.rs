@@ -118,6 +118,59 @@ mod absolute_position {
         assert_eq!(fixture.tree.layout(fixture.text).unwrap().size.height, 40.0);
     }
 
+    fn layout_vertical_absolute_text(
+        parent_display: Display,
+        inline_size: Dimension,
+        containing_height: f32,
+    ) -> Layout {
+        let mut tree = new_test_tree();
+        let absolute = tree
+            .new_leaf_with_context(
+                Style {
+                    display: Display::Block,
+                    position: Position::Absolute,
+                    size: Size { width: auto(), height: inline_size },
+                    inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+                    ..Default::default()
+                },
+                TestNodeContext::ahem_text(WRAPPABLE_400.to_owned(), WritingMode::Vertical),
+            )
+            .unwrap();
+        tree.set_writing_mode(absolute, taffy::WritingMode::VerticalLr).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: parent_display,
+                    size: Size::from_lengths(100.0, containing_height),
+                    ..Default::default()
+                },
+                &[absolute],
+            )
+            .unwrap();
+
+        tree.compute_layout_with_measure(
+            root,
+            Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(containing_height) },
+            test_measure_function,
+        )
+        .unwrap();
+        *tree.layout(absolute).unwrap()
+    }
+
+    #[test]
+    fn absolute_intrinsic_inline_size_follows_vertical_writing_mode() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let min_content = layout_vertical_absolute_text(display, Dimension::min_content(), 236.0);
+            assert_eq!(min_content.size, Size { width: 40.0, height: 100.0 }, "{display:?} min-content");
+
+            let max_content = layout_vertical_absolute_text(display, Dimension::max_content(), 236.0);
+            assert_eq!(max_content.size, Size { width: 10.0, height: 400.0 }, "{display:?} max-content");
+
+            let fit_content = layout_vertical_absolute_text(display, Dimension::fit_content(), 236.0);
+            assert_eq!(fit_content.size, Size { width: 20.0, height: 236.0 }, "{display:?} fit-content");
+        }
+    }
+
     fn absolute_box(
         direction: Direction,
         containing_size: Size<f32>,
