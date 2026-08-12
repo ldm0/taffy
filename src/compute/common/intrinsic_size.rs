@@ -6,7 +6,7 @@
 //! seam so every formatting context uses the same pass-local cache and no
 //! retained intrinsic-size state is required.
 
-use crate::geometry::{AbsoluteAxis, Size};
+use crate::geometry::{AbsoluteAxis, Size, WritingMode};
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis,
@@ -183,6 +183,110 @@ pub(crate) struct IntrinsicSizeConstraints {
     /// Whether any measured contribution changes with the containing block's
     /// block-size.
     pub depends_on_block_constraints: bool,
+}
+
+impl IntrinsicSizeConstraints {
+    /// Merge intrinsic components into already-resolved physical preferred,
+    /// minimum, and maximum sizes along `writing_mode`'s block axis.
+    ///
+    /// Existing numeric or aspect-ratio-transferred values retain precedence;
+    /// the minimum-wins clamp is applied after projecting back to physical
+    /// axes. This is shared by block, flex, and grid out-of-flow sizing.
+    pub(crate) fn apply_to_block_axis(
+        self,
+        writing_mode: WritingMode,
+        size: &mut Size<Option<f32>>,
+        min_size: &mut Size<Option<f32>>,
+        max_size: &mut Size<Option<f32>>,
+    ) {
+        let mut logical_size = writing_mode.to_logical(*size);
+        let mut logical_min_size = writing_mode.to_logical(*min_size);
+        let mut logical_max_size = writing_mode.to_logical(*max_size);
+        logical_size.block_size = logical_size.block_size.or(self.preferred);
+        logical_min_size.block_size = logical_min_size.block_size.or(self.min);
+        logical_max_size.block_size = logical_max_size.block_size.or(self.max);
+        *min_size = writing_mode.to_physical(logical_min_size);
+        *max_size = writing_mode.to_physical(logical_max_size);
+        *size = writing_mode.to_physical(logical_size).maybe_clamp(*min_size, *max_size);
+    }
+}
+
+/// Authored preferred, minimum, and maximum sizes projected onto the logical
+/// block axis.
+///
+/// Keeping the triplet together gives block, flex, grid, and out-of-flow
+/// layout one ownership boundary for content-derived block sizes, analogous to
+/// Blink's `ResolveBlockLengthInternal`/`BlockSizeFunctionRef` pair.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockSizeProperties {
+    /// Authored preferred block size.
+    pub preferred: Dimension,
+    /// Authored minimum block size.
+    pub min: Dimension,
+    /// Authored maximum block size.
+    pub max: Dimension,
+}
+
+impl BlockSizeProperties {
+    /// Construct a logical block-axis property triplet.
+    #[inline(always)]
+    pub const fn new(preferred: Dimension, min: Dimension, max: Dimension) -> Self {
+        Self { preferred, min, max }
+    }
+
+    /// Whether any property needs the formatting context's intrinsic block
+    /// size.
+    #[inline(always)]
+    pub fn uses_intrinsic_size(self) -> bool {
+        self.preferred.is_intrinsic() || self.min.is_intrinsic() || self.max.is_intrinsic()
+    }
+
+    /// Resolve intrinsic sizing keywords from a formatting context's
+    /// intrinsic border-box block size.
+    ///
+    /// In an unfragmented formatting context, `min-content`, `max-content`,
+    /// and `fit-content` block sizes all use the content-derived automatic
+    /// block size. Numeric and percentage values remain with the caller's
+    /// ordinary length resolver.
+    #[inline(always)]
+    pub fn resolve_intrinsic_size(self, intrinsic_border_box_size: f32) -> IntrinsicSizeConstraints {
+        let resolve = |value: Dimension| value.is_intrinsic().then_some(intrinsic_border_box_size);
+        IntrinsicSizeConstraints {
+            preferred: resolve(self.preferred),
+            min: resolve(self.min),
+            max: resolve(self.max),
+            depends_on_block_constraints: false,
+        }
+    }
+}
+
+/// Measure and resolve intrinsic block-size properties after the caller has
+/// established the box's inline-size constraint.
+///
+/// This is primarily used by out-of-flow sizing algorithms, which must decide
+/// whether opposing insets stretch an automatic block size. Passing the
+/// resolved inline size into a content-size probe preserves wrapping while
+/// deliberately removing any preliminary block-size stretch.
+pub(crate) fn measure_intrinsic_block_size_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    mut child_input: ChildLayoutInput,
+    properties: BlockSizeProperties,
+) -> IntrinsicSizeConstraints {
+    if !properties.uses_intrinsic_size() {
+        return IntrinsicSizeConstraints::default();
+    }
+
+    let writing_mode = tree.get_writing_mode(node_id);
+    let mut known_logical_size = writing_mode.to_logical(child_input.known_dimensions);
+    known_logical_size.block_size = None;
+    child_input.known_dimensions = writing_mode.to_physical(known_logical_size);
+    child_input.sizing_mode = SizingMode::ContentSize;
+    let measured =
+        tree.measure_child_size_with_metadata(node_id, child_input, RequestedAxis::from(writing_mode.block_axis()));
+    let mut constraints = properties.resolve_intrinsic_size(writing_mode.to_logical(measured.size).block_size);
+    constraints.depends_on_block_constraints = measured.depends_on_block_constraints;
+    constraints
 }
 
 /// Authored constraints and available space for one intrinsic sizing axis.

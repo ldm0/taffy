@@ -5,7 +5,9 @@ use crate::compute::common::alignment::{
 };
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
-use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
+use crate::compute::common::intrinsic_size::{
+    measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
+};
 use crate::geometry::{InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
@@ -284,7 +286,10 @@ pub(super) fn align_and_position_item(
             }
         }),
         block: block_self.or(logical_container_alignment.block).unwrap_or_else(|| {
-            if logical_inherent_size.block_size.is_some() || aspect_ratio.ratio.is_some() {
+            if logical_inherent_size.block_size.is_some()
+                || item_writing_mode.to_logical(raw_size).block_size.is_intrinsic()
+                || aspect_ratio.ratio.is_some()
+            {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH
@@ -331,6 +336,36 @@ pub(super) fn align_and_position_item(
         BoxSizing::BorderBox,
         padding_border_size,
     );
+
+    let raw_logical_size = item_writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = item_writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = item_writing_mode.to_logical(raw_max_size);
+    let block_size_properties = BlockSizeProperties::new(
+        raw_logical_size.block_size,
+        raw_logical_min_size.block_size,
+        raw_logical_max_size.block_size,
+    );
+    let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+        tree,
+        node,
+        ChildLayoutInput::new(
+            Size { width, height },
+            grid_area_size.map(Some),
+            parent_writing_mode,
+            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            SizingMode::ContentSize,
+            Line::FALSE,
+        ),
+        block_size_properties,
+    );
+    let mut resolved_size = Size { width, height };
+    intrinsic_block_constraints.apply_to_block_axis(
+        item_writing_mode,
+        &mut resolved_size,
+        &mut min_size,
+        &mut max_size,
+    );
+    let Size { width, height } = resolved_size;
 
     let height = height.or_else(|| {
         if position == Position::Absolute {

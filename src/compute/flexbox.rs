@@ -26,7 +26,9 @@ use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
-use super::common::intrinsic_size::resolve_intrinsic_width_constraints;
+use super::common::intrinsic_size::{
+    measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
+};
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
 /// through the preferred main size.
@@ -364,6 +366,12 @@ struct AlgoConstants {
     min_size: Size<Option<f32>>,
     /// The item's max_size style
     max_size: Size<Option<f32>>,
+    /// Authored logical block constraints, resolved only after the flex
+    /// formatting context has produced its intrinsic block size.
+    block_size_properties: BlockSizeProperties,
+    /// Whether this pass must derive and apply authored block-axis intrinsic
+    /// constraints. Content-size probes deliberately leave this disabled.
+    resolve_intrinsic_block_size: bool,
     /// The margin of this section
     margin: Rect<f32>,
     /// The border of this section
@@ -458,21 +466,32 @@ pub fn compute_flexbox_layout(
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let raw_logical_size = writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = writing_mode.to_logical(raw_max_size);
+    let block_size_properties = BlockSizeProperties::new(
+        raw_logical_size.block_size,
+        raw_logical_min_size.block_size,
+        raw_logical_max_size.block_size,
+    );
+    let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
+        && block_size_properties.uses_intrinsic_size()
+        && inputs.axis.contains(writing_mode.block_axis());
 
     let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
-            let raw_size = style.size();
             let resolved = resolve_size_constraints(
                 raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .min_size()
+                raw_min_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .max_size()
+                raw_max_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
@@ -503,7 +522,7 @@ pub fn compute_flexbox_layout(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
+    if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
         if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
             return LayoutOutput::from_outer_size(Size { width, height })
                 .with_applied_aspect_ratio(applied_aspect_ratio);
@@ -515,15 +534,6 @@ pub fn compute_flexbox_layout(
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
-        }
-    }
-
-    // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
-    // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
-        if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
-            return LayoutOutput::from_outer_size(Size { width, height })
-                .with_applied_aspect_ratio(applied_aspect_ratio);
         }
     }
 
@@ -586,27 +596,31 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // If container size is undefined, determine the container's main size
     // and then re-resolve gaps based on newly determined size
     debug_log!("determine_container_main_size");
-    if let Some(inner_main_size) = constants.node_inner_size.main(constants.dir) {
-        let outer_main_size = inner_main_size + constants.content_box_inset.main_axis_sum(constants.dir);
-        constants.inner_container_size.set_main(constants.dir, inner_main_size);
-        constants.container_size.set_main(constants.dir, outer_main_size);
-    } else {
-        // Sets constants.container_size and constants.outer_container_size
-        determine_container_main_size(tree, available_space, &mut flex_lines, &mut constants);
-        constants.node_inner_size.set_main(constants.dir, Some(constants.inner_container_size.main(constants.dir)));
-        constants.node_outer_size.set_main(constants.dir, Some(constants.container_size.main(constants.dir)));
+    let intrinsic_block_size_is_main = constants.main_axis_is_block && constants.resolve_intrinsic_block_size;
+    match (constants.node_inner_size.main(constants.dir), intrinsic_block_size_is_main) {
+        (Some(inner_main_size), false) => {
+            let outer_main_size = inner_main_size + constants.content_box_inset.main_axis_sum(constants.dir);
+            constants.inner_container_size.set_main(constants.dir, inner_main_size);
+            constants.container_size.set_main(constants.dir, outer_main_size);
+        }
+        _ => {
+            // Sets constants.container_size and constants.outer_container_size
+            determine_container_main_size(tree, available_space, &mut flex_lines, &mut constants);
+            constants.node_inner_size.set_main(constants.dir, Some(constants.inner_container_size.main(constants.dir)));
+            constants.node_outer_size.set_main(constants.dir, Some(constants.container_size.main(constants.dir)));
 
-        debug_log!("constants.node_outer_size", dbg:constants.node_outer_size);
-        debug_log!("constants.node_inner_size", dbg:constants.node_inner_size);
+            debug_log!("constants.node_outer_size", dbg:constants.node_outer_size);
+            debug_log!("constants.node_inner_size", dbg:constants.node_inner_size);
 
-        // Re-resolve percentage gaps
-        let style = tree.get_flexbox_container_style(node);
-        let inner_container_size = constants.inner_container_size.main(constants.dir);
-        let raw_gap = style.gap();
-        let logical_main_gap = if constants.main_axis_is_inline { raw_gap.width } else { raw_gap.height };
-        let new_gap =
-            logical_main_gap.maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis)).unwrap_or(0.0);
-        constants.gap.set_main(constants.dir, new_gap);
+            // Re-resolve percentage gaps
+            let style = tree.get_flexbox_container_style(node);
+            let inner_container_size = constants.inner_container_size.main(constants.dir);
+            let raw_gap = style.gap();
+            let logical_main_gap = if constants.main_axis_is_inline { raw_gap.width } else { raw_gap.height };
+            let new_gap =
+                logical_main_gap.maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis)).unwrap_or(0.0);
+            constants.gap.set_main(constants.dir, new_gap);
+        }
     }
 
     // 6. Resolve the flexible lengths of all the flex items to find their used main size.
@@ -630,11 +644,20 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
 
     // 8. Calculate the cross size of each flex line.
     debug_log!("calculate_cross_size");
-    calculate_cross_size(&mut flex_lines, known_dimensions, &constants);
+    let intrinsic_line_cross_size = calculate_cross_size(&mut flex_lines, known_dimensions, &constants);
+
+    // Resolve the container's block-axis intrinsic preferred/min/max values
+    // from the unconstrained line sizes before a definite authored cross size
+    // replaces the single-line size.
+    debug_log!("determine_container_cross_size");
+    determine_container_cross_size(&flex_lines, known_dimensions, intrinsic_line_cross_size, &mut constants);
+    if !constants.is_wrap && known_dimensions.cross(constants.dir).is_some() {
+        flex_lines[0].cross_size = constants.inner_container_size.cross(constants.dir);
+    }
 
     // 9. Handle 'align-content: stretch'.
     debug_log!("handle_align_content_stretch");
-    handle_align_content_stretch(&mut flex_lines, known_dimensions, &constants);
+    handle_align_content_stretch(&mut flex_lines, constants.container_size.map(Some), &constants);
 
     // 10. Collapse visibility:collapse items. If any flex items have visibility: collapse,
     //     note the cross size of the line they’re in as the item’s strut size, and restart
@@ -667,9 +690,10 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     debug_log!("resolve_cross_axis_auto_margins");
     resolve_cross_axis_auto_margins(&mut flex_lines, &constants);
 
-    // 15. Determine the flex container’s used cross size.
-    debug_log!("determine_container_cross_size");
-    let total_line_cross_size = determine_container_cross_size(&flex_lines, known_dimensions, &mut constants);
+    // The final line sum is used by align-content after stretching and item
+    // cross-size resolution. The container size itself was resolved above
+    // from the unconstrained line contribution.
+    let total_line_cross_size = flex_lines.iter().map(|line| line.cross_size).sum();
 
     // We have the container size.
     // If our caller does not care about performing layout we are done now.
@@ -802,6 +826,17 @@ fn compute_constants(
     let container_size = Size::zero();
     let inner_container_size = Size::zero();
     let raw_size = style.size();
+    let raw_logical_size = writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = writing_mode.to_logical(style.min_size());
+    let raw_logical_max_size = writing_mode.to_logical(style.max_size());
+    let block_size_properties = BlockSizeProperties::new(
+        raw_logical_size.block_size,
+        raw_logical_min_size.block_size,
+        raw_logical_max_size.block_size,
+    );
+    let resolve_intrinsic_block_size = sizing_mode == SizingMode::InherentSize
+        && inputs.axis.contains(writing_mode.block_axis())
+        && block_size_properties.uses_intrinsic_size();
     let resolved_constraints = resolve_size_constraints(
         raw_size.maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment),
         style
@@ -836,6 +871,8 @@ fn compute_constants(
         writing_mode,
         min_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.min_size } else { Size::NONE },
         max_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.max_size } else { Size::NONE },
+        block_size_properties,
+        resolve_intrinsic_block_size,
         margin,
         border,
         gap,
@@ -1452,8 +1489,10 @@ fn determine_container_main_size(
     let dir = constants.dir;
     let main_content_box_inset = constants.content_box_inset.main_axis_sum(constants.dir);
 
-    let outer_main_size: f32 = constants.node_outer_size.main(constants.dir).unwrap_or_else(|| {
-        match available_space.main(dir) {
+    let specified_outer_main_size = constants.node_outer_size.main(constants.dir);
+    let needs_intrinsic_block_size = constants.main_axis_is_block && constants.resolve_intrinsic_block_size;
+    let intrinsic_outer_main_size = if specified_outer_main_size.is_none() || needs_intrinsic_block_size {
+        Some(match available_space.main(dir) {
             AvailableSpace::Definite(main_axis_available_space) => {
                 let longest_line_length: f32 = lines
                     .iter()
@@ -1673,11 +1712,27 @@ fn determine_container_main_size(
 
                 main_size + main_content_box_inset
             }
-        }
-    });
+        })
+    } else {
+        None
+    };
 
-    let outer_main_size = outer_main_size
-        .maybe_clamp(constants.min_size.main(constants.dir), constants.max_size.main(constants.dir))
+    let intrinsic_constraints = if constants.main_axis_is_block {
+        intrinsic_outer_main_size
+            .map(|intrinsic_size| constants.block_size_properties.resolve_intrinsic_size(intrinsic_size))
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
+
+    let outer_main_size = specified_outer_main_size
+        .or(intrinsic_constraints.preferred)
+        .or(intrinsic_outer_main_size)
+        .unwrap_or(0.0)
+        .maybe_clamp(
+            constants.min_size.main(constants.dir).or(intrinsic_constraints.min),
+            constants.max_size.main(constants.dir).or(intrinsic_constraints.max),
+        )
         .max(main_content_box_inset - constants.scrollbar_gutter.main(constants.dir));
 
     // let outer_main_size = inner_main_size + constants.padding_border.main_axis_sum(constants.dir);
@@ -2099,7 +2154,7 @@ fn collect_baseline_metrics(
 ///
 /// - [**Calculate the cross size of each flex line**](https://www.w3.org/TR/css-flexbox-1/#algo-cross-line).
 #[inline]
-fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>>, constants: &AlgoConstants) {
+fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>>, constants: &AlgoConstants) -> f32 {
     for line in flex_lines.iter_mut() {
         let major_metrics = collect_baseline_metrics(line.items, BaselineGroup::Major, constants.dir);
         let minor_metrics = collect_baseline_metrics(line.items, BaselineGroup::Minor, constants.dir);
@@ -2114,6 +2169,7 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
             .chain(minor_metrics.map(BaselineMetrics::cross_size))
             .fold(max_outer_cross_size, f32::max);
     }
+    let intrinsic_line_cross_size = flex_lines.iter().map(|line| line.cross_size).sum();
 
     // If the flex container is single-line and has a definite cross size,
     // the cross size of the flex line is the flex container’s inner cross size.
@@ -2153,6 +2209,7 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
             );
         }
     }
+    intrinsic_line_cross_size
 }
 
 /// Handle 'align-content: stretch'.
@@ -2472,30 +2529,34 @@ fn align_flex_items_along_cross_axis(
 ///
 ///     - Otherwise, use the sum of the flex lines' cross sizes, clamped by the used min and max cross sizes of the flex container.
 #[inline]
-#[must_use]
 fn determine_container_cross_size(
     flex_lines: &[FlexLine],
     node_size: Size<Option<f32>>,
+    intrinsic_line_cross_size: f32,
     constants: &mut AlgoConstants,
-) -> f32 {
+) {
     let total_cross_axis_gap = sum_axis_gaps(constants.gap.cross(constants.dir), flex_lines.len());
-    let total_line_cross_size: f32 = flex_lines.iter().map(|line| line.cross_size).sum::<f32>();
 
     let padding_border_sum = constants.content_box_inset.cross_axis_sum(constants.dir);
     let cross_scrollbar_gutter = constants.scrollbar_gutter.cross(constants.dir);
-    let min_cross_size = constants.min_size.cross(constants.dir);
-    let max_cross_size = constants.max_size.cross(constants.dir);
+    let intrinsic_outer_cross_size = intrinsic_line_cross_size + total_cross_axis_gap + padding_border_sum;
+    let intrinsic_constraints = if constants.main_axis_is_inline && constants.resolve_intrinsic_block_size {
+        constants.block_size_properties.resolve_intrinsic_size(intrinsic_outer_cross_size)
+    } else {
+        Default::default()
+    };
+    let min_cross_size = constants.min_size.cross(constants.dir).or(intrinsic_constraints.min);
+    let max_cross_size = constants.max_size.cross(constants.dir).or(intrinsic_constraints.max);
     let outer_container_size = node_size
         .cross(constants.dir)
-        .unwrap_or(total_line_cross_size + total_cross_axis_gap + padding_border_sum)
+        .or(intrinsic_constraints.preferred)
+        .unwrap_or(intrinsic_outer_cross_size)
         .maybe_clamp(min_cross_size, max_cross_size)
         .max(padding_border_sum - cross_scrollbar_gutter);
     let inner_container_size = f32_max(outer_container_size - padding_border_sum, 0.0);
 
     constants.container_size.set_cross(constants.dir, outer_container_size);
     constants.inner_container_size.set_cross(constants.dir, inner_container_size);
-
-    total_line_cross_size
 }
 
 /// Align all flex lines per `align-content`.
@@ -2895,8 +2956,8 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border_sum,
         );
-        let min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let max_size = resolved.max_size;
+        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let mut max_size = resolved.max_size;
         let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
 
         // Fill in width from left/right and reapply aspect ratio if:
@@ -2910,17 +2971,6 @@ fn perform_absolute_layout_on_absolute_children(
                 .maybe_clamp(min_size, max_size);
         }
 
-        // Fill in height from top/bottom and reapply aspect ratio if:
-        //   - Height is not already known
-        //   - Item has both top and bottom inset properties set
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
-            let new_height_raw =
-                inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
-            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = known_dimensions
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
-                .maybe_clamp(min_size, max_size);
-        }
         if known_dimensions.width.is_none() {
             known_dimensions.width = Some(fit_content_width(
                 tree,
@@ -2940,6 +2990,46 @@ fn perform_absolute_layout_on_absolute_children(
                 ),
                 available_width,
             ));
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+                .maybe_clamp(min_size, max_size);
+        }
+
+        let raw_logical_size = child_writing_mode.to_logical(raw_size);
+        let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+        let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+        let block_size_properties = BlockSizeProperties::new(
+            raw_logical_size.block_size,
+            raw_logical_min_size.block_size,
+            raw_logical_max_size.block_size,
+        );
+        let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+            tree,
+            child,
+            ChildLayoutInput::new(
+                known_dimensions,
+                constants.node_inner_size,
+                constants.writing_mode,
+                Size {
+                    width: AvailableSpace::Definite(container_width),
+                    height: AvailableSpace::Definite(container_height),
+                },
+                SizingMode::ContentSize,
+                Line::FALSE,
+            ),
+            block_size_properties,
+        );
+        intrinsic_block_constraints.apply_to_block_axis(
+            child_writing_mode,
+            &mut known_dimensions,
+            &mut min_size,
+            &mut max_size,
+        );
+
+        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
+            let new_height_raw =
+                inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
+            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
             known_dimensions = known_dimensions
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
                 .maybe_clamp(min_size, max_size);
