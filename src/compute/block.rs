@@ -20,7 +20,8 @@ use super::common::absolute::fit_content_width;
 use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
-    resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints, IntrinsicAxisInput,
+    measure_intrinsic_block_size_constraints, resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints,
+    BlockSizeProperties, IntrinsicAxisInput,
 };
 
 #[cfg(feature = "float_layout")]
@@ -430,21 +431,32 @@ pub fn compute_block_layout(
     let padding_border_size = (padding + border).sum_axes();
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let raw_logical_size = writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = writing_mode.to_logical(raw_max_size);
+    let block_size_properties = BlockSizeProperties::new(
+        raw_logical_size.block_size,
+        raw_logical_min_size.block_size,
+        raw_logical_max_size.block_size,
+    );
+    let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
+        && block_size_properties.uses_intrinsic_size()
+        && inputs.axis.contains(writing_mode.block_axis());
 
     let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
-            let raw_size = style.size();
             let resolved = resolve_size_constraints(
                 raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .min_size()
+                raw_min_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .max_size()
+                raw_max_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
@@ -476,7 +488,7 @@ pub fn compute_block_layout(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
+    if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
         if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
             return LayoutOutput::from_outer_size(Size { width, height })
                 .with_applied_aspect_ratio(applied_aspect_ratio);
@@ -575,20 +587,28 @@ fn compute_inner(
 
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let raw_size_logical = writing_mode.to_logical(raw_size);
+    let raw_min_size_logical = writing_mode.to_logical(raw_min_size);
+    let raw_max_size_logical = writing_mode.to_logical(raw_max_size);
+    let block_size_properties = BlockSizeProperties::new(
+        raw_size_logical.block_size,
+        raw_min_size_logical.block_size,
+        raw_max_size_logical.block_size,
+    );
     let (size, min_size, max_size) = match sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
         SizingMode::InherentSize => {
-            let raw_size = style.size();
             let resolved = resolve_size_constraints(
                 raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .min_size()
+                raw_min_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
-                    .max_size()
+                raw_max_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 raw_size.map(|dimension| dimension.is_auto()),
@@ -638,7 +658,8 @@ fn compute_inner(
             && style.position() == Position::Relative
             && logical_padding.block_end == 0.0
             && logical_border.block_end == 0.0
-            && size_logical.block_size.is_none(),
+            && size_logical.block_size.is_none()
+            && !raw_size_logical.block_size.is_intrinsic(),
     };
     let has_styles_preventing_being_collapsed_through = !style.is_block()
         || block_ctx.is_bfc_root()
@@ -649,7 +670,9 @@ fn compute_inner(
         || logical_border.block_start > 0.0
         || logical_border.block_end > 0.0
         || matches!(size_logical.block_size, Some(size) if size > 0.0)
-        || matches!(min_size_logical.block_size, Some(size) if size > 0.0);
+        || matches!(min_size_logical.block_size, Some(size) if size > 0.0)
+        || raw_size_logical.block_size.is_intrinsic()
+        || raw_min_size_logical.block_size.is_intrinsic();
 
     let text_align = style.text_align();
     let align_content = style.align_content();
@@ -744,9 +767,15 @@ fn compute_inner(
         intrinsic_outer_block_size = intrinsic_outer_block_size.max(block_ctx.floated_block_size_contribution());
     }
 
+    let intrinsic_block_constraints = block_size_properties.resolve_intrinsic_size(intrinsic_outer_block_size);
+    let preferred_block_size = size_logical.block_size.or(intrinsic_block_constraints.preferred);
+    let min_block_size = min_size_logical.block_size.or(intrinsic_block_constraints.min);
+    let max_block_size = max_size_logical.block_size.or(intrinsic_block_constraints.max);
     let container_outer_block_size = known_logical_size
         .block_size
-        .unwrap_or(intrinsic_outer_block_size.maybe_clamp(min_size_logical.block_size, max_size_logical.block_size))
+        .or(preferred_block_size)
+        .unwrap_or(intrinsic_outer_block_size)
+        .maybe_clamp(min_block_size, max_block_size)
         .maybe_max(Some(logical_padding_border_size.block_size));
     let final_logical_size =
         LogicalSize { inline_size: container_outer_inline_size, block_size: container_outer_block_size };
@@ -2088,8 +2117,8 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border_sum,
         );
-        let min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let max_size = resolved.max_size;
+        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let mut max_size = resolved.max_size;
         let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
 
         // Fill in width from left/right and reapply aspect ratio if:
@@ -2098,17 +2127,6 @@ fn perform_absolute_layout_on_absolute_children(
         if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
             let new_width_raw = area_width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
             known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = known_dimensions
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
-                .maybe_clamp(min_size, max_size);
-        }
-
-        // Fill in height from top/bottom and reapply aspect ratio if:
-        //   - Height is not already known
-        //   - Item has both top and bottom inset properties set
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
-            let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
-            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
             known_dimensions = known_dimensions
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
                 .maybe_clamp(min_size, max_size);
@@ -2135,6 +2153,46 @@ fn perform_absolute_layout_on_absolute_children(
                 ),
                 available_width,
             ));
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+                .maybe_clamp(min_size, max_size);
+        }
+
+        let child_writing_mode = tree.get_writing_mode(item.node_id);
+        let raw_logical_size = child_writing_mode.to_logical(raw_size);
+        let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+        let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+        let block_size_properties = BlockSizeProperties::new(
+            raw_logical_size.block_size,
+            raw_logical_min_size.block_size,
+            raw_logical_max_size.block_size,
+        );
+        let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+            tree,
+            item.node_id,
+            ChildLayoutInput::new(
+                known_dimensions,
+                area_size.map(Some),
+                writing_mode,
+                Size { width: AvailableSpace::Definite(area_width), height: AvailableSpace::Definite(area_height) },
+                SizingMode::ContentSize,
+                Line::FALSE,
+            ),
+            block_size_properties,
+        );
+        intrinsic_block_constraints.apply_to_block_axis(
+            child_writing_mode,
+            &mut known_dimensions,
+            &mut min_size,
+            &mut max_size,
+        );
+
+        // Fill in height from top/bottom only after intrinsic block sizing.
+        // A specified `height: fit-content` is content-sized and therefore
+        // must not take the automatic inset-stretch branch.
+        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
+            let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
+            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
             known_dimensions = known_dimensions
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
                 .maybe_clamp(min_size, max_size);
