@@ -1,6 +1,6 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{BoxSizing, ResolvedAspectRatio, Size};
+use crate::{AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,6 +32,33 @@ pub(crate) enum TransferredSizesMode {
     Ignore,
 }
 
+/// Inputs to preferred-size and ratio constraint resolution.
+///
+/// Keeping the constraint-space state named at call sites makes the sizing
+/// order explicit and prevents formatting-context-specific flags from growing
+/// a positional parameter list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SizeConstraintInput {
+    /// Resolved preferred border-box sizes before ratio transfer.
+    pub size: Size<Option<f32>>,
+    /// Resolved authored minimum border-box sizes.
+    pub min_size: Size<Option<f32>>,
+    /// Resolved authored maximum border-box sizes.
+    pub max_size: Size<Option<f32>>,
+    /// Whether each preferred size was authored as `auto`.
+    pub size_is_auto: Size<bool>,
+    /// Writing mode that defines the logical block axis.
+    pub writing_mode: WritingMode,
+    /// How an authored logical block-size of `auto` resolves in this space.
+    pub block_auto_behavior: AutoSizeBehavior,
+    /// Whether opposite-axis min/max constraints transfer through the ratio.
+    pub transferred_sizes_mode: TransferredSizesMode,
+    /// Used preferred aspect ratio and its sizing box.
+    pub aspect_ratio: ResolvedAspectRatio,
+    /// Physical padding-and-border sums for ratio box conversion.
+    pub padding_border: Size<f32>,
+}
+
 /// Apply a preferred aspect ratio to resolved border-box sizes and merge
 /// min/max sizes transferred from the opposite axis with explicitly specified
 /// constraints.
@@ -41,15 +68,18 @@ pub(crate) enum TransferredSizesMode {
 /// explicit minimum floors a transferred maximum. This retains the provenance
 /// that would be lost by independently applying the ratio to `min_size` and
 /// `max_size` and then using the generic "minimum wins" clamp.
-pub(crate) fn resolve_size_constraints(
-    size: Size<Option<f32>>,
-    min_size: Size<Option<f32>>,
-    max_size: Size<Option<f32>>,
-    size_is_auto: Size<bool>,
-    transferred_sizes_mode: TransferredSizesMode,
-    aspect_ratio: ResolvedAspectRatio,
-    padding_border: Size<f32>,
-) -> ResolvedSizeConstraints {
+pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSizeConstraints {
+    let SizeConstraintInput {
+        size,
+        min_size,
+        max_size,
+        size_is_auto,
+        writing_mode,
+        block_auto_behavior,
+        transferred_sizes_mode,
+        aspect_ratio,
+        padding_border,
+    } = input;
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
         TransferredSizesMode::Normal => (
             transferred_constraints(min_size, size_is_auto, aspect_ratio, padding_border),
@@ -67,14 +97,48 @@ pub(crate) fn resolve_size_constraints(
         height: merge_maximum(max_size.height, transferred_max.height, min_size.height),
     };
 
-    let resolved_size =
-        size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
+    let resolved_size = apply_preferred_aspect_ratio(
+        size,
+        size_is_auto,
+        writing_mode,
+        block_auto_behavior,
+        aspect_ratio,
+        padding_border,
+    );
     let aspect_ratio_applied = Size {
         width: size.width.is_none() && resolved_size.width.is_some(),
         height: size.height.is_none() && resolved_size.height.is_some(),
     };
 
     ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size }
+}
+
+/// Apply a preferred ratio while preserving the constraint space's ordering
+/// for an authored logical block-size of `auto`.
+pub(crate) fn apply_preferred_aspect_ratio(
+    size: Size<Option<f32>>,
+    size_is_auto: Size<bool>,
+    writing_mode: WritingMode,
+    block_auto_behavior: AutoSizeBehavior,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> Size<Option<f32>> {
+    let ratio_resolved_size =
+        size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
+    if block_auto_behavior == AutoSizeBehavior::StretchExplicit {
+        let source = writing_mode.to_logical(size);
+        let authored_auto = writing_mode.to_logical(size_is_auto);
+        let mut resolved = writing_mode.to_logical(ratio_resolved_size);
+        if authored_auto.block_size && source.block_size.is_none() && resolved.block_size.is_some() {
+            // Explicit stretch resolves `auto` before preferred-ratio transfer.
+            // Keep the opposite-axis result and transferred min/max constraints,
+            // but leave the preferred block size for the formatting context.
+            resolved.block_size = None;
+        }
+        writing_mode.to_physical(resolved)
+    } else {
+        ratio_resolved_size
+    }
 }
 
 /// Transfer one pair of axis constraints through the preferred ratio.
@@ -136,15 +200,17 @@ mod tests {
 
     #[test]
     fn explicit_constraints_win_over_conflicting_transferred_constraints() {
-        let resolved = resolve_size_constraints(
-            Size { width: Some(50.0), height: None },
-            Size { width: Some(100.0), height: None },
-            Size { width: None, height: Some(100.0) },
-            Size { width: false, height: true },
-            TransferredSizesMode::Normal,
-            ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
-            Size::ZERO,
-        );
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: Some(50.0), height: None },
+            min_size: Size { width: Some(100.0), height: None },
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: false, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
 
         assert_eq!(resolved.size, Size { width: Some(50.0), height: Some(100.0) });
         assert_eq!(resolved.aspect_ratio_applied, Size { width: false, height: true });
@@ -154,15 +220,17 @@ mod tests {
 
     #[test]
     fn minimum_wins_when_the_transferred_pair_conflicts() {
-        let resolved = resolve_size_constraints(
-            Size::NONE,
-            Size { width: None, height: Some(150.0) },
-            Size { width: None, height: Some(100.0) },
-            Size { width: true, height: true },
-            TransferredSizesMode::Normal,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
-            Size::ZERO,
-        );
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size::NONE,
+            min_size: Size { width: None, height: Some(150.0) },
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
 
         assert_eq!(resolved.min_size.width, Some(300.0));
         assert_eq!(resolved.max_size.width, Some(300.0));
@@ -170,15 +238,17 @@ mod tests {
 
     #[test]
     fn ignore_mode_retains_only_explicit_constraints() {
-        let resolved = resolve_size_constraints(
-            Size::NONE,
-            Size { width: Some(10.0), height: Some(150.0) },
-            Size { width: Some(20.0), height: Some(100.0) },
-            Size { width: true, height: true },
-            TransferredSizesMode::Ignore,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
-            Size::ZERO,
-        );
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size::NONE,
+            min_size: Size { width: Some(10.0), height: Some(150.0) },
+            max_size: Size { width: Some(20.0), height: Some(100.0) },
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Ignore,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
 
         assert_eq!(resolved.min_size, Size { width: Some(10.0), height: Some(150.0) });
         assert_eq!(resolved.max_size, Size { width: Some(20.0), height: Some(150.0) });

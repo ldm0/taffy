@@ -72,9 +72,9 @@ use crate::tree::{
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
 use crate::util::ResolveOrZero;
-use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
+use crate::{AutoSizeBehavior, CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
-use self::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 pub use self::common::intrinsic_size::{
     resolve_intrinsic_width_inputs, resolve_intrinsic_width_inputs_with_provenance, ResolvedIntrinsicWidthInputs,
 };
@@ -93,6 +93,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: available_space.into_options(),
@@ -123,23 +124,25 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(
-                raw_size
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
+                min_size: style
                     .min_size()
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
+                max_size: style
                     .max_size()
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                raw_size.map(|dimension| dimension.is_auto()),
-                TransferredSizesMode::Normal,
+                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode: root_writing_mode,
+                block_auto_behavior: root_inputs.block_auto_behavior,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
-                padding_border_size,
-            );
+                padding_border: padding_border_size,
+            });
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let clamped_style_size = resolved.size.maybe_clamp(min_size, max_size);

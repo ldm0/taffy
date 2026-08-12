@@ -1,11 +1,19 @@
 use taffy::prelude::*;
-use taffy::WritingMode;
+use taffy::{Overflow, Point, WritingMode};
 use taffy_test_helpers::{new_test_tree, test_measure_function};
 
-fn layout_subject(subject_style: Style, writing_mode: WritingMode) -> Size<f32> {
+fn layout_subject_with_content_size(
+    subject_style: Style,
+    writing_mode: WritingMode,
+    content_size: Size<f32>,
+) -> Size<f32> {
     let mut tree = new_test_tree();
     let content = tree
-        .new_leaf(Style { size: Size::from_lengths(100.0, 100.0), flex_shrink: 0.0, ..Default::default() })
+        .new_leaf(Style {
+            size: Size::from_lengths(content_size.width, content_size.height),
+            flex_shrink: 0.0,
+            ..Default::default()
+        })
         .unwrap();
     let subject = tree.new_with_children(subject_style, &[content]).unwrap();
     tree.set_writing_mode(subject, writing_mode).unwrap();
@@ -23,6 +31,34 @@ fn layout_subject(subject_style: Style, writing_mode: WritingMode) -> Size<f32> 
     )
     .unwrap();
     tree.layout(subject).unwrap().size
+}
+
+fn layout_subject(subject_style: Style, writing_mode: WritingMode) -> Size<f32> {
+    layout_subject_with_content_size(subject_style, writing_mode, Size { width: 100.0, height: 100.0 })
+}
+
+fn layout_ratio_subject(
+    display: Display,
+    preferred_block_size: Dimension,
+    min_block_size: Dimension,
+    max_block_size: Dimension,
+    ratio: f32,
+    content_block_size: f32,
+) -> f32 {
+    layout_subject_with_content_size(
+        Style {
+            display,
+            size: Size { width: Dimension::length(100.0), height: preferred_block_size },
+            min_size: Size { width: Dimension::auto(), height: min_block_size },
+            max_size: Size { width: Dimension::auto(), height: max_block_size },
+            aspect_ratio: Some(ratio),
+            flex_shrink: 0.0,
+            ..Default::default()
+        },
+        WritingMode::HorizontalTb,
+        Size { width: 100.0, height: content_block_size },
+    )
+    .height
 }
 
 fn layout_content_sized_box(
@@ -67,6 +103,180 @@ fn intrinsic_block_sizes_resolve_from_content_across_formatting_contexts() {
             "{display:?} max-block-size min-content",
         );
     }
+}
+
+#[test]
+fn aspect_ratio_resolves_explicit_intrinsic_block_constraints() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        assert_eq!(
+            layout_ratio_subject(display, Dimension::min_content(), Dimension::auto(), Dimension::auto(), 4.0, 10.0,),
+            25.0,
+            "{display:?} preferred block size",
+        );
+        assert_eq!(
+            layout_ratio_subject(
+                display,
+                Dimension::length(0.0),
+                Dimension::min_content(),
+                Dimension::auto(),
+                4.0,
+                50.0,
+            ),
+            25.0,
+            "{display:?} minimum block size",
+        );
+        assert_eq!(
+            layout_ratio_subject(
+                display,
+                Dimension::length(100.0),
+                Dimension::auto(),
+                Dimension::max_content(),
+                4.0,
+                50.0,
+            ),
+            25.0,
+            "{display:?} maximum block size",
+        );
+    }
+}
+
+#[test]
+fn automatic_minimum_floors_an_intrinsic_ratio_block_size_by_content() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        for preferred in [Dimension::auto(), Dimension::min_content()] {
+            assert_eq!(
+                layout_ratio_subject(display, preferred, Dimension::auto(), Dimension::auto(), 10.0, 25.0,),
+                25.0,
+                "{display:?} preferred={preferred:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn automatic_minimum_is_capped_by_the_authored_maximum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        for preferred in [Dimension::auto(), Dimension::min_content()] {
+            assert_eq!(
+                layout_ratio_subject(display, preferred, Dimension::auto(), Dimension::length(15.0), 10.0, 25.0,),
+                15.0,
+                "{display:?} preferred={preferred:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_intrinsic_minimum_does_not_enable_the_automatic_minimum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        assert_eq!(
+            layout_ratio_subject(display, Dimension::auto(), Dimension::min_content(), Dimension::auto(), 4.0, 50.0,),
+            25.0,
+            "{display:?}",
+        );
+    }
+}
+
+#[test]
+fn scroll_containers_do_not_apply_the_aspect_ratio_automatic_minimum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        for preferred in [Dimension::auto(), Dimension::min_content()] {
+            let size = layout_subject_with_content_size(
+                Style {
+                    display,
+                    size: Size { width: Dimension::length(100.0), height: preferred },
+                    aspect_ratio: Some(10.0),
+                    overflow: Point { x: Overflow::Scroll, y: Overflow::Scroll },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                WritingMode::HorizontalTb,
+                Size { width: 100.0, height: 25.0 },
+            );
+            assert_eq!(size.height, 10.0, "{display:?} preferred={preferred:?}");
+        }
+    }
+}
+
+#[test]
+fn intrinsic_ratio_block_size_uses_the_selected_sizing_box() {
+    for (box_sizing, expected) in [(BoxSizing::ContentBox, 70.0), (BoxSizing::BorderBox, 50.0)] {
+        let size = layout_subject_with_content_size(
+            Style {
+                display: Display::Block,
+                box_sizing,
+                size: Size { width: Dimension::length(100.0), height: Dimension::max_content() },
+                aspect_ratio: Some(2.0),
+                padding: Rect::length(10.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size::ZERO,
+        );
+        assert_eq!(size.height, expected, "{box_sizing:?}");
+    }
+}
+
+#[test]
+fn intrinsic_ratio_block_size_follows_vertical_writing_modes() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let size = layout_subject_with_content_size(
+            Style {
+                display,
+                size: Size { width: Dimension::max_content(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(2.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::VerticalRl,
+            Size { width: 10.0, height: 100.0 },
+        );
+        assert_eq!(size.width, 200.0, "{display:?}");
+    }
+}
+
+#[test]
+fn grid_explicit_block_stretch_precedes_preferred_ratio_transfer() {
+    fn layout_item(align_self: Option<AlignSelf>) -> Size<f32> {
+        let mut tree = new_test_tree();
+        let content = tree.new_leaf(Style { size: Size::from_lengths(100.0, 25.0), ..Default::default() }).unwrap();
+        let item = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                    aspect_ratio: Some(10.0),
+                    align_self,
+                    ..Default::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: Size::from_lengths(100.0, 100.0),
+                    grid_template_columns: vec![length(100.0)],
+                    grid_template_rows: vec![length(100.0)],
+                    ..Default::default()
+                },
+                &[item],
+            )
+            .unwrap();
+
+        tree.compute_layout_with_measure(
+            root,
+            Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(100.0) },
+            test_measure_function,
+        )
+        .unwrap();
+        tree.layout(item).unwrap().size
+    }
+
+    assert_eq!(layout_item(None).height, 25.0, "normal alignment remains content-sized");
+    assert_eq!(layout_item(Some(AlignSelf::STRETCH)).height, 100.0, "explicit stretch wins before ratio transfer",);
 }
 
 #[test]
@@ -143,7 +353,13 @@ fn intrinsic_block_constraints_include_the_selected_box_edges() {
     assert_eq!(tree.layout(subject).unwrap().size.height, 120.0);
 }
 
-fn layout_absolute_fit_content(display: Display) -> Layout {
+fn layout_absolute_content_sized(
+    display: Display,
+    preferred_block_size: Dimension,
+    aspect_ratio: Option<f32>,
+    min_block_size: Dimension,
+    block_end_inset_is_auto: bool,
+) -> Layout {
     let mut tree = new_test_tree();
     let content = tree.new_leaf(Style { size: Size::from_lengths(20.0, 90.0), ..Default::default() }).unwrap();
     let subject = tree
@@ -151,8 +367,15 @@ fn layout_absolute_fit_content(display: Display) -> Layout {
             Style {
                 display: Display::Block,
                 position: Position::Absolute,
-                size: Size { width: Dimension::length(20.0), height: Dimension::fit_content() },
-                inset: Rect { left: length(0.0), right: auto(), top: percent(0.5), bottom: length(0.0) },
+                size: Size { width: Dimension::length(20.0), height: preferred_block_size },
+                min_size: Size { width: Dimension::auto(), height: min_block_size },
+                aspect_ratio,
+                inset: Rect {
+                    left: length(0.0),
+                    right: auto(),
+                    top: percent(0.5),
+                    bottom: if block_end_inset_is_auto { auto() } else { length(0.0) },
+                },
                 ..Default::default()
             },
             &[content],
@@ -174,8 +397,25 @@ fn layout_absolute_fit_content(display: Display) -> Layout {
 #[test]
 fn absolute_fit_content_block_size_is_content_sized_not_inset_stretched() {
     for display in [Display::Block, Display::Flex, Display::Grid] {
-        let layout = layout_absolute_fit_content(display);
+        let layout = layout_absolute_content_sized(display, Dimension::fit_content(), None, Dimension::auto(), false);
         assert_eq!(layout.size.height, 90.0, "{display:?}");
         assert_eq!(layout.location.y, 50.0, "{display:?}");
+    }
+}
+
+#[test]
+fn absolute_intrinsic_block_size_uses_ratio_and_automatic_minimum_semantics() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let automatic_minimum =
+            layout_absolute_content_sized(display, Dimension::fit_content(), Some(2.0), Dimension::auto(), false);
+        assert_eq!(automatic_minimum.size.height, 90.0, "{display:?} automatic minimum");
+
+        let explicit_minimum =
+            layout_absolute_content_sized(display, Dimension::fit_content(), Some(2.0), Dimension::length(0.0), false);
+        assert_eq!(explicit_minimum.size.height, 10.0, "{display:?} explicit minimum");
+
+        let automatic_size =
+            layout_absolute_content_sized(display, Dimension::auto(), Some(2.0), Dimension::auto(), true);
+        assert_eq!(automatic_size.size.height, 90.0, "{display:?} automatic size");
     }
 }

@@ -11,7 +11,9 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
 use core::unreachable;
 
-use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use super::common::aspect_ratio::{
+    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+};
 
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
@@ -95,15 +97,23 @@ where
         }
         SizingMode::InherentSize => {
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(
-                raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                style.min_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                raw_size.map(|dimension| dimension.is_auto()),
-                TransferredSizesMode::Normal,
-                resolved_aspect_ratio,
-                pb_sum,
-            );
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                min_size: style
+                    .min_size()
+                    .maybe_resolve(parent_size, &resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment),
+                max_size: style
+                    .max_size()
+                    .maybe_resolve(parent_size, &resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment),
+                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                block_auto_behavior: inputs.block_auto_behavior,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio: resolved_aspect_ratio,
+                padding_border: pb_sum,
+            });
             let style_size = resolved.size;
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
@@ -114,9 +124,12 @@ where
             // other axis through the preferred ratio at the leaf boundary just
             // like an authored one-axis size.
             let size_before_ratio = known_dimensions.or(style_size);
-            let node_size = size_before_ratio.maybe_apply_aspect_ratio_with_box_sizing(
+            let node_size = apply_preferred_aspect_ratio(
+                size_before_ratio,
+                raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                inputs.block_auto_behavior,
                 resolved_aspect_ratio,
-                BoxSizing::BorderBox,
                 pb_sum,
             );
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
