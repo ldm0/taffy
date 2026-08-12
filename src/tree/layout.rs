@@ -315,9 +315,10 @@ impl LayoutInput {
     ///
     /// The input remains physical until this operation because the fallback
     /// axis is shared by the parent's block axis and the orthogonal child's
-    /// inline axis. A definite immediate containing-block size wins; otherwise
-    /// the layout environment's initial containing block supplies the CSS
-    /// Writing Modes fallback.
+    /// inline axis. An explicit min/max-content probe remains authoritative;
+    /// otherwise a definite immediate containing-block size wins and the
+    /// layout environment's initial containing block supplies the CSS Writing
+    /// Modes fallback.
     ///
     /// Custom [`LayoutPartialTree`](crate::tree::LayoutPartialTree)
     /// implementations should call this at their child dispatch seam. The
@@ -337,7 +338,10 @@ impl LayoutInput {
         };
 
         let available_inline_size = self.available_space.get_abs(physical_inline_axis);
-        if !matches!(available_inline_size, AvailableSpace::Definite(_)) {
+        let is_intrinsic_inline_constraint = self.sizing_purpose == SizingPurpose::IntrinsicContribution
+            && self.axis.contains(physical_inline_axis)
+            && matches!(available_inline_size, AvailableSpace::MinContent | AvailableSpace::MaxContent);
+        if !matches!(available_inline_size, AvailableSpace::Definite(_)) && !is_intrinsic_inline_constraint {
             match physical_inline_axis {
                 AbsoluteAxis::Horizontal => self.available_space.width = AvailableSpace::Definite(fallback_size),
                 AbsoluteAxis::Vertical => self.available_space.height = AvailableSpace::Definite(fallback_size),
@@ -600,6 +604,39 @@ mod constraint_space_tests {
         assert_eq!(space.percentage_resolution_size.inline_size, Some(200.0));
         assert_eq!(space.margin_padding_percentage_basis(), Some(200.0));
         assert_eq!(space.into_layout_input(), input);
+    }
+
+    #[test]
+    fn intrinsic_inline_constraint_precedes_orthogonal_fallback() {
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::ContentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Vertical,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: Size { width: Some(100.0), height: Some(236.0) },
+            parent_writing_mode: WritingMode::HorizontalTb,
+            available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MinContent },
+            block_margins_are_collapsible: Line::FALSE,
+        };
+        let environment =
+            LayoutEnvironment { initial_containing_block_size: Size { width: Some(800.0), height: Some(600.0) } };
+
+        let adjusted = input.for_child_writing_mode(WritingMode::VerticalLr, environment);
+        assert_eq!(adjusted.available_space.height, AvailableSpace::MinContent);
+
+        let normal_layout = LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_purpose: SizingPurpose::Layout,
+            axis: RequestedAxis::Both,
+            available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
+            ..input
+        }
+        .for_child_writing_mode(WritingMode::VerticalLr, environment);
+        assert_eq!(normal_layout.available_space.height, AvailableSpace::Definite(236.0));
     }
 }
 
