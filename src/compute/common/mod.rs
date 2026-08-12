@@ -11,5 +11,7 @@ pub(crate) mod baseline;
 
 pub(crate) mod intrinsic_size;
 
+pub(crate) mod stretch;
+
 #[cfg(feature = "content_size")]
 pub(crate) mod content_size;

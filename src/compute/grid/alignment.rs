@@ -1,5 +1,6 @@
 //! Alignment of tracks and final positioning of items
 use super::types::GridTrack;
+use crate::compute::common::absolute::inset_modified_containing_block_size;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
@@ -11,6 +12,7 @@ use crate::compute::common::intrinsic_size::{
     measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
     ContentBasedBlockSize,
 };
+use crate::compute::common::stretch::resolve_stretch_size_constraints;
 use crate::geometry::{
     AbsoluteAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size,
 };
@@ -230,13 +232,32 @@ pub(super) fn align_and_position_item(
             - baseline_shim.block,
     };
     let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
-    let intrinsic_available_width = if position == Position::Absolute {
-        grid_area_minus_item_margins_size.width
-            - inset_horizontal.start.unwrap_or(0.0)
-            - inset_horizontal.end.unwrap_or(0.0)
+    let item_available_size = if position == Position::Absolute {
+        inset_modified_containing_block_size(
+            grid_area_minus_item_margins_size,
+            Rect {
+                left: inset_horizontal.start,
+                right: inset_horizontal.end,
+                top: inset_vertical.start,
+                bottom: inset_vertical.end,
+            },
+            Point { x: if direction.is_rtl() { grid_area_minus_item_margins_size.width } else { 0.0 }, y: 0.0 },
+            direction.is_rtl(),
+        )
     } else {
-        grid_area_minus_item_margins_size.width
+        grid_area_minus_item_margins_size
     };
+    let stretch = resolve_stretch_size_constraints(
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        item_available_size.map(Some),
+        padding_border_size,
+    );
+    inherent_size = inherent_size.or(stretch.preferred);
+    min_size = min_size.or(stretch.min);
+    max_size = max_size.or(stretch.max);
+    let intrinsic_available_width = item_available_size.width;
     let intrinsic_available_space = AvailableSpace::Definite(f32_max(intrinsic_available_width, 0.0));
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
@@ -250,7 +271,7 @@ pub(super) fn align_and_position_item(
         parent_writing_mode,
         available_space: Size {
             width: intrinsic_available_space,
-            height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
+            height: AvailableSpace::Definite(item_available_size.height),
         },
         block_margins_are_collapsible: Line::FALSE,
     };
@@ -394,7 +415,7 @@ pub(super) fn align_and_position_item(
             Size { width, height },
             grid_area_size.map(Some),
             parent_writing_mode,
-            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            item_available_size.map(AvailableSpace::Definite),
             SizingMode::ContentSize,
             Line::FALSE,
         )
@@ -451,7 +472,7 @@ pub(super) fn align_and_position_item(
                 Size { width, height },
                 grid_area_size.map(Option::Some),
                 parent_writing_mode,
-                grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+                item_available_size.map(AvailableSpace::Definite),
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
@@ -468,7 +489,7 @@ pub(super) fn align_and_position_item(
             size,
             grid_area_size.map(Option::Some),
             parent_writing_mode,
-            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            item_available_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
         )

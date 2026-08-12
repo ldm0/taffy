@@ -23,7 +23,7 @@ use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
-use super::common::absolute::fit_content_width;
+use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
 use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
@@ -34,6 +34,7 @@ use super::common::intrinsic_size::{
     apply_contained_intrinsic_size_constraints, measure_intrinsic_block_size_constraints,
     resolve_intrinsic_width_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
+use super::common::stretch::{resolve_stretch_size_constraints, StretchSizeProperties};
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
 /// through the preferred main size.
@@ -174,6 +175,9 @@ struct FlexItem {
     aspect_ratio: ResolvedAspectRatio,
     /// The CSS sizing box used by authored size properties.
     box_sizing: BoxSizing,
+    /// Authored stretch constraints retained until the flex line's cross size
+    /// is definite.
+    stretch: StretchSizeProperties,
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
@@ -226,6 +230,9 @@ struct FlexItem {
 
     /// The proposed inner size of this item
     hypothetical_inner_size: Size<f32>,
+    /// Hypothetical cross size before preliminary `stretch` min/max limits.
+    /// Wrapped flex lines re-resolve those limits from the final line size.
+    unclamped_hypothetical_cross_size: f32,
     /// The proposed outer size of this item
     hypothetical_outer_size: Size<f32>,
     /// The size that this item wants to be
@@ -975,8 +982,20 @@ fn generate_anonymous_flex_items(
                 .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
             let flex_basis = child_style.flex_basis();
-            let mut untransferred_size =
-                raw_size.maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis));
+            let raw_margin = child_style.margin();
+            let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let stretch_properties = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size);
+            let stretch_available_size = constants.node_inner_size.maybe_sub(margin.sum_axes());
+            let stretch = stretch_properties.resolve(stretch_available_size, pb_sum);
+            // Flex stores the untransferred preferred size in the authored
+            // sizing box, while the shared stretch resolver returns the used
+            // border box. Convert only for that intermediate representation;
+            // all min/max and final sizes remain border-box values.
+            let stretch_preferred_in_sizing_box =
+                stretch.preferred.maybe_sub(box_sizing_adjustment).maybe_max(Size::ZERO);
+            let mut untransferred_size = raw_size
+                .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
+                .or(stretch_preferred_in_sizing_box);
             let resolved_flex_basis = if flex_basis.is_auto() {
                 untransferred_size.main(constants.dir)
             } else {
@@ -994,16 +1013,16 @@ fn generate_anonymous_flex_items(
             .maybe_add(box_sizing_adjustment);
             let mut min_size = raw_min_size
                 .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment);
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.min);
             let mut max_size = raw_max_size
                 .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment);
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.max);
             let size_is_auto = raw_size.map(|dimension| dimension.is_auto());
             let inset = child_style
                 .inset()
                 .zip_size(constants.node_inner_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
-            let raw_margin = child_style.margin();
-            let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
             let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
                 child_writing_mode,
@@ -1110,6 +1129,7 @@ fn generate_anonymous_flex_items(
                 max_size_with_transfer: constraints_with_transfer.max_size,
                 aspect_ratio,
                 box_sizing,
+                stretch: stretch_properties,
                 used_flex_basis,
                 depends_on_block_constraints,
 
@@ -1132,6 +1152,7 @@ fn generate_anonymous_flex_items(
 
                 resolved_minimum_main_size: 0.0,
                 hypothetical_inner_size: Size::zero(),
+                unclamped_hypothetical_cross_size: 0.0,
                 hypothetical_outer_size: Size::zero(),
                 target_size: Size::zero(),
                 outer_target_size: Size::zero(),
@@ -2021,25 +2042,20 @@ fn determine_hypothetical_cross_size(
             .with_main(constants.dir, Some(child.target_size.main(constants.dir)))
             .maybe_apply_aspect_ratio_with_box_sizing(child.aspect_ratio, BoxSizing::BorderBox, padding_border)
             .cross(constants.dir);
-        let child_cross = child
-            .size
-            .cross(constants.dir)
-            .or(ratio_cross)
-            .maybe_clamp(transferred_min_cross, transferred_max_cross)
-            .maybe_max(padding_border_sum);
+        let preferred_cross = child.size.cross(constants.dir).or(ratio_cross).maybe_max(padding_border_sum);
 
         let child_available_cross = available_space
             .cross(constants.dir)
             .maybe_clamp(transferred_min_cross, transferred_max_cross)
             .maybe_max(padding_border_sum);
 
-        let child_inner_cross = child_cross.unwrap_or_else(|| {
+        let unclamped_child_cross = preferred_cross.unwrap_or_else(|| {
             let measured = tree.measure_child_size_with_metadata(
                 child.node,
                 ChildLayoutInput::new(
                     Size {
-                        width: if constants.is_row { child.target_size.width.into() } else { child_cross },
-                        height: if constants.is_row { child_cross } else { child.target_size.height.into() },
+                        width: if constants.is_row { child.target_size.width.into() } else { None },
+                        height: if constants.is_row { None } else { child.target_size.height.into() },
                     },
                     constants.node_inner_size,
                     constants.writing_mode,
@@ -2053,14 +2069,13 @@ fn determine_hypothetical_cross_size(
                 constants.dir.cross_axis().into(),
             );
             child.depends_on_block_constraints |= measured.depends_on_block_constraints;
-            measured
-                .size
-                .get_abs(constants.dir.cross_axis())
-                .maybe_clamp(transferred_min_cross, transferred_max_cross)
-                .max(padding_border_sum)
+            measured.size.get_abs(constants.dir.cross_axis()).max(padding_border_sum)
         });
+        let child_inner_cross =
+            unclamped_child_cross.maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum);
         let child_outer_cross = child_inner_cross + child.margin.cross_axis_sum(constants.dir);
 
+        child.unclamped_hypothetical_cross_size = unclamped_child_cross;
         child.hypothetical_inner_size.set_cross(constants.dir, child_inner_cross);
         child.hypothetical_outer_size.set_cross(constants.dir, child_outer_cross);
     }
@@ -2319,38 +2334,32 @@ fn determine_used_cross_size(
 
         for child in line.items.iter_mut() {
             let child_style = tree.get_flexbox_child_style(child.node);
-            child.target_size.set_cross(
-                constants.dir,
-                if child.align_self == AlignSelf::STRETCH
+            let percentage_basis = constants.writing_mode.to_logical(constants.node_inner_size).inline_size;
+            let padding = child_style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let border = child_style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let padding_border = (padding + border).sum_axes();
+            let available_cross_size = f32_max(line_cross_size - child.margin.cross_axis_sum(constants.dir), 0.0);
+            let stretch =
+                child.stretch.resolve(Size::NONE.with_cross(constants.dir, Some(available_cross_size)), padding_border);
+            let min_cross_size = stretch.min.cross(constants.dir).or(child.min_size.cross(constants.dir));
+            let max_cross_size = stretch.max.cross(constants.dir).or(child.max_size.cross(constants.dir));
+
+            let re_resolves_stretch_limit =
+                stretch.min.cross(constants.dir).is_some() || stretch.max.cross(constants.dir).is_some();
+            let used_cross_size = stretch.preferred.cross(constants.dir).unwrap_or_else(|| {
+                if re_resolves_stretch_limit {
+                    child.unclamped_hypothetical_cross_size
+                } else if child.align_self == AlignSelf::STRETCH
                     && !child.margin_is_auto.cross_start(constants.dir)
                     && !child.margin_is_auto.cross_end(constants.dir)
                     && child_style.size().cross(constants.dir).is_auto()
                 {
-                    // For some reason this particular usage of max_width is an exception to the rule that max_width's transfer
-                    // using the aspect_ratio (if set). Both Chrome and Firefox agree on this. And reading the spec, it seems like
-                    // a reasonable interpretation. Although it seems to me that the spec *should* apply aspect_ratio here.
-                    let percentage_basis = constants.writing_mode.to_logical(constants.node_inner_size).inline_size;
-                    let padding =
-                        child_style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-                    let border =
-                        child_style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-                    let pb_sum = (padding + border).sum_axes();
-                    let box_sizing_adjustment =
-                        if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
-
-                    let max_size_ignoring_aspect_ratio = child_style
-                        .max_size()
-                        .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment);
-
-                    (line_cross_size - child.margin.cross_axis_sum(constants.dir)).maybe_clamp(
-                        child.min_size.cross(constants.dir),
-                        max_size_ignoring_aspect_ratio.cross(constants.dir),
-                    )
+                    available_cross_size
                 } else {
                     child.hypothetical_inner_size.cross(constants.dir)
-                },
-            );
+                }
+            });
+            child.target_size.set_cross(constants.dir, used_cross_size.maybe_clamp(min_cross_size, max_cross_size));
 
             child.outer_target_size.set_cross(
                 constants.dir,
@@ -2905,8 +2914,6 @@ fn perform_absolute_layout_on_absolute_children(
     node: NodeId,
     constants: &AlgoConstants,
 ) -> Size<f32> {
-    let container_width = constants.container_size.width;
-    let container_height = constants.container_size.height;
     let inset_relative_size =
         constants.container_size - constants.border.sum_axes() - constants.scrollbar_gutter.into();
     let percentage_basis = constants.writing_mode.to_logical(inset_relative_size).inline_size;
@@ -2976,13 +2983,26 @@ fn perform_absolute_layout_on_absolute_children(
 
         drop(child_style);
 
-        let non_auto_margin_width = margin.left.unwrap_or(0.0) + margin.right.unwrap_or(0.0);
-        let available_width = match (left, right) {
-            (Some(left), Some(right)) => inset_relative_size.width - left - right,
-            (Some(left), None) => inset_relative_size.width - left,
-            (None, Some(right)) => inset_relative_size.width - right,
-            (None, None) => inset_relative_size.width,
-        } - non_auto_margin_width;
+        let inset_modified_containing_block = inset_modified_containing_block_size(
+            inset_relative_size,
+            Rect { left, right, top, bottom },
+            Point { x: if constants.horizontal_direction.is_rtl() { inset_relative_size.width } else { 0.0 }, y: 0.0 },
+            constants.horizontal_direction.is_rtl(),
+        );
+        let inset_modified_size =
+            (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
+        let available_width = inset_modified_size.width;
+        let available_height = inset_modified_size.height;
+        let stretch = resolve_stretch_size_constraints(
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            inset_modified_size.map(Some),
+            padding_border_sum,
+        );
+        style_size = style_size.or(stretch.preferred);
+        min_size = min_size.or(stretch.min);
+        max_size = max_size.or(stretch.max);
         let intrinsic_inputs = LayoutInput {
             run_mode: RunMode::ComputeSize,
             sizing_mode: SizingMode::InherentSize,
@@ -2994,8 +3014,8 @@ fn perform_absolute_layout_on_absolute_children(
             parent_size: constants.node_inner_size,
             parent_writing_mode: constants.writing_mode,
             available_space: Size {
-                width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
-                height: AvailableSpace::Definite(container_height),
+                width: AvailableSpace::Definite(available_width),
+                height: AvailableSpace::Definite(available_height),
             },
             block_margins_are_collapsible: Line::FALSE,
         };
@@ -3056,7 +3076,7 @@ fn perform_absolute_layout_on_absolute_children(
                     Size {
                         width: AvailableSpace::Definite(available_width),
                         height: AvailableSpace::Definite(
-                            container_height.maybe_clamp(min_size.height, max_size.height),
+                            available_height.maybe_clamp(min_size.height, max_size.height),
                         ),
                     },
                     SizingMode::InherentSize,
@@ -3099,8 +3119,8 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(container_width),
-                    height: AvailableSpace::Definite(container_height),
+                    width: AvailableSpace::Definite(available_width),
+                    height: AvailableSpace::Definite(available_height),
                 },
                 SizingMode::ContentSize,
                 Line::FALSE,
@@ -3138,8 +3158,8 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
                 },
                 SizingMode::InherentSize,
                 Line::FALSE,
@@ -3154,8 +3174,8 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
                 },
                 SizingMode::InherentSize,
                 Line::FALSE,

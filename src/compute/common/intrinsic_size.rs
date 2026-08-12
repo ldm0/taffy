@@ -16,6 +16,7 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, ResolvedAspectRatio};
 
 use super::aspect_ratio::ResolvedSizeConstraints;
+use super::stretch::resolve_stretch_size_constraints;
 
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
 /// keywords, then reapply the normal minimum-wins clamp.
@@ -158,9 +159,6 @@ fn resolve_intrinsic_axis_value(
     value_input: IntrinsicValueInput,
 ) -> IntrinsicAxisValue {
     let IntrinsicValueInput { layout, available_space, axis, role, fit_content } = value_input;
-    if value.is_stretch() {
-        return IntrinsicAxisValue { value: available_space.into_option(), depends_on_block_constraints: false };
-    }
     if !value.is_intrinsic() {
         return IntrinsicAxisValue::default();
     }
@@ -223,7 +221,9 @@ fn resolve_intrinsic_axis_value(
 ///
 /// Numeric and percentage components are resolved by the formatting-context
 /// algorithm that owns their containing block. These fields contain only the
-/// values that required intrinsic content measurement (or `stretch`).
+/// values that required intrinsic content measurement. Available-size values
+/// such as `stretch` are resolved separately by the containing formatting
+/// context.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct IntrinsicSizeConstraints {
     /// Intrinsic component of the preferred size.
@@ -672,6 +672,7 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         raw_min_size,
         raw_max_size,
         margin,
+        padding_border_size,
         transferred_preferred_width,
         transferred_min_width,
         transferred_max_width,
@@ -699,12 +700,20 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
             raw_min_size,
             raw_max_size,
             margin,
+            padding_border_size,
             raw_size.width.is_intrinsic().then(|| transferred_width(raw_size)).flatten(),
             raw_min_size.width.is_intrinsic().then(|| transferred_width(raw_min_size)).flatten(),
             raw_max_size.width.is_intrinsic().then(|| transferred_width(raw_max_size)).flatten(),
         )
     };
     let available_width = inputs.available_space.width.maybe_sub(margin.horizontal_axis_sum());
+    let stretch = resolve_stretch_size_constraints(
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        Size { width: available_width.into_option(), height: None },
+        padding_border_size,
+    );
 
     let intrinsic = resolve_intrinsic_width_constraints(
         tree,
@@ -716,9 +725,9 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         available_width,
     );
     let applied_aspect_ratio = inputs.known_dimensions.width.is_none() && transferred_preferred_width.is_some();
-    let preferred = transferred_preferred_width.or(intrinsic.preferred);
-    let min_size = transferred_min_width.or(intrinsic.min);
-    let max_size = transferred_max_width.or(intrinsic.max);
+    let preferred = transferred_preferred_width.or(stretch.preferred.width).or(intrinsic.preferred);
+    let min_size = transferred_min_width.or(stretch.min.width).or(intrinsic.min);
+    let max_size = transferred_max_width.or(stretch.max.width).or(intrinsic.max);
 
     inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
     ResolvedIntrinsicWidthInputs {

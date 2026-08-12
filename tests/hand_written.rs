@@ -26,4 +26,5 @@ mod hand_written {
     mod scroll_size;
     mod serde;
     mod size_containment;
+    mod stretch_sizing;
 }
