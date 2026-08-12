@@ -385,6 +385,7 @@ pub(super) fn align_and_position_item(
         padding_border_size,
         block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
         overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+        None,
     );
     let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
         tree,

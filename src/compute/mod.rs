@@ -41,6 +41,7 @@ pub(crate) mod grid;
 
 pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
+    compute_leaf_layout_with_sizing_context, LeafSizingContext,
 };
 
 pub use self::common::alignment::{

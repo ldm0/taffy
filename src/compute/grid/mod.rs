@@ -25,8 +25,12 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-use super::common::intrinsic_size::{BlockSizeProperties, ContentBasedBlockSize};
+use super::common::aspect_ratio::{
+    resolve_size_constraints, ResolvedSizeConstraints, SizeConstraintInput, TransferredSizesMode,
+};
+use super::common::intrinsic_size::{
+    apply_contained_intrinsic_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
+};
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -59,6 +63,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
+    let size_containment = tree.get_size_containment(node);
     let style = tree.get_grid_container_style(node);
     let direction = style.direction();
     let flow = GridFlow::new(writing_mode, direction);
@@ -75,6 +80,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let padding_border_size = (padding + border).sum_axes();
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
+        Overflow::Scroll => style.scrollbar_width(),
+        _ => 0.0,
+    });
+    let content_box_inset_size = padding_border_size + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+    let explicit_contained_outer_size = size_containment.resolve_explicit_outer_size(content_box_inset_size);
+    let explicit_contained_outer_block_size = flow.to_logical_size(explicit_contained_outer_size).block_size;
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
     let raw_size = style.size();
@@ -94,12 +106,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         padding_border_size,
         inputs.block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
         is_scroll_container,
+        explicit_contained_outer_block_size,
     );
     let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
-        && content_based_block_size.requires_intrinsic_measurement()
+        && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
 
-    let (min_size, max_size, preferred_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
+    let (mut min_size, mut max_size, mut preferred_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode
+    {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
             let resolved = resolve_size_constraints(SizeConstraintInput {
@@ -119,25 +133,36 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 aspect_ratio,
                 padding_border: padding_border_size,
             });
+            let resolved = apply_contained_intrinsic_size_constraints(
+                resolved,
+                raw_size,
+                raw_min_size,
+                raw_max_size,
+                explicit_contained_outer_size,
+            );
             (resolved.min_size, resolved.max_size, resolved.size, resolved.aspect_ratio_applied.width)
         }
     };
     let applied_aspect_ratio =
         run_mode == RunMode::ComputeSize && known_dimensions.width.is_none() && preferred_inline_from_aspect_ratio;
 
+    preferred_size = preferred_size.or(explicit_contained_outer_size.maybe_clamp(min_size, max_size));
+
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
     // *horizontal* space to be reserved for a scrollbar
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
     let logical_padding_border_size = flow.to_logical_size(padding_border_size);
     let logical_scrollbar_gutter = flow.to_logical_size(Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y });
     let logical_content_box_inset = LogicalSize {
         inline_size: logical_padding_border_size.inline_size + logical_scrollbar_gutter.inline_size,
         block_size: logical_padding_border_size.block_size + logical_scrollbar_gutter.block_size,
     };
+    let logical_containment_axes = flow.to_logical_size(size_containment.axes);
+    let logical_contained_content_size = flow.to_logical_size(size_containment.intrinsic_content_size);
+    let derive_contained_inline_size =
+        logical_containment_axes.inline_size && logical_contained_content_size.inline_size.is_none();
+    let derive_contained_block_size =
+        logical_containment_axes.block_size && logical_contained_content_size.block_size.is_none();
 
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
     let justify_content = style.justify_content().unwrap_or(JustifyContent::STRETCH);
@@ -199,7 +224,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
+    if run_mode == RunMode::ComputeSize
+        && !needs_intrinsic_block_size
+        && !derive_contained_inline_size
+        && !derive_contained_block_size
+    {
         if let Size { width: Some(width), height: Some(height) } = outer_node_size {
             return LayoutOutput::from_outer_size(Size { width, height })
                 .with_applied_aspect_ratio(applied_aspect_ratio);
@@ -348,6 +377,42 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         reverse_non_gutter_tracks(&mut rows, final_row_counts);
     }
 
+    // A Grid axis with size containment but no explicit intrinsic override is
+    // sized from the explicit track definitions with all item contributions
+    // removed. Keep this track tree independent from the real tree: the latter
+    // still lays out items normally once the contained outer size is known.
+    let no_children_tracks = if derive_contained_inline_size || derive_contained_block_size {
+        let explicit_column_counts = TrackCounts::from_raw(0, explicit_col_count, 0);
+        let explicit_row_counts = TrackCounts::from_raw(0, explicit_row_count, 0);
+        let mut no_children_columns = GridTrackVec::new();
+        let mut no_children_rows = GridTrackVec::new();
+        initialize_grid_tracks(
+            &mut no_children_columns,
+            track_counts_for_initialization(explicit_column_counts, inline_reversed),
+            &style,
+            AbstractAxis::Inline,
+            col_auto_repetition_count,
+            |_| false,
+        );
+        initialize_grid_tracks(
+            &mut no_children_rows,
+            track_counts_for_initialization(explicit_row_counts, block_reversed),
+            &style,
+            AbstractAxis::Block,
+            row_auto_repetition_count,
+            |_| false,
+        );
+        if inline_reversed {
+            reverse_non_gutter_tracks(&mut no_children_columns, explicit_column_counts);
+        }
+        if block_reversed {
+            reverse_non_gutter_tracks(&mut no_children_rows, explicit_row_counts);
+        }
+        Some((no_children_columns, no_children_rows))
+    } else {
+        None
+    };
+
     drop(grid_template_rows);
     drop(grid_template_columns);
     drop(grid_auto_rows);
@@ -355,6 +420,83 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     drop(style);
 
     // 6. Track Sizing
+
+    let mut no_children_available_grid_space = available_grid_space;
+    let mut no_children_inner_node_size = inner_node_size;
+    if derive_contained_inline_size {
+        no_children_available_grid_space.inline_size = AvailableSpace::MaxContent;
+        no_children_inner_node_size.inline_size = None;
+    }
+    if derive_contained_block_size {
+        no_children_available_grid_space.block_size = AvailableSpace::MaxContent;
+        no_children_inner_node_size.block_size = None;
+    }
+    let no_children_track_size = no_children_tracks
+        .map(|(columns, rows)| {
+            size_grid_tracks_without_items(
+                tree,
+                columns,
+                rows,
+                inner_min_size,
+                inner_max_size,
+                justify_content,
+                align_content,
+                no_children_available_grid_space,
+                no_children_inner_node_size,
+            )
+        })
+        .unwrap_or(LogicalSize::ZERO);
+    let derived_contained_outer_size = flow.to_physical_size(LogicalSize {
+        inline_size: derive_contained_inline_size
+            .then_some(no_children_track_size.inline_size + logical_content_box_inset.inline_size),
+        block_size: derive_contained_block_size
+            .then_some(no_children_track_size.block_size + logical_content_box_inset.block_size),
+    });
+    let intrinsic_contained_outer_size = explicit_contained_outer_size.or(derived_contained_outer_size);
+    let contained_constraints = apply_contained_intrinsic_size_constraints(
+        ResolvedSizeConstraints {
+            size: preferred_size,
+            aspect_ratio_applied: Size { width: false, height: false },
+            min_size,
+            max_size,
+        },
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        intrinsic_contained_outer_size,
+    );
+    min_size = contained_constraints.min_size;
+    max_size = contained_constraints.max_size;
+    preferred_size = contained_constraints.size.or(intrinsic_contained_outer_size.maybe_clamp(min_size, max_size));
+    let contained_outer_size = intrinsic_contained_outer_size.maybe_clamp(min_size, max_size);
+    let logical_min_size = flow.to_logical_size(min_size);
+    let logical_max_size = flow.to_logical_size(max_size);
+    let inner_min_size = logical_min_size.maybe_sub(logical_content_box_inset);
+    let inner_max_size = logical_max_size.maybe_sub(logical_content_box_inset);
+    let logical_intrinsic_contained_outer_size = flow.to_logical_size(intrinsic_contained_outer_size);
+    let content_based_block_size = content_based_block_size.with_intrinsic_border_box_override(
+        logical_containment_axes.block_size.then_some(logical_intrinsic_contained_outer_size.block_size).flatten(),
+    );
+
+    // Once the contained no-children size has been resolved it becomes the
+    // available size for the real track pass. Items remain present in that
+    // pass and may overflow or enlarge intrinsic tracks; they simply cannot
+    // feed back into the container's own used size.
+    let logical_used_outer_size = flow.to_logical_size(known_dimensions.or(preferred_size).or(contained_outer_size));
+    if logical_containment_axes.inline_size {
+        if let Some(outer_size) = logical_used_outer_size.inline_size {
+            let inner_size = f32_max(0.0, outer_size - logical_content_box_inset.inline_size);
+            inner_node_size.inline_size = Some(inner_size);
+            available_grid_space.inline_size = AvailableSpace::Definite(inner_size);
+        }
+    }
+    if logical_containment_axes.block_size {
+        if let Some(outer_size) = logical_used_outer_size.block_size {
+            let inner_size = f32_max(0.0, outer_size - logical_content_box_inset.block_size);
+            inner_node_size.block_size = Some(inner_size);
+            available_grid_space.block_size = AvailableSpace::Definite(inner_size);
+        }
+    }
 
     // Convert grid placements in origin-zero coordinates to indexes into the GridTrack (rows and columns) vectors
     // This computation is relatively trivial, but it requires the final number of negative (implicit) tracks in
@@ -417,7 +559,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
 
     // 6. Compute container size
-    let numeric_resolved_style_size = flow.to_logical_size(known_dimensions.or(preferred_size));
+    let numeric_resolved_style_size =
+        flow.to_logical_size(known_dimensions.or(preferred_size).or(contained_outer_size));
     let container_inline_border_box = numeric_resolved_style_size
         .inline_size
         .unwrap_or(initial_column_sum + logical_content_box_inset.inline_size)
@@ -954,6 +1097,65 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         physical_baseline(Some(first_baseline), physical_container_border_box, flow.writing_direction()),
         physical_baseline(Some(last_baseline), physical_container_border_box, flow.writing_direction()),
     )
+}
+
+/// Size explicit Grid tracks with an empty item set.
+///
+/// CSS size containment is unusual for Grid: absent an explicit
+/// `contain-intrinsic-size`, the contained intrinsic size is still derived
+/// from track definitions. This pass mirrors the normal track algorithm while
+/// keeping its state separate so real items remain available for final layout.
+#[allow(clippy::too_many_arguments)]
+fn size_grid_tracks_without_items<Tree: LayoutGridContainer>(
+    tree: &mut Tree,
+    mut columns: GridTrackVec<GridTrack>,
+    mut rows: GridTrackVec<GridTrack>,
+    inner_min_size: LogicalSize<Option<f32>>,
+    inner_max_size: LogicalSize<Option<f32>>,
+    justify_content: JustifyContent,
+    align_content: AlignContent,
+    available_grid_space: LogicalSize<AvailableSpace>,
+    mut inner_node_size: LogicalSize<Option<f32>>,
+) -> LogicalSize<f32> {
+    let mut items = Vec::<GridItem>::new();
+    track_sizing_algorithm(
+        tree,
+        AbstractAxis::Inline,
+        inner_min_size.inline_size,
+        inner_max_size.inline_size,
+        justify_content,
+        align_content,
+        available_grid_space,
+        inner_node_size,
+        &mut columns,
+        &mut rows,
+        &mut items,
+        |track: &GridTrack, parent_size: Option<f32>, tree: &Tree| {
+            track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
+        },
+        false,
+    );
+    let inline_size = columns.iter().map(|track| track.base_size).sum::<f32>();
+    inner_node_size.inline_size = inner_node_size.inline_size.or(Some(inline_size));
+
+    track_sizing_algorithm(
+        tree,
+        AbstractAxis::Block,
+        inner_min_size.block_size,
+        inner_max_size.block_size,
+        align_content,
+        justify_content,
+        available_grid_space,
+        inner_node_size,
+        &mut rows,
+        &mut columns,
+        &mut items,
+        |track: &GridTrack, _, _| Some(track.base_size),
+        false,
+    );
+    let block_size = rows.iter().map(|track| track.base_size).sum::<f32>();
+
+    LogicalSize { inline_size, block_size }
 }
 
 /// Select the grid container's baselines from final item fragments.

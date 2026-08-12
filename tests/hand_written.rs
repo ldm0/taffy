@@ -24,4 +24,5 @@ mod hand_written {
     mod safe_alignment;
     mod scroll_size;
     mod serde;
+    mod size_containment;
 }
