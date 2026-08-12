@@ -19,7 +19,7 @@ use crate::{
     TextAlign, WritingMode,
 };
 
-use super::common::absolute::fit_content_width;
+use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
@@ -29,6 +29,7 @@ use super::common::intrinsic_size::{
     resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
     ContentBasedBlockSize, IntrinsicAxisInput,
 };
+use super::common::stretch::resolve_stretch_size_constraints;
 
 #[cfg(feature = "float_layout")]
 use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
@@ -721,9 +722,27 @@ fn compute_inner(
 
     let available_logical_space = writing_mode.to_logical(available_space);
 
+    // A child with `stretch` fills the containing block's margin box. In a
+    // shared BFC, a margin on an unseparated parent edge is ignored for that
+    // sizing calculation even though normal margin collapsing still controls
+    // fragment placement. Keep this as constraint-space state at the parent
+    // boundary, matching Blink's IgnoreMarginsForStretch flag.
+    let ignore_stretch_margins = writing_direction.to_physical_box_strut(LogicalBoxStrut {
+        inline_start: false,
+        inline_end: false,
+        block_start: !block_ctx.is_bfc_root() && logical_padding_border.block_start == 0.0,
+        block_end: !block_ctx.is_bfc_root() && logical_padding_border.block_end == 0.0,
+    });
+
     // 1. Generate items
-    let mut items =
-        generate_item_list(tree, node_id, writing_direction, container_content_box_size, available_logical_space);
+    let mut items = generate_item_list(
+        tree,
+        node_id,
+        writing_direction,
+        container_content_box_size,
+        available_logical_space,
+        ignore_stretch_margins,
+    );
 
     // 2. Compute the container inline size. Block layout stretches and stacks
     // in flow-relative axes; width is only the inline axis in horizontal-tb.
@@ -995,6 +1014,7 @@ fn generate_item_list(
     writing_direction: WritingDirection,
     node_inner_size: LogicalSize<Option<f32>>,
     available_space: LogicalSize<AvailableSpace>,
+    ignore_stretch_margins: Rect<bool>,
 ) -> Vec<BlockItem> {
     let writing_mode = writing_direction.mode;
     let physical_node_inner_size = writing_mode.to_physical(node_inner_size);
@@ -1099,6 +1119,42 @@ fn generate_item_list(
                     inline_size: available_inline_size,
                     block_size: child_available_logical_space.block_size,
                 });
+                let stretch_margin = Rect {
+                    left: if ignore_stretch_margins.left { 0.0 } else { resolved_margin.left },
+                    right: if ignore_stretch_margins.right { 0.0 } else { resolved_margin.right },
+                    top: if ignore_stretch_margins.top { 0.0 } else { resolved_margin.top },
+                    bottom: if ignore_stretch_margins.bottom { 0.0 } else { resolved_margin.bottom },
+                };
+                // A definite external constraint does not make an auto
+                // containing-block block size definite. Only the used
+                // content-box size can resolve block-axis stretch.
+                let stretch_containing_space = writing_mode.to_physical(LogicalSize {
+                    inline_size: child_available_logical_space.inline_size,
+                    block_size: node_inner_size
+                        .block_size
+                        .map(AvailableSpace::Definite)
+                        .unwrap_or(AvailableSpace::MaxContent),
+                });
+                let stretch_available_space = Size {
+                    width: stretch_containing_space
+                        .width
+                        .into_option()
+                        .maybe_sub(stretch_margin.left + stretch_margin.right),
+                    height: stretch_containing_space
+                        .height
+                        .into_option()
+                        .maybe_sub(stretch_margin.top + stretch_margin.bottom),
+                };
+                let stretch = resolve_stretch_size_constraints(
+                    raw_size,
+                    raw_min_size,
+                    raw_max_size,
+                    stretch_available_space,
+                    pb_sum,
+                );
+                size = size.or(stretch.preferred);
+                min_size = min_size.or(stretch.min);
+                max_size = max_size.or(stretch.max);
                 let intrinsic_inputs = LayoutInput {
                     run_mode: RunMode::ComputeSize,
                     sizing_mode: SizingMode::InherentSize,
@@ -2126,16 +2182,27 @@ fn perform_absolute_layout_on_absolute_children(
 
         drop(child_style);
 
-        let non_auto_margin_width = margin.left.unwrap_or(0.0) + margin.right.unwrap_or(0.0);
         let static_edge = converter.to_physical_point(item.static_position, Size::ZERO);
-        let static_position_in_area = static_edge.x - area_offset.x;
-        let available_width = match (left, right) {
-            (Some(left), Some(right)) => area_width - left - right,
-            (Some(left), None) => area_width - left,
-            (None, Some(right)) => area_width - right,
-            (None, None) if direction.is_rtl() => static_position_in_area,
-            (None, None) => area_width - static_position_in_area,
-        } - non_auto_margin_width;
+        let inset_modified_containing_block = inset_modified_containing_block_size(
+            area_size,
+            Rect { left, right, top, bottom },
+            Point { x: static_edge.x - area_offset.x, y: static_edge.y - area_offset.y },
+            direction.is_rtl(),
+        );
+        let inset_modified_size =
+            (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
+        let available_width = inset_modified_size.width;
+        let available_height = inset_modified_size.height;
+        let stretch = resolve_stretch_size_constraints(
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            inset_modified_size.map(Some),
+            padding_border_sum,
+        );
+        style_size = style_size.or(stretch.preferred);
+        min_size = min_size.or(stretch.min);
+        max_size = max_size.or(stretch.max);
         let intrinsic_inputs = LayoutInput {
             run_mode: RunMode::ComputeSize,
             sizing_mode: SizingMode::InherentSize,
@@ -2147,8 +2214,8 @@ fn perform_absolute_layout_on_absolute_children(
             parent_size: area_size.map(Some),
             parent_writing_mode: writing_mode,
             available_space: Size {
-                width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
-                height: AvailableSpace::Definite(area_height),
+                width: AvailableSpace::Definite(available_width),
+                height: AvailableSpace::Definite(available_height),
             },
             block_margins_are_collapsible: Line::FALSE,
         };
@@ -2212,7 +2279,9 @@ fn perform_absolute_layout_on_absolute_children(
                     writing_mode,
                     Size {
                         width: AvailableSpace::Definite(available_width),
-                        height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                        height: AvailableSpace::Definite(
+                            available_height.maybe_clamp(min_size.height, max_size.height),
+                        ),
                     },
                     SizingMode::ContentSize,
                     Line::FALSE,
@@ -2253,7 +2322,10 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 area_size.map(Some),
                 writing_mode,
-                Size { width: AvailableSpace::Definite(area_width), height: AvailableSpace::Definite(area_height) },
+                Size {
+                    width: AvailableSpace::Definite(available_width),
+                    height: AvailableSpace::Definite(available_height),
+                },
                 SizingMode::ContentSize,
                 Line::FALSE,
             )
@@ -2293,8 +2365,8 @@ fn perform_absolute_layout_on_absolute_children(
                 area_size.map(Some),
                 writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
                 },
                 SizingMode::ContentSize,
                 Line::FALSE,
@@ -2313,8 +2385,8 @@ fn perform_absolute_layout_on_absolute_children(
                 parent_size: area_size.map(Some),
                 parent_writing_mode: writing_mode,
                 available_space: Size {
-                    width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(available_width.maybe_clamp(min_size.width, max_size.width)),
+                    height: AvailableSpace::Definite(available_height.maybe_clamp(min_size.height, max_size.height)),
                 },
                 sizing_mode: SizingMode::ContentSize,
                 sizing_purpose: SizingPurpose::Layout,

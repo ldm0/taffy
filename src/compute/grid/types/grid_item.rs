@@ -2,6 +2,7 @@
 use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
+use crate::compute::common::stretch::resolve_stretch_size_constraints;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbstractAxis, Line, LogicalSize, Rect, Size};
@@ -414,19 +415,30 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        let grid_area_minus_item_margins_size = grid_area_size.maybe_sub(margins);
+        let stretch = resolve_stretch_size_constraints(
+            self.size,
+            self.min_size,
+            self.max_size,
+            grid_area_minus_item_margins_size,
+            padding_border_size,
+        );
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: self
                 .size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.preferred),
             min_size: self
                 .min_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.min),
             max_size: self
                 .max_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.max),
             size_is_auto: self.size.map(|dimension| dimension.is_auto()),
             writing_mode: tree.get_writing_mode(self.node),
             block_auto_behavior: AutoSizeBehavior::FitContent,
@@ -442,8 +454,6 @@ impl GridItem {
         } else {
             (self.align_self, self.justify_self)
         };
-
-        let grid_area_minus_item_margins_size = grid_area_size.maybe_sub(margins);
 
         // If node is absolutely positioned and width is not set explicitly, then deduce it
         // from left, right and container_content_box if both are set.
