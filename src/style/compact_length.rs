@@ -31,11 +31,25 @@ mod compat {
         ptr.map_addr(|a| a | tag)
     }
 
+    /// Remove a low-bit tag while preserving pointer provenance.
+    #[inline(always)]
+    #[cfg(all(target_pointer_width = "64", feature = "strict_provenance"))]
+    pub fn untag_ptr(ptr: *const (), mask: usize) -> *const () {
+        ptr.map_addr(|a| a & !mask)
+    }
+
     /// Tag a pointer exposing provenance (works back to Rust 1.0)
     #[inline(always)]
     #[cfg(all(target_pointer_width = "64", not(feature = "strict_provenance")))]
     pub fn tag_ptr(ptr: *const (), tag: usize) -> *const () {
         (ptr as usize | tag) as *const ()
+    }
+
+    /// Remove a low-bit tag while exposing pointer provenance.
+    #[inline(always)]
+    #[cfg(all(target_pointer_width = "64", not(feature = "strict_provenance")))]
+    pub fn untag_ptr(ptr: *const (), mask: usize) -> *const () {
+        (ptr as usize & !mask) as *const ()
     }
 }
 
@@ -45,7 +59,7 @@ std::compile_error!("Taffy only supports targets with a pointer width of 32 or 6
 /// CompactLengthInner implementation for 64 bit platforms
 #[cfg(target_pointer_width = "64")]
 mod inner {
-    use super::compat::{f32_from_bits, f32_to_bits, tag_ptr};
+    use super::compat::{f32_from_bits, f32_to_bits, tag_ptr, untag_ptr};
 
     /// The low byte (8 bits)
     const TAG_MASK: usize = 0b11111111;
@@ -101,7 +115,7 @@ mod inner {
         /// Get the pointer value
         #[inline(always)]
         pub(super) fn ptr(self) -> *const () {
-            self.tagged_ptr
+            untag_ptr(self.tagged_ptr, CALC_TAG_MASK)
         }
 
         /// Get the numeric value
@@ -213,6 +227,14 @@ impl CompactLength {
     /// The tag indicating a calc() value
     #[cfg(feature = "calc")]
     pub const CALC_TAG: usize = 0b000;
+    /// The tag indicating a fit-content(calc()) value whose expression does not
+    /// depend on a percentage basis.
+    #[cfg(feature = "calc")]
+    pub const FIT_CONTENT_CALC_TAG: usize = 0b101;
+    /// The tag indicating a fit-content(calc()) value whose expression may
+    /// depend on a percentage basis.
+    #[cfg(feature = "calc")]
+    pub const FIT_CONTENT_CALC_PERCENT_TAG: usize = 0b110;
     /// The tag indicating a length value
     pub const LENGTH_TAG: usize = 0b0000_0001;
     /// The tag indicating a percentage value
@@ -263,6 +285,24 @@ impl CompactLength {
         assert_ne!(ptr as u64, 0);
         assert_eq!(ptr as u64 & 0b111, 0);
         Self(CompactLengthInner::from_ptr(ptr, Self::CALC_TAG))
+    }
+
+    /// A `calc()` value used as the limit of `fit-content()`.
+    ///
+    /// The dependency bit lets layout distinguish an absolute calculation from
+    /// one that becomes cyclic while computing an intrinsic contribution. The
+    /// expression remains opaque and is evaluated by the embedding tree.
+    #[inline]
+    #[cfg(feature = "calc")]
+    pub fn fit_content_calc(ptr: *const (), may_have_percentage_dependence: bool) -> Self {
+        assert_ne!(ptr as u64, 0);
+        assert_eq!(ptr as u64 & 0b111, 0);
+        let tag = if may_have_percentage_dependence {
+            Self::FIT_CONTENT_CALC_PERCENT_TAG
+        } else {
+            Self::FIT_CONTENT_CALC_TAG
+        };
+        Self(CompactLengthInner::from_ptr(ptr, tag))
     }
 
     /// The dimension should be automatically computed according to algorithm-specific rules
@@ -366,7 +406,28 @@ impl CompactLength {
     #[inline(always)]
     #[cfg(feature = "calc")]
     pub fn is_calc(self) -> bool {
-        self.0.calc_tag() == 0
+        self.0.calc_tag() == Self::CALC_TAG
+    }
+
+    /// Returns true if this is a calc expression wrapped by fit-content().
+    #[inline(always)]
+    #[cfg(feature = "calc")]
+    pub fn is_fit_content_calc(self) -> bool {
+        matches!(self.0.calc_tag(), Self::FIT_CONTENT_CALC_TAG | Self::FIT_CONTENT_CALC_PERCENT_TAG)
+    }
+
+    /// Returns true if this is any pointer-backed calc representation.
+    #[inline(always)]
+    #[cfg(all(feature = "calc", feature = "serde"))]
+    fn is_any_calc(self) -> bool {
+        self.is_calc() || self.is_fit_content_calc()
+    }
+
+    /// Whether a fit-content calc expression may depend on its percentage basis.
+    #[inline(always)]
+    #[cfg(feature = "calc")]
+    pub fn fit_content_calc_uses_percentage(self) -> bool {
+        self.0.calc_tag() == Self::FIT_CONTENT_CALC_PERCENT_TAG
     }
 
     /// Returns true if the value is 0 px
@@ -420,13 +481,23 @@ impl CompactLength {
     /// Returns true if the value is a fit-content(...) value
     #[inline(always)]
     pub fn is_fit_content(self) -> bool {
-        matches!(self.tag(), Self::FIT_CONTENT_PX_TAG | Self::FIT_CONTENT_PERCENT_TAG)
+        if matches!(self.tag(), Self::FIT_CONTENT_PX_TAG | Self::FIT_CONTENT_PERCENT_TAG) {
+            return true;
+        }
+        #[cfg(feature = "calc")]
+        {
+            self.is_fit_content_calc()
+        }
+        #[cfg(not(feature = "calc"))]
+        {
+            false
+        }
     }
 
     /// Returns true if the value is max-content or a fit-content(...) value
     #[inline(always)]
     pub fn is_max_or_fit_content(self) -> bool {
-        matches!(self.tag(), Self::MAX_CONTENT_TAG | Self::FIT_CONTENT_PX_TAG | Self::FIT_CONTENT_PERCENT_TAG)
+        self.is_max_content() || self.is_fit_content()
     }
 
     /// Returns true if the max track sizing function is `MaxContent`, `FitContent` or `Auto` else false.
@@ -434,13 +505,7 @@ impl CompactLength {
     /// See: <https://www.w3.org/TR/css-grid-1/#algo-terms>
     #[inline(always)]
     pub fn is_max_content_alike(&self) -> bool {
-        matches!(
-            self.tag(),
-            CompactLength::AUTO_TAG
-                | CompactLength::MAX_CONTENT_TAG
-                | CompactLength::FIT_CONTENT_PX_TAG
-                | CompactLength::FIT_CONTENT_PERCENT_TAG
-        )
+        self.is_auto() || self.is_max_content() || self.is_fit_content()
     }
 
     /// Returns true if the min track sizing function is `MinContent` or `MaxContent`, else false.
@@ -452,14 +517,7 @@ impl CompactLength {
     /// Returns true if the value is auto, min-content, max-content, or fit-content(...)
     #[inline(always)]
     pub fn is_intrinsic(self) -> bool {
-        matches!(
-            self.tag(),
-            Self::AUTO_TAG
-                | Self::MIN_CONTENT_TAG
-                | Self::MAX_CONTENT_TAG
-                | Self::FIT_CONTENT_PX_TAG
-                | Self::FIT_CONTENT_PERCENT_TAG
-        )
+        self.is_auto() || self.is_min_content() || self.is_max_content() || self.is_fit_content()
     }
 
     /// Returns true if the value is and fr value
@@ -473,7 +531,9 @@ impl CompactLength {
     pub fn uses_percentage(self) -> bool {
         #[cfg(feature = "calc")]
         {
-            matches!(self.tag(), CompactLength::PERCENT_TAG | CompactLength::FIT_CONTENT_PERCENT_TAG) || self.is_calc()
+            matches!(self.tag(), CompactLength::PERCENT_TAG | CompactLength::FIT_CONTENT_PERCENT_TAG)
+                || self.is_calc()
+                || self.fit_content_calc_uses_percentage()
         }
         #[cfg(not(feature = "calc"))]
         {
@@ -544,7 +604,7 @@ impl serde::Serialize for CompactLength {
     {
         #[cfg(feature = "calc")]
         {
-            if self.tag() == Self::CALC_TAG {
+            if self.is_any_calc() {
                 Err(serde::ser::Error::custom("Cannot serialize Calc value"))
             } else {
                 serializer.serialize_u64(self.0.serialized())

@@ -54,6 +54,46 @@ struct IntrinsicAxisValue {
     depends_on_block_constraints: bool,
 }
 
+/// The sizing property whose intrinsic value is being resolved.
+///
+/// CSS gives cyclic percentages in preferred, minimum, and maximum sizes
+/// different initial values. Keeping that role explicit mirrors the property
+/// mode carried by browser constraint-space implementations and prevents the
+/// three callers from growing independent fallback rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntrinsicSizeRole {
+    /// The preferred `width`/`height` property.
+    Preferred,
+    /// The minimum size property.
+    Minimum,
+    /// The maximum size property.
+    Maximum,
+}
+
+/// Context needed to resolve the argument of `fit-content()`.
+#[derive(Clone, Copy, Debug, Default)]
+struct FitContentContext {
+    /// Containing-block size for the percentage component of the argument.
+    percentage_basis: Option<f32>,
+    /// Amount needed to convert the selected sizing box to a border box.
+    box_sizing_adjustment: f32,
+}
+
+/// Pass-local inputs for resolving one intrinsic sizing property.
+#[derive(Clone, Copy, Debug)]
+struct IntrinsicValueInput {
+    /// Layout constraints supplied by the owning formatting context.
+    layout: LayoutInput,
+    /// Available border-box space after margins in the selected axis.
+    available_space: AvailableSpace,
+    /// Physical axis of the sizing property.
+    axis: AbsoluteAxis,
+    /// Preferred, minimum, or maximum property semantics.
+    role: IntrinsicSizeRole,
+    /// Resolution data shared by parameterized fit-content values.
+    fit_content: FitContentContext,
+}
+
 /// Resolve one sizing value that may depend on the box's intrinsic content
 /// contributions.
 ///
@@ -62,27 +102,26 @@ struct IntrinsicAxisValue {
 fn resolve_intrinsic_axis_value(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
-    inputs: LayoutInput,
     value: Dimension,
-    available_size: AvailableSpace,
-    axis: AbsoluteAxis,
+    value_input: IntrinsicValueInput,
 ) -> IntrinsicAxisValue {
+    let IntrinsicValueInput { layout, available_space, axis, role, fit_content } = value_input;
     if value.is_stretch() {
-        return IntrinsicAxisValue { value: available_size.into_option(), depends_on_block_constraints: false };
+        return IntrinsicAxisValue { value: available_space.into_option(), depends_on_block_constraints: false };
     }
     if !value.is_intrinsic() {
         return IntrinsicAxisValue::default();
     }
 
     if value.is_min_content() {
-        let measured = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+        let measured = measure_intrinsic_axis(tree, node_id, layout, AvailableSpace::MinContent, axis);
         return IntrinsicAxisValue {
             value: Some(measured.size.get_abs(axis)),
             depends_on_block_constraints: measured.depends_on_block_constraints,
         };
     }
 
-    let max_content = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MaxContent, axis);
+    let max_content = measure_intrinsic_axis(tree, node_id, layout, AvailableSpace::MaxContent, axis);
     if value.is_max_content() {
         return IntrinsicAxisValue {
             value: Some(max_content.size.get_abs(axis)),
@@ -90,15 +129,39 @@ fn resolve_intrinsic_axis_value(
         };
     }
 
-    let min_content = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+    let min_content = measure_intrinsic_axis(tree, node_id, layout, AvailableSpace::MinContent, axis);
+    let min_content_size = min_content.size.get_abs(axis);
+    let max_content_size = max_content.size.get_abs(axis);
+
+    let limit = if value.is_fit_content_keyword() {
+        match available_space {
+            AvailableSpace::MinContent => min_content_size,
+            AvailableSpace::MaxContent => max_content_size,
+            AvailableSpace::Definite(limit) => limit,
+        }
+    } else {
+        let percentage_basis = match (fit_content.percentage_basis, role) {
+            (basis @ Some(_), _) => basis,
+            // A cyclic percentage in min-size resolves against zero.
+            (None, IntrinsicSizeRole::Minimum) => Some(0.0),
+            (None, _) => None,
+        };
+        match value.resolve_fit_content_limit(percentage_basis, |value, basis| tree.calc(value, basis)) {
+            Some(limit) => limit + fit_content.box_sizing_adjustment,
+            // Cyclic preferred sizes use their initial `auto` value when
+            // contributing an intrinsic size.
+            None if role == IntrinsicSizeRole::Preferred => match available_space {
+                AvailableSpace::MinContent => min_content_size,
+                AvailableSpace::MaxContent => max_content_size,
+                AvailableSpace::Definite(limit) => limit,
+            },
+            // A cyclic max-size has an initial value of none, so its
+            // fit-content clamp is the max-content contribution.
+            None => max_content_size,
+        }
+    };
     IntrinsicAxisValue {
-        value: Some(match available_size {
-            AvailableSpace::MinContent => min_content.size.get_abs(axis),
-            AvailableSpace::MaxContent => max_content.size.get_abs(axis),
-            AvailableSpace::Definite(limit) => {
-                limit.clamp(min_content.size.get_abs(axis), max_content.size.get_abs(axis))
-            }
-        }),
+        value: Some(limit.clamp(min_content_size, max_content_size)),
         depends_on_block_constraints: min_content.depends_on_block_constraints
             || max_content.depends_on_block_constraints,
     }
@@ -170,9 +233,41 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     axis_input: IntrinsicAxisInput,
 ) -> IntrinsicSizeConstraints {
     let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
-    let preferred = resolve_intrinsic_axis_value(tree, node_id, inputs, preferred, available_space, axis);
-    let min = resolve_intrinsic_axis_value(tree, node_id, inputs, min, available_space, axis);
-    let max = resolve_intrinsic_axis_value(tree, node_id, inputs, max, available_space, axis);
+    let has_fit_content_function =
+        preferred.is_fit_content_function() || min.is_fit_content_function() || max.is_fit_content_function();
+    let fit_content = if has_fit_content_function {
+        let percentage_basis =
+            inputs.constraint_space(tree.get_writing_mode(node_id)).margin_padding_percentage_basis();
+        let (padding, border, box_sizing) = {
+            let style = tree.get_core_container_style(node_id);
+            (style.padding(), style.border(), style.box_sizing())
+        };
+        let padding = padding.resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let border = border.resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let box_sizing_adjustment =
+            if box_sizing == BoxSizing::ContentBox { (padding + border).sum_axes().get_abs(axis) } else { 0.0 };
+        FitContentContext { percentage_basis: inputs.parent_size.get_abs(axis), box_sizing_adjustment }
+    } else {
+        FitContentContext::default()
+    };
+    let preferred = resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        preferred,
+        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Preferred, fit_content },
+    );
+    let min = resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        min,
+        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Minimum, fit_content },
+    );
+    let max = resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        max,
+        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Maximum, fit_content },
+    );
     IntrinsicSizeConstraints {
         preferred: preferred.value,
         min: min.value,

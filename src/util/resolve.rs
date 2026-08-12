@@ -64,10 +64,14 @@ impl MaybeResolve<Option<f32>, Option<f32>> for Dimension {
             | CompactLength::CONTENT_TAG
             | CompactLength::MIN_CONTENT_TAG
             | CompactLength::MAX_CONTENT_TAG
+            | CompactLength::FIT_CONTENT_PX_TAG
+            | CompactLength::FIT_CONTENT_PERCENT_TAG
             | CompactLength::FIT_CONTENT_KEYWORD_TAG
             | CompactLength::STRETCH_TAG => None,
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
+            #[cfg(feature = "calc")]
+            _ if self.0.is_fit_content_calc() => None,
             #[cfg(feature = "calc")]
             _ if self.0.is_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
             _ => unreachable!(),
@@ -211,9 +215,16 @@ mod tests {
         /// layout and therefore remain unresolved by the scalar resolver.
         #[test]
         fn intrinsic_keywords_remain_unresolved() {
-            for value in
-                [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content(), Dimension::stretch()]
-            {
+            use crate::style::LengthPercentage;
+
+            for value in [
+                Dimension::min_content(),
+                Dimension::max_content(),
+                Dimension::fit_content(),
+                Dimension::fit_content_function(LengthPercentage::length(20.0)),
+                Dimension::fit_content_function(LengthPercentage::percent(0.5)),
+                Dimension::stretch(),
+            ] {
                 mr_case(value, None, None);
                 mr_case(value, Some(50.0), None);
             }
