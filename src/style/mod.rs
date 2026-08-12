@@ -229,6 +229,20 @@ pub trait CoreStyle {
     fn inset(&self) -> Rect<LengthPercentageAuto> {
         Style::<Self::CustomIdent>::DEFAULT.inset
     }
+    /// The node's self-alignment in its alignment container's block/cross axis.
+    ///
+    /// This is core positioned-layout input as well as a flex/grid item style:
+    /// absolutely positioned boxes use it even when their containing block is
+    /// established by a different formatting context.
+    #[inline(always)]
+    fn align_self(&self) -> Option<AlignSelf> {
+        Style::<Self::CustomIdent>::DEFAULT.align_self
+    }
+    /// The node's self-alignment in its alignment container's inline axis.
+    #[inline(always)]
+    fn justify_self(&self) -> Option<JustifySelf> {
+        Style::<Self::CustomIdent>::DEFAULT.justify_self
+    }
 
     // Size properies
     /// Sets the initial size of the item
@@ -836,6 +850,14 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
         self.inset
     }
     #[inline(always)]
+    fn align_self(&self) -> Option<AlignSelf> {
+        self.align_self
+    }
+    #[inline(always)]
+    fn justify_self(&self) -> Option<JustifySelf> {
+        self.justify_self
+    }
+    #[inline(always)]
     fn size(&self) -> Size<Dimension> {
         self.size
     }
@@ -911,6 +933,14 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
     #[inline(always)]
     fn inset(&self) -> Rect<LengthPercentageAuto> {
         (*self).inset()
+    }
+    #[inline(always)]
+    fn align_self(&self) -> Option<AlignSelf> {
+        (*self).align_self()
+    }
+    #[inline(always)]
+    fn justify_self(&self) -> Option<JustifySelf> {
+        (*self).justify_self()
     }
     #[inline(always)]
     fn size(&self) -> Size<Dimension> {
@@ -1078,10 +1108,6 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
     fn flex_shrink(&self) -> f32 {
         self.flex_shrink
     }
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        self.align_self
-    }
 }
 
 #[cfg(feature = "flexbox")]
@@ -1097,10 +1123,6 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
     #[inline(always)]
     fn flex_shrink(&self) -> f32 {
         (*self).flex_shrink()
-    }
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        (*self).align_self()
     }
 }
 
@@ -1311,14 +1333,6 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
         // TODO: Investigate eliminating clone
         self.grid_column.clone()
     }
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        self.align_self
-    }
-    #[inline(always)]
-    fn justify_self(&self) -> Option<AlignSelf> {
-        self.justify_self
-    }
 }
 
 #[cfg(feature = "grid")]
@@ -1330,14 +1344,6 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn grid_column(&self) -> Line<GridPlacement<Self::CustomIdent>> {
         (*self).grid_column()
-    }
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        (*self).align_self()
-    }
-    #[inline(always)]
-    fn justify_self(&self) -> Option<AlignSelf> {
-        (*self).justify_self()
     }
 }
 

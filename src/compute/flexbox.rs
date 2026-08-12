@@ -954,7 +954,7 @@ fn generate_anonymous_flex_items(
                 .inset()
                 .zip_size(constants.node_inner_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
+            let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_axis_relative(
                 child_writing_mode,
                 child_style.direction(),
                 constants.writing_mode,
@@ -2517,7 +2517,10 @@ fn align_flex_items_along_cross_axis(
         }
         // SelfStart/SelfEnd are resolved to Start/End against the item's own direction when
         // flex items are generated.
-        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
+        AlignItemsKeyword::SelfStart
+        | AlignItemsKeyword::SelfEnd
+        | AlignItemsKeyword::Left
+        | AlignItemsKeyword::Right => unreachable!(),
     }
 }
 
@@ -2890,8 +2893,11 @@ fn flex_cross_static_position_edge(align_self: AlignSelf, wrap_reverse: bool) ->
             }
         }
         AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => StaticPositionEdge::Start,
-        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => {
-            unreachable!("self-relative alignment is resolved before static-position generation")
+        AlignItemsKeyword::SelfStart
+        | AlignItemsKeyword::SelfEnd
+        | AlignItemsKeyword::Left
+        | AlignItemsKeyword::Right => {
+            unreachable!("axis-relative alignment is resolved before static-position generation")
         }
     }
 }
@@ -2983,7 +2989,7 @@ fn perform_absolute_layout_on_absolute_children(
         {
             continue;
         }
-        let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
+        let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_axis_relative(
             child_writing_mode,
             child_style.direction(),
             constants.writing_mode,

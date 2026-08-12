@@ -1,5 +1,5 @@
 //! Style types for Flexbox layout
-use super::{AlignContent, AlignItems, AlignSelf, CoreStyle, Dimension, JustifyContent, LengthPercentage, Style};
+use super::{AlignContent, AlignItems, CoreStyle, Dimension, JustifyContent, LengthPercentage, Style};
 use crate::geometry::Size;
 
 /// The set of styles required for a Flexbox container
@@ -56,13 +56,6 @@ pub trait FlexboxItemStyle: CoreStyle {
     #[inline(always)]
     fn flex_shrink(&self) -> f32 {
         Style::<Self::CustomIdent>::DEFAULT.flex_shrink
-    }
-
-    /// How this node should be aligned in the cross/block axis
-    /// Falls back to the parents [`AlignItems`] if not set
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        Style::<Self::CustomIdent>::DEFAULT.align_self
     }
 }
 

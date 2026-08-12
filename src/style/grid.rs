@@ -1,7 +1,7 @@
 //! Style types for CSS Grid layout
 use super::{
-    AlignContent, AlignItems, AlignSelf, CheapCloneStr, CompactLength, CoreStyle, Dimension, JustifyContent,
-    LengthPercentage, LengthPercentageAuto, Style,
+    AlignContent, AlignItems, CheapCloneStr, CompactLength, CoreStyle, Dimension, JustifyContent, LengthPercentage,
+    LengthPercentageAuto, Style,
 };
 use crate::compute::grid::{GridCoordinate, GridLine, OriginZeroLine, MAX_GRID_TRACKS};
 use crate::geometry::{AbstractAxis, Line, MinMax, Size};
@@ -276,19 +276,6 @@ pub trait GridItemStyle: CoreStyle {
     #[inline(always)]
     fn grid_column(&self) -> Line<GridPlacement<Self::CustomIdent>> {
         Default::default()
-    }
-
-    /// How this node should be aligned in the cross/block axis
-    /// Falls back to the parents [`AlignItems`] if not set
-    #[inline(always)]
-    fn align_self(&self) -> Option<AlignSelf> {
-        Style::<Self::CustomIdent>::DEFAULT.align_self
-    }
-    /// How this node should be aligned in the inline axis
-    /// Falls back to the parents [`super::JustifyItems`] if not set
-    #[inline(always)]
-    fn justify_self(&self) -> Option<AlignSelf> {
-        Style::<Self::CustomIdent>::DEFAULT.justify_self
     }
 
     /// Get a grid item's row or column placement depending on the axis passed

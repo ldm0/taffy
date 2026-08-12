@@ -17,8 +17,7 @@ use crate::geometry::{
     Rect, Size, StaticPositionEdge,
 };
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
-    Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, Overflow, Position,
 };
 use crate::tree::{
     AutoSizeBehavior, ChildLayoutInput, Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
@@ -143,7 +142,7 @@ pub(super) fn align_and_position_item(
     let scrollbar_width = style.scrollbar_width();
     let item_direction = style.direction();
     let inline_self = style.justify_self().map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -152,7 +151,7 @@ pub(super) fn align_and_position_item(
         )
     });
     let block_self = style.align_self().map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -162,7 +161,7 @@ pub(super) fn align_and_position_item(
     });
     let logical_container_alignment = InBothAbstractAxis {
         inline: container_alignment_styles.inline.map(|align| {
-            align.resolve_self_relative(
+            align.resolve_axis_relative(
                 item_writing_mode,
                 item_direction,
                 parent_writing_mode,
@@ -171,7 +170,7 @@ pub(super) fn align_and_position_item(
             )
         }),
         block: container_alignment_styles.block.map(|align| {
-            align.resolve_self_relative(
+            align.resolve_axis_relative(
                 item_writing_mode,
                 item_direction,
                 parent_writing_mode,
@@ -555,9 +554,12 @@ pub(super) fn static_position_for_grid_area(
             | AlignItemsKeyword::FlexStart
             | AlignItemsKeyword::Baseline
             | AlignItemsKeyword::Stretch => (start, StaticPositionEdge::Start),
-            // Self-relative values are resolved against the item's writing
-            // direction before this helper is called.
-            AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
+            // Axis-relative values are resolved against the item and container
+            // writing directions before this helper is called.
+            AlignItemsKeyword::SelfStart
+            | AlignItemsKeyword::SelfEnd
+            | AlignItemsKeyword::Left
+            | AlignItemsKeyword::Right => unreachable!(),
         }
     }
 
@@ -597,7 +599,7 @@ pub(super) fn out_of_flow_static_position(
     let style = tree.get_grid_child_style(node);
     let item_direction = style.direction();
     let inline_self = style.justify_self().map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -606,7 +608,7 @@ pub(super) fn out_of_flow_static_position(
         )
     });
     let block_self = style.align_self().map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -615,7 +617,7 @@ pub(super) fn out_of_flow_static_position(
         )
     });
     let inline_container_alignment = container_alignment_styles.inline.map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -624,7 +626,7 @@ pub(super) fn out_of_flow_static_position(
         )
     });
     let block_container_alignment = container_alignment_styles.block.map(|align| {
-        align.resolve_self_relative(
+        align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
@@ -693,9 +695,11 @@ pub(super) fn align_item_within_area(
         AlignItemsKeyword::Center => {
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }
-        // SelfStart/SelfEnd are resolved to Start/End against the item's own direction in
-        // `align_and_position_item`.
-        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
+        // Axis-relative values are resolved to Start/End in `align_and_position_item`.
+        AlignItemsKeyword::SelfStart
+        | AlignItemsKeyword::SelfEnd
+        | AlignItemsKeyword::Left
+        | AlignItemsKeyword::Right => unreachable!(),
     };
 
     let offset_within_area = if position == Position::Absolute {
