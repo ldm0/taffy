@@ -31,6 +31,7 @@ use super::common::aspect_ratio::{
 use super::common::intrinsic_size::{
     apply_contained_intrinsic_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
+use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -112,9 +113,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
 
-    let (mut min_size, mut max_size, mut preferred_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode
-    {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
+    let mut resolved_constraints = match inputs.sizing_mode {
+        SizingMode::ContentSize => ResolvedSizeConstraints::NONE,
         SizingMode::InherentSize => {
             let resolved = resolve_size_constraints(SizeConstraintInput {
                 size: raw_size
@@ -133,16 +133,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 aspect_ratio,
                 padding_border: padding_border_size,
             });
-            let resolved = apply_contained_intrinsic_size_constraints(
+            apply_contained_intrinsic_size_constraints(
                 resolved,
                 raw_size,
                 raw_min_size,
                 raw_max_size,
                 explicit_contained_outer_size,
-            );
-            (resolved.min_size, resolved.max_size, resolved.size, resolved.aspect_ratio_applied.width)
+            )
         }
     };
+    let preferred_inline_from_aspect_ratio = resolved_constraints.aspect_ratio_applied.width;
+    let mut min_size = resolved_constraints.min_size;
+    let mut max_size = resolved_constraints.max_size;
+    let mut preferred_size = resolved_constraints.size;
     let applied_aspect_ratio =
         run_mode == RunMode::ComputeSize && known_dimensions.width.is_none() && preferred_inline_from_aspect_ratio;
 
@@ -176,14 +179,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let grid_auto_columns = style.grid_auto_columns();
     let grid_auto_rows = style.grid_auto_rows();
 
-    let constrained_available_space = known_dimensions
-        .or(preferred_size)
+    let outer_node_size = resolve_used_size(known_dimensions, preferred_size, min_size, max_size, padding_border_size);
+    let constrained_available_space = outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
-        .unwrap_or(available_space)
-        .maybe_clamp(min_size, max_size)
-        .maybe_max(padding_border_size);
+        .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
 
     let logical_available_space = flow.to_logical_size(available_space);
+    let logical_known_dimensions = flow.to_logical_size(known_dimensions);
     let logical_constrained_available_space = flow.to_logical_size(constrained_available_space);
     let mut available_grid_space = LogicalSize {
         inline_size: logical_constrained_available_space
@@ -193,9 +195,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .block_size
             .map_definite_value(|space| space - logical_content_box_inset.block_size),
     };
-
-    let outer_node_size =
-        known_dimensions.or(preferred_size).maybe_clamp(min_size, max_size).maybe_max(padding_border_size);
 
     // The track sizing algorithm operates on the grid container's content box, so the min/max sizes
     // (which are border-box sizes) need converting to content-box sizes before being passed to it
@@ -256,11 +255,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // This is very similar to the inner_node_size except if the inner_node_size is not definite but the node
     // has a min- or max- size style then that will be used in it's place.
-    let auto_fit_container_size = flow
-        .to_logical_size(
-            outer_node_size.or(max_size).or(min_size).maybe_clamp(min_size, max_size).maybe_max(padding_border_size),
-        )
-        .maybe_sub(logical_content_box_inset);
+    let auto_fit_fallback =
+        max_size.or(min_size).maybe_clamp(min_size, max_size).maybe_max(padding_border_size.map(Some));
+    let auto_fit_container_size =
+        flow.to_logical_size(outer_node_size.or(auto_fit_fallback)).maybe_sub(logical_content_box_inset);
 
     // If the grid container has a definite size or max size in the relevant axis:
     //   - then the number of repetitions is the largest possible positive integer that does not cause the grid to overflow the content
@@ -453,13 +451,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .then_some(no_children_track_size.block_size + logical_content_box_inset.block_size),
     });
     let intrinsic_contained_outer_size = explicit_contained_outer_size.or(derived_contained_outer_size);
+    resolved_constraints.size = preferred_size;
+    resolved_constraints.min_size = min_size;
+    resolved_constraints.max_size = max_size;
     let contained_constraints = apply_contained_intrinsic_size_constraints(
-        ResolvedSizeConstraints {
-            size: preferred_size,
-            aspect_ratio_applied: Size { width: false, height: false },
-            min_size,
-            max_size,
-        },
+        resolved_constraints,
         raw_size,
         raw_min_size,
         raw_max_size,
@@ -474,9 +470,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let inner_min_size = logical_min_size.maybe_sub(logical_content_box_inset);
     let inner_max_size = logical_max_size.maybe_sub(logical_content_box_inset);
     let logical_intrinsic_contained_outer_size = flow.to_logical_size(intrinsic_contained_outer_size);
-    let content_based_block_size = content_based_block_size.with_intrinsic_border_box_override(
-        logical_containment_axes.block_size.then_some(logical_intrinsic_contained_outer_size.block_size).flatten(),
-    );
+    let content_based_block_size = content_based_block_size
+        .with_intrinsic_border_box_override(
+            logical_containment_axes.block_size.then_some(logical_intrinsic_contained_outer_size.block_size).flatten(),
+        )
+        .with_resolved_constraints(contained_constraints.block_axis_constraints(writing_mode));
 
     // Once the contained no-children size has been resolved it becomes the
     // available size for the real track pass. Items remain present in that
@@ -561,11 +559,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // 6. Compute container size
     let numeric_resolved_style_size =
         flow.to_logical_size(known_dimensions.or(preferred_size).or(contained_outer_size));
-    let container_inline_border_box = numeric_resolved_style_size
-        .inline_size
-        .unwrap_or(initial_column_sum + logical_content_box_inset.inline_size)
-        .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size)
-        .max(logical_padding_border_size.inline_size);
+    let container_inline_border_box = resolve_used_axis(
+        logical_known_dimensions.inline_size,
+        numeric_resolved_style_size.inline_size.or(Some(initial_column_sum + logical_content_box_inset.inline_size)),
+        logical_min_size.inline_size,
+        logical_max_size.inline_size,
+        logical_padding_border_size.inline_size,
+    )
+    .unwrap();
     let intrinsic_block_constraints = if needs_intrinsic_block_size {
         content_based_block_size.resolve(
             writing_mode,
@@ -575,11 +576,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     } else {
         Default::default()
     }
-    .resolve_against(
-        numeric_resolved_style_size.block_size,
-        logical_min_size.block_size,
-        logical_max_size.block_size,
-    );
+    .resolve_against(numeric_resolved_style_size.block_size, content_based_block_size.resolved_constraints());
     let resolved_style_size = LogicalSize {
         inline_size: numeric_resolved_style_size.inline_size,
         block_size: intrinsic_block_constraints.preferred,
@@ -590,11 +587,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         LogicalSize { inline_size: logical_max_size.inline_size, block_size: intrinsic_block_constraints.max };
     let mut container_border_box = LogicalSize {
         inline_size: container_inline_border_box,
-        block_size: resolved_style_size
-            .get(AbstractAxis::Block)
-            .unwrap_or(initial_row_sum + logical_content_box_inset.block_size)
-            .maybe_clamp(used_logical_min_size.block_size, used_logical_max_size.block_size)
-            .max(logical_padding_border_size.block_size),
+        block_size: resolve_used_axis(
+            logical_known_dimensions.block_size,
+            resolved_style_size
+                .get(AbstractAxis::Block)
+                .or(Some(initial_row_sum + logical_content_box_inset.block_size)),
+            used_logical_min_size.block_size,
+            used_logical_max_size.block_size,
+            logical_padding_border_size.block_size,
+        )
+        .unwrap(),
     };
     let mut container_content_box = LogicalSize {
         inline_size: f32_max(0.0, container_border_box.inline_size - logical_content_box_inset.inline_size),
@@ -776,11 +778,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         let final_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
 
         if intrinsic_column_contribution_changed && !has_percentage_column {
-            container_border_box.inline_size = resolved_style_size
-                .get(AbstractAxis::Inline)
-                .unwrap_or(final_column_sum + logical_content_box_inset.inline_size)
-                .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size)
-                .max(logical_padding_border_size.inline_size);
+            container_border_box.inline_size = resolve_used_axis(
+                logical_known_dimensions.inline_size,
+                resolved_style_size
+                    .get(AbstractAxis::Inline)
+                    .or(Some(final_column_sum + logical_content_box_inset.inline_size)),
+                logical_min_size.inline_size,
+                logical_max_size.inline_size,
+                logical_padding_border_size.inline_size,
+            )
+            .unwrap();
             container_content_box.inline_size =
                 f32_max(0.0, container_border_box.inline_size - logical_content_box_inset.inline_size);
         }
@@ -795,16 +802,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             } else {
                 Default::default()
             }
-            .resolve_against(
-                numeric_resolved_style_size.block_size,
-                logical_min_size.block_size,
-                logical_max_size.block_size,
-            );
-            container_border_box.block_size = intrinsic_block_constraints
-                .preferred
-                .unwrap_or(final_row_sum + logical_content_box_inset.block_size)
-                .maybe_clamp(intrinsic_block_constraints.min, intrinsic_block_constraints.max)
-                .max(logical_padding_border_size.block_size);
+            .resolve_against(numeric_resolved_style_size.block_size, content_based_block_size.resolved_constraints());
+            container_border_box.block_size = resolve_used_axis(
+                logical_known_dimensions.block_size,
+                intrinsic_block_constraints.preferred.or(Some(final_row_sum + logical_content_box_inset.block_size)),
+                intrinsic_block_constraints.min,
+                intrinsic_block_constraints.max,
+                logical_padding_border_size.block_size,
+            )
+            .unwrap();
             container_content_box.block_size =
                 f32_max(0.0, container_border_box.block_size - logical_content_box_inset.block_size);
         }

@@ -9,8 +9,8 @@ use crate::compute::common::aspect_ratio::{
 };
 use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
 use crate::compute::common::intrinsic_size::{
-    measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
-    ContentBasedBlockSize,
+    measure_aspect_ratio_automatic_minimum, measure_intrinsic_block_size_constraints,
+    resolve_intrinsic_width_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
 use crate::compute::common::stretch::resolve_stretch_size_constraints;
 use crate::geometry::{
@@ -339,7 +339,7 @@ pub(super) fn align_and_position_item(
     } else {
         AutoSizeBehavior::FitContent
     };
-    let resolved = resolve_size_constraints(SizeConstraintInput {
+    let mut resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
         min_size,
         max_size,
@@ -350,7 +350,17 @@ pub(super) fn align_and_position_item(
         aspect_ratio,
         padding_border: padding_border_size,
     });
-    let authored_min_size = resolved.min_size;
+    let inline_axis = item_writing_mode.inline_axis();
+    let automatic_inline_minimum = measure_aspect_ratio_automatic_minimum(
+        tree,
+        node,
+        LayoutInput { axis: inline_axis.into(), ..intrinsic_inputs },
+        inline_axis,
+        padding_border_size,
+        resolved,
+    );
+    resolved.apply_automatic_minimum(inline_axis, automatic_inline_minimum.value);
+    let block_axis_constraints = resolved.block_axis_constraints(item_writing_mode);
     inherent_size = resolved.size;
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
@@ -425,7 +435,7 @@ pub(super) fn align_and_position_item(
     let mut resolved_size = Size { width, height };
     intrinsic_block_constraints.apply_to_block_axis(
         item_writing_mode,
-        authored_min_size,
+        block_axis_constraints,
         padding_border_size,
         &mut resolved_size,
         &mut min_size,
