@@ -65,6 +65,9 @@ enum UsedFlexBasis {
 enum FlexSizingPhase {
     /// Ordinary used-size layout or intrinsic sizing for another flex flow.
     Normal,
+    /// Intrinsic main sizing for a row flex container under the given
+    /// min-/max-content constraint.
+    RowIntrinsic(AvailableSpace),
     /// Intrinsic inline sizing for a wrapped column under the given
     /// min-/max-content constraint.
     ColumnWrapIntrinsic(AvailableSpace),
@@ -876,13 +879,15 @@ fn compute_constants(
         && inputs.axis.contains(writing_mode.block_axis())
         && content_based_block_size.requires_resolution();
     let inline_available_space = inputs.available_space.get_abs(writing_mode.inline_axis());
-    let sizing_phase = if sizing_mode == SizingMode::ContentSize
+    let is_intrinsic_inline_probe = sizing_mode == SizingMode::ContentSize
         && inputs.sizing_purpose == SizingPurpose::IntrinsicContribution
         && inputs.axis.contains(writing_mode.inline_axis())
-        && main_axis_is_block
-        && is_wrap
-        && matches!(inline_available_space, AvailableSpace::MinContent | AvailableSpace::MaxContent)
-    {
+        && matches!(inline_available_space, AvailableSpace::MinContent | AvailableSpace::MaxContent);
+    let sizing_phase = if !is_intrinsic_inline_probe {
+        FlexSizingPhase::Normal
+    } else if main_axis_is_inline {
+        FlexSizingPhase::RowIntrinsic(inline_available_space)
+    } else if is_wrap {
         FlexSizingPhase::ColumnWrapIntrinsic(inline_available_space)
     } else {
         FlexSizingPhase::Normal
@@ -1395,17 +1400,17 @@ fn determine_flex_base_size(
             //    is auto and not definite, in this calculation use fit-content as the
             //    flex item’s cross size. The flex base size is the item’s resulting main size.
 
-            let child_available_space = Size::MAX_CONTENT
-                .with_main(
-                    dir,
-                    // Map AvailableSpace::Definite to AvailableSpace::MaxContent
-                    if available_space.main(dir) == AvailableSpace::MinContent {
-                        AvailableSpace::MinContent
-                    } else {
-                        AvailableSpace::MaxContent
-                    },
-                )
-                .with_cross(dir, cross_axis_available_space);
+            let content_constraint = match constants.sizing_phase {
+                // Row intrinsic sizing constructs each content-based flex base
+                // in an indefinite flex-basis space. Its content fallback is
+                // therefore max-content even while the container contribution
+                // itself is being queried under a min-content constraint.
+                FlexSizingPhase::RowIntrinsic(_) => AvailableSpace::MaxContent,
+                _ if available_space.main(dir) == AvailableSpace::MinContent => AvailableSpace::MinContent,
+                _ => AvailableSpace::MaxContent,
+            };
+            let child_available_space =
+                Size::MAX_CONTENT.with_main(dir, content_constraint).with_cross(dir, cross_axis_available_space);
 
             debug_log!("COMPUTE CHILD BASE SIZE:");
             let measured = tree.measure_child_size_with_metadata(
@@ -1587,6 +1592,125 @@ fn collect_flex_lines<'a>(
     }
 }
 
+/// Measure one flex item's content size in the container's main axis without
+/// letting the item's authored preferred main size replace that content.
+fn measure_flex_item_content_main_size(
+    tree: &mut impl LayoutFlexboxContainer,
+    item: &mut FlexItem,
+    constraint: AvailableSpace,
+    available_space: Size<AvailableSpace>,
+    constants: &AlgoConstants,
+) -> f32 {
+    let dir = constants.dir;
+    let cross_parent_size = constants.node_inner_size.cross(dir);
+    let cross_margin_sum = item.margin.cross_axis_sum(dir);
+    let cross_available_space = resolve_cross_axis_available_space(
+        available_space.cross(dir),
+        cross_parent_size,
+        item.min_size_with_transfer.cross(dir).maybe_add(cross_margin_sum),
+        item.max_size_with_transfer.cross(dir).maybe_add(cross_margin_sum),
+    );
+    let mut known_dimensions = item.size.with_main(dir, None);
+    known_dimensions.set_cross(
+        dir,
+        known_dimensions
+            .cross(dir)
+            .maybe_clamp(item.min_size_with_transfer.cross(dir), item.max_size_with_transfer.cross(dir)),
+    );
+    if item.align_self == AlignSelf::STRETCH
+        && !item.margin_is_auto.cross_start(dir)
+        && !item.margin_is_auto.cross_end(dir)
+        && known_dimensions.cross(dir).is_none()
+    {
+        known_dimensions.set_cross(dir, cross_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
+    }
+
+    let padding_border = (item.padding + item.border).sum_axes();
+    if let Some(ratio_main_size) = known_dimensions
+        .maybe_apply_aspect_ratio_with_box_sizing(item.aspect_ratio, BoxSizing::BorderBox, padding_border)
+        .main(dir)
+    {
+        return ratio_main_size;
+    }
+
+    let measured = tree.measure_child_size_with_metadata(
+        item.node,
+        ChildLayoutInput::new(
+            known_dimensions,
+            constants.node_inner_size,
+            constants.writing_mode,
+            Size::MAX_CONTENT.with_main(dir, constraint).with_cross(dir, cross_available_space),
+            SizingMode::ContentSize,
+            Line::FALSE,
+        ),
+        dir.main_axis().into(),
+    );
+    item.depends_on_block_constraints |= measured.depends_on_block_constraints;
+    measured.size.get_abs(dir.main_axis())
+}
+
+/// Resolve a flex item's intrinsic main-size contribution.
+///
+/// The content size and non-automatic preferred size establish the initial
+/// contribution. Flexibility then caps/floors it by the flex base size before
+/// the used min/max constraints are applied. All intermediate values are
+/// border-box sizes; the outer margin is added exactly once at the end.
+fn flex_item_intrinsic_main_contribution(
+    tree: &mut impl LayoutFlexboxContainer,
+    item: &mut FlexItem,
+    constraint: AvailableSpace,
+    available_space: Size<AvailableSpace>,
+    constants: &AlgoConstants,
+) -> f32 {
+    let dir = constants.dir;
+    let content_size = measure_flex_item_content_main_size(tree, item, constraint, available_space, constants);
+    let preferred_size_is_auto = tree.get_flexbox_child_style(item.node).size().main(dir).is_auto();
+    let preferred_size = if preferred_size_is_auto { None } else { item.authored_size.main(dir) };
+    let padding_border = (item.padding + item.border).main_axis_sum(dir);
+    let mut contribution = content_size.maybe_max(preferred_size).max(padding_border);
+
+    if item.flex_grow == 0.0 {
+        contribution = contribution.min(item.flex_basis);
+    }
+    if item.flex_shrink == 0.0 {
+        contribution = contribution.max(item.flex_basis);
+    }
+
+    let used_minimum =
+        item.resolved_minimum_main_size.maybe_max(item.min_size_with_transfer.main(dir)).max(padding_border);
+    contribution =
+        contribution.maybe_clamp(Some(used_minimum), item.max_size_with_transfer.main(dir)).max(padding_border);
+    contribution + item.margin.main_axis_sum(dir)
+}
+
+/// Compute the web-compatible intrinsic main size of a row flex container.
+fn determine_row_intrinsic_main_size(
+    tree: &mut impl LayoutFlexboxContainer,
+    constraint: AvailableSpace,
+    available_space: Size<AvailableSpace>,
+    lines: &mut [FlexLine<'_>],
+    constants: &AlgoConstants,
+) -> f32 {
+    let mut contribution_sum = 0.0;
+    let mut largest_contribution: f32 = 0.0;
+    let mut item_count = 0;
+    for line in lines {
+        for item in line.items.iter_mut() {
+            let contribution =
+                flex_item_intrinsic_main_contribution(tree, item, constraint, available_space, constants);
+            contribution_sum += contribution;
+            largest_contribution = largest_contribution.max(contribution);
+            item_count += 1;
+        }
+    }
+
+    if constraint == AvailableSpace::MinContent && constants.is_wrap {
+        largest_contribution
+    } else {
+        contribution_sum + sum_axis_gaps(constants.gap.main(constants.dir), item_count)
+    }
+}
+
 /// Determine the container's main size (if not already known)
 fn determine_container_main_size(
     tree: &mut impl LayoutFlexboxContainer,
@@ -1599,7 +1723,15 @@ fn determine_container_main_size(
 
     let specified_outer_main_size = constants.node_outer_size.main(constants.dir);
     let needs_intrinsic_block_size = constants.main_axis_is_block && constants.resolve_content_based_block_size;
-    let intrinsic_outer_main_size = if specified_outer_main_size.is_none() || needs_intrinsic_block_size {
+    let needs_intrinsic_main_size = specified_outer_main_size.is_none() || needs_intrinsic_block_size;
+    let intrinsic_outer_main_size = if !needs_intrinsic_main_size {
+        None
+    } else if let FlexSizingPhase::RowIntrinsic(constraint) = constants.sizing_phase {
+        Some(
+            determine_row_intrinsic_main_size(tree, constraint, available_space, lines, constants)
+                + main_content_box_inset,
+        )
+    } else {
         Some(match available_space.main(dir) {
             AvailableSpace::Definite(main_axis_available_space) => {
                 let longest_line_length: f32 = lines
@@ -1821,8 +1953,6 @@ fn determine_container_main_size(
                 main_size + main_content_box_inset
             }
         })
-    } else {
-        None
     };
 
     let intrinsic_constraints = if constants.main_axis_is_block && constants.resolve_content_based_block_size {
