@@ -52,3 +52,50 @@ fn row_rerun_refreshes_every_intrinsic_item_before_track_sizing() {
     assert_eq!(tree.layout(second).unwrap().size, Size { width: 20.0, height: 20.0 });
     assert_eq!(tree.layout(second).unwrap().location.y, 20.0);
 }
+
+#[test]
+fn percentage_row_rerun_redistributes_spanning_contribution() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let spanning = tree
+        .new_leaf(Style {
+            size: Size { width: auto(), height: length(100.0) },
+            grid_row: Line { start: line(1), end: line(4) },
+            grid_column: Line { start: line(2), end: line(3) },
+            ..Default::default()
+        })
+        .unwrap();
+    let first = tree
+        .new_leaf(Style {
+            grid_row: Line { start: line(1), end: line(2) },
+            grid_column: Line { start: line(1), end: line(2) },
+            ..Default::default()
+        })
+        .unwrap();
+    let last = tree
+        .new_leaf(Style {
+            grid_row: Line { start: line(3), end: line(4) },
+            grid_column: Line { start: line(1), end: line(2) },
+            ..Default::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                align_content: Some(AlignContent::START),
+                grid_template_rows: vec![auto(), percent(0.1), auto()],
+                ..Default::default()
+            },
+            &[spanning, first, last],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size.height, 100.0);
+    assert_eq!(tree.layout(first).unwrap().size.height, 45.0);
+    assert_eq!(tree.layout(last).unwrap().location.y, 55.0);
+    assert_eq!(tree.layout(last).unwrap().size.height, 45.0);
+}

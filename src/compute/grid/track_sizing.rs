@@ -296,8 +296,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
 ) {
     // 11.4 Initialise Track sizes
     // Initialize each track’s base size and growth limit.
-    let percentage_basis = inner_node_size.get(axis).or(axis_min_size);
-    initialize_track_sizes(tree, axis_tracks, percentage_basis);
+    initialize_track_sizes(tree, axis_tracks, inner_node_size.get(axis));
 
     // 11.5.1 Shim item baselines
     if has_baseline_aligned_item {
