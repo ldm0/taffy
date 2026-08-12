@@ -162,6 +162,30 @@ impl TryFrom<RequestedAxis> for AbsoluteAxis {
     }
 }
 
+/// State owned by one layout pass rather than by any individual constraint
+/// space.
+///
+/// This mirrors Blink's `LayoutView`: nodes may consult the physical initial
+/// containing block while constructing an orthogonal child constraint space,
+/// but ordinary block/flex/grid inputs do not carry document-global state.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct LayoutEnvironment {
+    /// Physical size of the initial containing block.
+    pub initial_containing_block_size: Size<Option<f32>>,
+}
+
+impl LayoutEnvironment {
+    /// An environment without a finite initial containing block.
+    pub const NONE: Self = Self { initial_containing_block_size: Size::NONE };
+}
+
+impl Default for LayoutEnvironment {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// A struct containing the inputs constraints/hints for laying out a node, which are passed in by the parent
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -248,6 +272,48 @@ impl LayoutInput {
             requested_axis: self.axis,
             block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
+    }
+
+    /// Apply the orthogonal-flow inline fallback at a parent-to-child boundary.
+    ///
+    /// The input remains physical until this operation because the fallback
+    /// axis is shared by the parent's block axis and the orthogonal child's
+    /// inline axis. A definite immediate containing-block size wins; otherwise
+    /// the layout environment's initial containing block supplies the CSS
+    /// Writing Modes fallback.
+    ///
+    /// Custom [`LayoutPartialTree`](crate::tree::LayoutPartialTree)
+    /// implementations should call this at their child dispatch seam. The
+    /// operation is idempotent, allowing a specialized dispatcher to enforce
+    /// the same invariant safely.
+    #[inline(always)]
+    pub fn for_child_writing_mode(mut self, child_writing_mode: WritingMode, environment: LayoutEnvironment) -> Self {
+        if !child_writing_mode.is_orthogonal_to(self.parent_writing_mode) {
+            return self;
+        }
+
+        let physical_inline_axis = child_writing_mode.inline_axis();
+        let immediate_size = self.parent_size.get_abs(physical_inline_axis);
+        let fallback_size = immediate_size.or(environment.initial_containing_block_size.get_abs(physical_inline_axis));
+        let Some(fallback_size) = fallback_size else {
+            return self;
+        };
+
+        let available_inline_size = self.available_space.get_abs(physical_inline_axis);
+        if !matches!(available_inline_size, AvailableSpace::Definite(_)) {
+            match physical_inline_axis {
+                AbsoluteAxis::Horizontal => self.available_space.width = AvailableSpace::Definite(fallback_size),
+                AbsoluteAxis::Vertical => self.available_space.height = AvailableSpace::Definite(fallback_size),
+            }
+        }
+        if immediate_size.is_none() {
+            match physical_inline_axis {
+                AbsoluteAxis::Horizontal => self.parent_size.width = Some(fallback_size),
+                AbsoluteAxis::Vertical => self.parent_size.height = Some(fallback_size),
+            }
+        }
+
+        self
     }
 }
 
