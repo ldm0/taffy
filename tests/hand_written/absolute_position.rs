@@ -425,4 +425,284 @@ mod absolute_position {
         assert_eq!(layout.location.y, -10.0);
         assert_eq!((layout.margin.top, layout.margin.bottom), (-10.0, -10.0));
     }
+
+    fn layout_absolute_self_alignment(
+        display: Display,
+        justify_self: AlignSelf,
+        align_self: AlignSelf,
+        child_direction: Direction,
+        margin: Rect<LengthPercentageAuto>,
+        intrinsic_size: Size<f32>,
+    ) -> Layout {
+        layout_absolute_self_alignment_in_writing_modes(
+            display,
+            justify_self,
+            align_self,
+            Direction::Ltr,
+            taffy::WritingMode::HorizontalTb,
+            child_direction,
+            taffy::WritingMode::HorizontalTb,
+            margin,
+            intrinsic_size,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout_absolute_self_alignment_in_writing_modes(
+        display: Display,
+        justify_self: AlignSelf,
+        align_self: AlignSelf,
+        container_direction: Direction,
+        container_writing_mode: taffy::WritingMode,
+        child_direction: Direction,
+        child_writing_mode: taffy::WritingMode,
+        margin: Rect<LengthPercentageAuto>,
+        intrinsic_size: Size<f32>,
+    ) -> Layout {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let intrinsic_content =
+            tree.new_leaf(Style { size: intrinsic_size.map(length), ..Default::default() }).unwrap();
+        let absolute = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    position: Position::Absolute,
+                    direction: child_direction,
+                    inset: Rect::length(0.0),
+                    margin,
+                    justify_self: Some(justify_self),
+                    align_self: Some(align_self),
+                    ..Default::default()
+                },
+                &[intrinsic_content],
+            )
+            .unwrap();
+        tree.set_writing_mode(absolute, child_writing_mode).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display,
+                    direction: container_direction,
+                    size: Size::from_lengths(40.0, 40.0),
+                    ..Default::default()
+                },
+                &[absolute],
+            )
+            .unwrap();
+        tree.set_writing_mode(root, container_writing_mode).unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        *tree.layout(absolute).unwrap()
+    }
+
+    #[test]
+    fn absolute_self_alignment_controls_auto_size_and_position_in_every_formatting_context() {
+        let cases = [
+            (AlignSelf::START, Point { x: 0.0, y: 0.0 }, Size { width: 20.0, height: 20.0 }),
+            (AlignSelf::CENTER, Point { x: 10.0, y: 10.0 }, Size { width: 20.0, height: 20.0 }),
+            (AlignSelf::END, Point { x: 20.0, y: 20.0 }, Size { width: 20.0, height: 20.0 }),
+            (AlignSelf::STRETCH, Point { x: 0.0, y: 0.0 }, Size { width: 40.0, height: 40.0 }),
+        ];
+
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            for (alignment, expected_location, expected_size) in cases {
+                let layout = layout_absolute_self_alignment(
+                    display,
+                    alignment,
+                    alignment,
+                    Direction::Ltr,
+                    Rect::zero(),
+                    Size { width: 20.0, height: 20.0 },
+                );
+                assert_eq!(layout.location, expected_location, "{display:?} {alignment:?}");
+                assert_eq!(layout.size, expected_size, "{display:?} {alignment:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_self_relative_alignment_uses_the_positioned_boxes_start_side() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = layout_absolute_self_alignment(
+                display,
+                AlignSelf::SELF_START,
+                AlignSelf::START,
+                Direction::Rtl,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(layout.location, Point { x: 20.0, y: 0.0 }, "{display:?}");
+            assert_eq!(layout.size, Size { width: 20.0, height: 20.0 }, "{display:?}");
+        }
+    }
+
+    #[test]
+    fn orthogonal_absolute_self_alignment_maps_container_and_self_start_sides_separately() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let container_relative = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::START,
+                AlignSelf::START,
+                Direction::Rtl,
+                taffy::WritingMode::VerticalRl,
+                Direction::Ltr,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(container_relative.location, Point { x: 20.0, y: 20.0 }, "{display:?} container start");
+
+            let self_relative = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::SELF_START,
+                AlignSelf::SELF_START,
+                Direction::Rtl,
+                taffy::WritingMode::VerticalRl,
+                Direction::Ltr,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(self_relative.location, Point { x: 0.0, y: 0.0 }, "{display:?} self start");
+
+            let rtl_self_relative = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::SELF_START,
+                AlignSelf::SELF_START,
+                Direction::Rtl,
+                taffy::WritingMode::VerticalRl,
+                Direction::Rtl,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(rtl_self_relative.location, Point { x: 20.0, y: 0.0 }, "{display:?} rtl self start");
+        }
+    }
+
+    #[test]
+    fn absolute_physical_alignment_does_not_follow_direction_or_writing_mode() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let left = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::LEFT,
+                AlignSelf::START,
+                Direction::Rtl,
+                taffy::WritingMode::HorizontalTb,
+                Direction::Ltr,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            let right = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::RIGHT,
+                AlignSelf::START,
+                Direction::Rtl,
+                taffy::WritingMode::HorizontalTb,
+                Direction::Rtl,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(left.location, Point { x: 0.0, y: 0.0 }, "{display:?} left");
+            assert_eq!(right.location, Point { x: 20.0, y: 0.0 }, "{display:?} right");
+
+            let orthogonal_left = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::LEFT,
+                AlignSelf::SELF_START,
+                Direction::Rtl,
+                taffy::WritingMode::VerticalRl,
+                Direction::Ltr,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            let orthogonal_right = layout_absolute_self_alignment_in_writing_modes(
+                display,
+                AlignSelf::RIGHT,
+                AlignSelf::SELF_START,
+                Direction::Rtl,
+                taffy::WritingMode::VerticalRl,
+                Direction::Ltr,
+                taffy::WritingMode::HorizontalTb,
+                Rect::zero(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(orthogonal_left.location, Point { x: 0.0, y: 0.0 }, "{display:?} orthogonal left");
+            assert_eq!(orthogonal_right.location, Point { x: 0.0, y: 20.0 }, "{display:?} orthogonal right");
+        }
+    }
+
+    #[test]
+    fn absolute_safe_alignment_falls_back_to_the_containing_start_side_on_overflow() {
+        let safe_end = AlignSelf { keyword: AlignItemsKeyword::End, safety: AlignmentSafety::Safe };
+        let unsafe_end = AlignSelf::UNSAFE_END;
+
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let safe = layout_absolute_self_alignment(
+                display,
+                AlignSelf::START,
+                safe_end,
+                Direction::Ltr,
+                Rect::length(10.0),
+                Size { width: 30.0, height: 30.0 },
+            );
+            assert_eq!(safe.size.height, 30.0, "{display:?} safe size");
+            assert_eq!(safe.location.y, 10.0, "{display:?} safe");
+
+            let unsafe_layout = layout_absolute_self_alignment(
+                display,
+                AlignSelf::START,
+                unsafe_end,
+                Direction::Ltr,
+                Rect::length(10.0),
+                Size { width: 30.0, height: 30.0 },
+            );
+            assert_eq!(unsafe_layout.location.y, 0.0, "{display:?} unsafe");
+        }
+    }
+
+    #[test]
+    fn absolute_default_overflow_is_distinct_from_authored_unsafe_alignment() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let default_layout = layout_absolute_self_alignment(
+                display,
+                AlignSelf::START,
+                AlignSelf::END,
+                Direction::Ltr,
+                Rect::length(10.0),
+                Size { width: 30.0, height: 30.0 },
+            );
+            let unsafe_layout = layout_absolute_self_alignment(
+                display,
+                AlignSelf::START,
+                AlignSelf::UNSAFE_END,
+                Direction::Ltr,
+                Rect::length(10.0),
+                Size { width: 30.0, height: 30.0 },
+            );
+
+            assert_eq!(default_layout.location.y, 10.0, "{display:?} default");
+            assert_eq!(unsafe_layout.location.y, 0.0, "{display:?} unsafe");
+        }
+    }
+
+    #[test]
+    fn absolute_auto_margins_take_precedence_over_self_alignment() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = layout_absolute_self_alignment(
+                display,
+                AlignSelf::END,
+                AlignSelf::END,
+                Direction::Ltr,
+                Rect::auto(),
+                Size { width: 20.0, height: 20.0 },
+            );
+            assert_eq!(layout.location, Point { x: 10.0, y: 10.0 }, "{display:?}");
+            assert_eq!(layout.margin, Rect::length(10.0), "{display:?}");
+        }
+    }
 }
