@@ -3,7 +3,7 @@
 use crate::geometry::Size;
 use crate::style::{AvailableSpace, Overflow, Position, SizeContainment};
 use crate::tree::RunMode;
-use crate::tree::{LayoutInput, LayoutOutput, SizingMode};
+use crate::tree::{LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, SizingMode};
 use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::MaybeMath;
@@ -14,7 +14,9 @@ use core::unreachable;
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
-use super::common::intrinsic_size::{apply_contained_intrinsic_size_constraints, ResolvedNodeSizing};
+use super::common::intrinsic_size::{
+    apply_contained_intrinsic_size_constraints, resolve_leaf_node_sizing, ResolvedNodeSizing,
+};
 use super::common::stretch::resolve_stretch_size_constraints;
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
@@ -32,10 +34,6 @@ pub struct LeafSizingContext {
     pub aspect_ratio: ResolvedAspectRatio,
     /// Used physical size-containment state.
     pub size_containment: SizeContainment,
-    /// Child-owned initial sizing resolved at the tree cache-miss boundary.
-    /// When absent, the standalone leaf API resolves numeric style values
-    /// locally; tree adapters provide it when intrinsic keywords are enabled.
-    pub node_sizing: Option<ResolvedNodeSizing>,
 }
 
 impl LeafSizingContext {
@@ -46,15 +44,48 @@ impl LeafSizingContext {
         aspect_ratio: ResolvedAspectRatio,
         size_containment: SizeContainment,
     ) -> Self {
-        Self { writing_mode, aspect_ratio, size_containment, node_sizing: None }
+        Self { writing_mode, aspect_ratio, size_containment }
     }
+}
 
-    /// Attach initial node sizing without changing the parent constraint space.
-    #[inline(always)]
-    pub const fn with_node_sizing(mut self, node_sizing: ResolvedNodeSizing) -> Self {
-        self.node_sizing = Some(node_sizing);
-        self
-    }
+/// Compute a leaf through a layout tree's complete node-sizing pipeline.
+///
+/// The tree owns intrinsic-keyword measurement and preferred-size resolution;
+/// the embedding adapter supplies only an immutable style snapshot and its
+/// content measurer. Keeping [`ResolvedNodeSizing`] inside this operation makes
+/// the raw [`LayoutInput`] the sole cache key and prevents adapters from
+/// pre-resolving child-owned geometry outside Taffy's cache-miss boundary.
+///
+/// `style` must be a snapshot of the style returned by
+/// [`LayoutPartialTree::get_core_container_style`] for `node_id`. A snapshot is
+/// explicit because content measurement may mutably re-enter `tree` after
+/// node sizing has released its style borrow.
+pub fn compute_leaf_layout_with_tree<Tree, MeasureFunction>(
+    tree: &mut Tree,
+    node_id: NodeId,
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    Tree: LayoutPartialTree,
+    MeasureFunction: FnOnce(&mut Tree, Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    let sizing_context = LeafSizingContext::new(
+        tree.get_writing_mode(node_id),
+        tree.get_resolved_aspect_ratio(node_id),
+        tree.get_size_containment(node_id),
+    );
+    let node_sizing = resolve_leaf_node_sizing(tree, node_id, inputs);
+    compute_leaf_layout_with_resolved_node_sizing(
+        inputs,
+        style,
+        sizing_context,
+        Some(node_sizing),
+        resolve_calc_value,
+        |known_dimensions, available_space| measure_function(tree, known_dimensions, available_space),
+    )
 }
 
 /// Compute the size of a leaf node (node with no children)
@@ -143,8 +174,29 @@ pub fn compute_leaf_layout_with_sizing_context<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    let LeafSizingContext { writing_mode, aspect_ratio: resolved_aspect_ratio, size_containment, node_sizing } =
-        sizing_context;
+    compute_leaf_layout_with_resolved_node_sizing(
+        inputs,
+        style,
+        sizing_context,
+        None,
+        resolve_calc_value,
+        measure_function,
+    )
+}
+
+/// Shared leaf implementation after an optional tree-owned sizing pass.
+fn compute_leaf_layout_with_resolved_node_sizing<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    sizing_context: LeafSizingContext,
+    node_sizing: Option<ResolvedNodeSizing>,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    let LeafSizingContext { writing_mode, aspect_ratio: resolved_aspect_ratio, size_containment } = sizing_context;
     let node_sizing_dependency = node_sizing.is_some_and(|sizing| sizing.depends_on_block_constraints);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;

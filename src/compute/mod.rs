@@ -41,7 +41,7 @@ pub(crate) mod grid;
 
 pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
-    compute_leaf_layout_with_sizing_context, LeafSizingContext,
+    compute_leaf_layout_with_sizing_context, compute_leaf_layout_with_tree, LeafSizingContext,
 };
 
 pub use replaced::{compute_replaced_layout, ReplacedSizingContext};
@@ -80,7 +80,7 @@ use crate::{AutoSizeBehavior, CacheTree, RequestedAxis};
 #[cfg(feature = "block_layout")]
 use crate::{AbsoluteAxis, MaybeMath};
 
-pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
+pub use self::common::intrinsic_size::ResolvedNodeSizing;
 
 /// Size and place one absolutely positioned descendant in an explicitly
 /// supplied containing area.

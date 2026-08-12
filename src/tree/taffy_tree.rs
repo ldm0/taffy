@@ -18,8 +18,8 @@ use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_sizing_context,
-    compute_root_layout, round_layout, LeafSizingContext,
+    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_tree,
+    compute_root_layout, round_layout,
 };
 use crate::CacheTree;
 
@@ -341,24 +341,20 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
-                    let node_sizing = crate::compute::resolve_leaf_node_sizing(tree, node_id, inputs);
-                    let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
-                    let size_containment = tree.get_size_containment(node_id);
                     let node_key = node_id.into();
-                    let writing_mode = tree.taffy.nodes[node_key].writing_mode;
-                    let style = &tree.taffy.nodes[node_key].style;
+                    let style = tree.taffy.nodes[node_key].style.clone();
                     let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    let measure_function = |known_dimensions, available_space| {
-                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
-                    };
-                    compute_leaf_layout_with_sizing_context(
+                    compute_leaf_layout_with_tree(
+                        tree,
+                        node_id,
                         inputs,
-                        style,
-                        LeafSizingContext::new(writing_mode, aspect_ratio, size_containment)
-                            .with_node_sizing(node_sizing),
+                        &style,
                         |_, _| 0.0,
-                        measure_function,
+                        |tree, known_dimensions, available_space| {
+                            let node_context =
+                                has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
+                            (tree.measure_function)(known_dimensions, available_space, node_id, node_context, &style)
+                        },
                     )
                 }
             };
@@ -386,24 +382,20 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
-                    let node_sizing = crate::compute::resolve_leaf_node_sizing(tree, node_id, inputs);
-                    let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
-                    let size_containment = tree.get_size_containment(node_id);
                     let node_key = node_id.into();
-                    let writing_mode = tree.taffy.nodes[node_key].writing_mode;
-                    let style = &tree.taffy.nodes[node_key].style;
+                    let style = tree.taffy.nodes[node_key].style.clone();
                     let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    let measure_function = |known_dimensions, available_space| {
-                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
-                    };
-                    compute_leaf_layout_with_sizing_context(
+                    compute_leaf_layout_with_tree(
+                        tree,
+                        node_id,
                         inputs,
-                        style,
-                        LeafSizingContext::new(writing_mode, aspect_ratio, size_containment)
-                            .with_node_sizing(node_sizing),
+                        &style,
                         |_, _| 0.0,
-                        measure_function,
+                        |tree, known_dimensions, available_space| {
+                            let node_context =
+                                has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
+                            (tree.measure_function)(known_dimensions, available_space, node_id, node_context, &style)
+                        },
                     )
                 }
             };
