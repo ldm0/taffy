@@ -54,6 +54,22 @@ enum UsedFlexBasis {
     Stretch,
 }
 
+/// Sizing operation currently performed by the flex algorithm.
+///
+/// A wrapped column container has a dedicated intrinsic inline-size
+/// operation: its max-content contribution follows the columns formed under
+/// the block constraint, while its min-content contribution is the largest
+/// item contribution. Keeping that phase explicit prevents normal line
+/// cross-size aggregation from silently defining both values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FlexSizingPhase {
+    /// Ordinary used-size layout or intrinsic sizing for another flex flow.
+    Normal,
+    /// Intrinsic inline sizing for a wrapped column under the given
+    /// min-/max-content constraint.
+    ColumnWrapIntrinsic(AvailableSpace),
+}
+
 impl UsedFlexBasis {
     /// Preserve the semantic source of a basis that ordinary
     /// length-percentage resolution could not reduce to a number.
@@ -373,6 +389,8 @@ struct AlgoConstants {
     cross_axis_flex_start_reversed: bool,
     /// Is wrapping enabled (in either direction)
     is_wrap: bool,
+    /// Intrinsic sizing operation selected for this layout pass.
+    sizing_phase: FlexSizingPhase,
     /// Whether `flex-wrap` reverses the logical cross axis.
     wrap_reverse: bool,
     /// Whether the normalized physical cross axis is reversed. Horizontal
@@ -857,6 +875,18 @@ fn compute_constants(
     let resolve_content_based_block_size = sizing_mode == SizingMode::InherentSize
         && inputs.axis.contains(writing_mode.block_axis())
         && content_based_block_size.requires_resolution();
+    let inline_available_space = inputs.available_space.get_abs(writing_mode.inline_axis());
+    let sizing_phase = if sizing_mode == SizingMode::ContentSize
+        && inputs.sizing_purpose == SizingPurpose::IntrinsicContribution
+        && inputs.axis.contains(writing_mode.inline_axis())
+        && main_axis_is_block
+        && is_wrap
+        && matches!(inline_available_space, AvailableSpace::MinContent | AvailableSpace::MaxContent)
+    {
+        FlexSizingPhase::ColumnWrapIntrinsic(inline_available_space)
+    } else {
+        FlexSizingPhase::Normal
+    };
 
     AlgoConstants {
         dir,
@@ -869,6 +899,7 @@ fn compute_constants(
         cross_axis_start_reversed: flow.cross_axis_start_reversed,
         cross_axis_flex_start_reversed: flow.cross_axis_flex_start_reversed,
         is_wrap,
+        sizing_phase,
         wrap_reverse,
         cross_axis_reversed,
         writing_mode,
@@ -2244,7 +2275,14 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
             .chain(minor_metrics.map(BaselineMetrics::cross_size))
             .fold(max_outer_cross_size, f32::max);
     }
-    let intrinsic_line_cross_size = flex_lines.iter().map(|line| line.cross_size).sum();
+    let intrinsic_line_cross_size = match constants.sizing_phase {
+        FlexSizingPhase::ColumnWrapIntrinsic(AvailableSpace::MinContent) => flex_lines
+            .iter()
+            .flat_map(|line| line.items.iter())
+            .map(|item| item.hypothetical_outer_size.cross(constants.dir))
+            .fold(0.0, f32::max),
+        _ => flex_lines.iter().map(|line| line.cross_size).sum(),
+    };
 
     // If the flex container is single-line and has a definite cross size,
     // the cross size of the flex line is the flex container’s inner cross size.

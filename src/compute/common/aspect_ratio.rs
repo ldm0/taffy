@@ -71,16 +71,6 @@ impl ResolvedAxisConstraints {
 }
 
 impl ResolvedSizeConstraints {
-    /// No preferred size or min/max constraints.
-    pub(crate) const NONE: Self = Self {
-        size: Size::NONE,
-        aspect_ratio_applied: Size { width: false, height: false },
-        min_size: Size::NONE,
-        max_size: Size::NONE,
-        constraint_sources: Size { width: ResolvedAxisConstraints::NONE, height: ResolvedAxisConstraints::NONE },
-        automatic_minimums: Size::NONE,
-    };
-
     /// Return the source-preserving constraints for the logical block axis.
     pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
         writing_mode.to_logical(self.constraint_sources).block_size

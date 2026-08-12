@@ -753,6 +753,25 @@ pub(crate) struct NodeSizeConstraintInput {
     pub contained_outer_size: Size<Option<f32>>,
 }
 
+impl NodeSizeConstraintInput {
+    /// Retain only authored constraints outside the axes whose content
+    /// contribution is being measured.
+    fn for_content_contribution(mut self, requested_axis: RequestedAxis) -> Self {
+        if requested_axis.contains(AbsoluteAxis::Horizontal) {
+            self.raw_size.width = Dimension::auto();
+            self.raw_min_size.width = Dimension::auto();
+            self.raw_max_size.width = Dimension::auto();
+        }
+        if requested_axis.contains(AbsoluteAxis::Vertical) {
+            self.raw_size.height = Dimension::auto();
+            self.raw_min_size.height = Dimension::auto();
+            self.raw_max_size.height = Dimension::auto();
+        }
+        self.aspect_ratio = self.aspect_ratio.disabled();
+        self
+    }
+}
+
 /// Child-owned initial geometry derived from style and a constraint space.
 ///
 /// This is deliberately separate from [`LayoutInput::known_dimensions`]. A
@@ -780,31 +799,15 @@ pub struct ResolvedNodeSizing {
     pub(crate) constraints: ResolvedSizeConstraints,
 }
 
-impl ResolvedNodeSizing {
-    /// No authored sizing participates in a content-only measurement.
-    pub(crate) const NONE: Self = Self {
-        preferred_size: Size::NONE,
-        min_size: Size::NONE,
-        max_size: Size::NONE,
-        outer_size: Size::NONE,
-        depends_on_block_constraints: false,
-        applied_aspect_ratio: false,
-        constraints: ResolvedSizeConstraints::NONE,
-    };
-}
-
-/// Resolve a node's initial sizing geometry without changing its constraint
-/// space.
-///
-/// This is Taffy's counterpart to Blink's initial fragment geometry sizing:
-/// parent-fixed dimensions remain in `known_dimensions`, while authored and
-/// intrinsic sizes are returned as child-owned data.
-pub(crate) fn resolve_node_size_constraints(
-    tree: &mut impl LayoutPartialTree,
-    node_id: crate::NodeId,
+/// Resolve authored numeric, available-space and containment constraints
+/// before intrinsic keywords are merged by the caller.
+fn resolve_direct_node_size_constraints(
+    tree: &impl LayoutPartialTree,
     inputs: LayoutInput,
+    writing_mode: WritingMode,
     sizing: NodeSizeConstraintInput,
-) -> ResolvedNodeSizing {
+    transferred_sizes_mode: TransferredSizesMode,
+) -> ResolvedSizeConstraints {
     let NodeSizeConstraintInput {
         raw_size,
         raw_min_size,
@@ -814,44 +817,14 @@ pub(crate) fn resolve_node_size_constraints(
         aspect_ratio,
         contained_outer_size,
     } = sizing;
-    if inputs.sizing_mode != SizingMode::InherentSize {
-        return ResolvedNodeSizing {
-            outer_size: inputs.known_dimensions.or(contained_outer_size),
-            ..ResolvedNodeSizing::NONE
-        };
-    }
-    let writing_mode = tree.get_writing_mode(node_id);
-    let inline_axis = writing_mode.inline_axis();
-    // `available_space` is the border-box space offered by the containing
-    // formatting context. Parent algorithms have already applied their own
-    // margin, alignment, track, line and inset rules at that boundary.
-    let available_inline_size = inputs.available_space.get_abs(inline_axis);
-    let available_border_box_space = inputs.available_space.into_options();
     let stretch = resolve_stretch_size_constraints(
         raw_size,
         raw_min_size,
         raw_max_size,
-        available_border_box_space,
+        inputs.available_space.into_options(),
         padding_border_size,
     );
-
-    let logical_raw_size = writing_mode.to_logical(raw_size);
-    let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
-    let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
-    let intrinsic = resolve_intrinsic_axis_constraints(
-        tree,
-        node_id,
-        inputs,
-        IntrinsicAxisInput {
-            preferred: logical_raw_size.inline_size,
-            min: logical_raw_min_size.inline_size,
-            max: logical_raw_max_size.inline_size,
-            available_space: available_inline_size,
-            axis: inline_axis,
-        },
-    );
-
-    let mut resolved = apply_contained_intrinsic_size_constraints(
+    apply_contained_intrinsic_size_constraints(
         resolve_size_constraints(SizeConstraintInput {
             size: raw_size
                 .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
@@ -869,7 +842,7 @@ pub(crate) fn resolve_node_size_constraints(
             writing_mode,
             inline_auto_behavior: inputs.inline_auto_behavior,
             block_auto_behavior: inputs.block_auto_behavior,
-            transferred_sizes_mode: TransferredSizesMode::Normal,
+            transferred_sizes_mode,
             aspect_ratio,
             padding_border: padding_border_size,
         }),
@@ -877,7 +850,94 @@ pub(crate) fn resolve_node_size_constraints(
         raw_min_size,
         raw_max_size,
         contained_outer_size,
+    )
+}
+
+/// Resolve a node's initial sizing geometry without changing its constraint
+/// space.
+///
+/// This is Taffy's counterpart to Blink's initial fragment geometry sizing:
+/// parent-fixed dimensions remain in `known_dimensions`, while authored and
+/// intrinsic sizes are returned as child-owned data.
+pub(crate) fn resolve_node_size_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+    sizing: NodeSizeConstraintInput,
+) -> ResolvedNodeSizing {
+    let writing_mode = tree.get_writing_mode(node_id);
+    if inputs.sizing_mode == SizingMode::ContentSize {
+        // A content contribution ignores authored sizing in the requested
+        // axis, but the perpendicular axis still belongs to the box's
+        // constraint space. This is observable for formatting contexts whose
+        // intrinsic contribution depends on that axis, such as a wrapped
+        // column flex container whose number of columns is set by its height.
+        //
+        // Resolve only direct length/percentage/available-space constraints
+        // here. Intrinsic values in the requested axis would recurse back into
+        // the contribution being measured, while preferred-ratio transfer is
+        // owned by the formatting algorithm performing that measurement.
+        let contribution_sizing = sizing.for_content_contribution(inputs.axis);
+        let resolved = resolve_direct_node_size_constraints(
+            tree,
+            inputs,
+            writing_mode,
+            contribution_sizing,
+            TransferredSizesMode::Ignore,
+        );
+        let preferred_size = resolved
+            .size
+            .maybe_clamp(resolved.min_size, resolved.max_size)
+            .or(sizing.contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
+        let outer_size = resolve_used_size(
+            inputs.known_dimensions,
+            preferred_size,
+            resolved.min_size,
+            resolved.max_size,
+            sizing.padding_border_size,
+        );
+        return ResolvedNodeSizing {
+            preferred_size,
+            min_size: resolved.min_size,
+            max_size: resolved.max_size,
+            outer_size,
+            depends_on_block_constraints: false,
+            applied_aspect_ratio: false,
+            constraints: resolved,
+        };
+    }
+    let NodeSizeConstraintInput {
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        padding_border_size,
+        aspect_ratio,
+        contained_outer_size,
+        ..
+    } = sizing;
+    let inline_axis = writing_mode.inline_axis();
+    // `available_space` is the border-box space offered by the containing
+    // formatting context. Parent algorithms have already applied their own
+    // margin, alignment, track, line and inset rules at that boundary.
+    let available_inline_size = inputs.available_space.get_abs(inline_axis);
+    let logical_raw_size = writing_mode.to_logical(raw_size);
+    let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
+    let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
+    let intrinsic = resolve_intrinsic_axis_constraints(
+        tree,
+        node_id,
+        inputs,
+        IntrinsicAxisInput {
+            preferred: logical_raw_size.inline_size,
+            min: logical_raw_min_size.inline_size,
+            max: logical_raw_max_size.inline_size,
+            available_space: available_inline_size,
+            axis: inline_axis,
+        },
     );
+
+    let mut resolved =
+        resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
     let mut logical_resolved_size = writing_mode.to_logical(resolved.size);
     logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
     resolved.size = writing_mode.to_physical(logical_resolved_size);
