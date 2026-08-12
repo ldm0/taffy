@@ -2,6 +2,7 @@
 mod absolute_position {
     use taffy::prelude::*;
     use taffy::style::Direction;
+    use taffy::Point;
     use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
     struct Fixture {
@@ -168,6 +169,197 @@ mod absolute_position {
 
             let fit_content = layout_vertical_absolute_text(display, Dimension::fit_content(), 236.0);
             assert_eq!(fit_content.size, Size { width: 20.0, height: 236.0 }, "{display:?} fit-content");
+        }
+    }
+
+    #[test]
+    fn orthogonal_absolute_margins_follow_the_positioned_boxes_logical_axes() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let mut tree = new_test_tree();
+            tree.disable_rounding();
+            let absolute = tree
+                .new_leaf(Style {
+                    display: Display::Block,
+                    position: Position::Absolute,
+                    size: Size::from_lengths(40.0, 20.0),
+                    inset: Rect { left: length(10.0), right: length(10.0), top: length(10.0), bottom: length(10.0) },
+                    margin: Rect { left: auto(), right: auto(), top: auto(), bottom: auto() },
+                    ..Default::default()
+                })
+                .unwrap();
+            tree.set_writing_mode(absolute, taffy::WritingMode::VerticalLr).unwrap();
+            let root = tree
+                .new_with_children(
+                    Style { display, size: Size::from_lengths(100.0, 80.0), ..Default::default() },
+                    &[absolute],
+                )
+                .unwrap();
+
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+            let layout = tree.layout(absolute).unwrap();
+            assert_eq!(layout.location, Point { x: 30.0, y: 30.0 }, "{display:?}");
+            assert_eq!(layout.margin, Rect { left: 20.0, right: 20.0, top: 20.0, bottom: 20.0 }, "{display:?}");
+        }
+    }
+
+    fn layout_orthogonal_absolute_overflow(
+        display: Display,
+        container_direction: Direction,
+        child_direction: Direction,
+        writing_mode: taffy::WritingMode,
+        size: Size<f32>,
+    ) -> Layout {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let absolute = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                direction: child_direction,
+                size: size.map(length),
+                inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+                margin: Rect { left: auto(), right: auto(), top: auto(), bottom: auto() },
+                ..Default::default()
+            })
+            .unwrap();
+        tree.set_writing_mode(absolute, writing_mode).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display,
+                    direction: container_direction,
+                    size: Size::from_lengths(100.0, 100.0),
+                    ..Default::default()
+                },
+                &[absolute],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        *tree.layout(absolute).unwrap()
+    }
+
+    #[test]
+    fn orthogonal_absolute_inline_overflow_shares_containing_block_direction_space() {
+        for writing_mode in [taffy::WritingMode::VerticalLr, taffy::WritingMode::VerticalRl] {
+            for container_direction in [Direction::Ltr, Direction::Rtl] {
+                for child_direction in [Direction::Ltr, Direction::Rtl] {
+                    for display in [Display::Block, Display::Flex, Display::Grid] {
+                        let layout = layout_orthogonal_absolute_overflow(
+                            display,
+                            container_direction,
+                            child_direction,
+                            writing_mode,
+                            Size { width: 20.0, height: 120.0 },
+                        );
+                        assert_eq!(
+                            layout.location,
+                            Point { x: 40.0, y: -10.0 },
+                            "{display:?} {writing_mode:?} {container_direction:?} {child_direction:?}"
+                        );
+                        assert_eq!(
+                            layout.margin,
+                            Rect { left: 40.0, right: 40.0, top: -10.0, bottom: -10.0 },
+                            "{display:?} {writing_mode:?} {container_direction:?} {child_direction:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn orthogonal_absolute_block_overflow_uses_containing_inline_dominance() {
+        for writing_mode in [taffy::WritingMode::VerticalLr, taffy::WritingMode::VerticalRl] {
+            for container_direction in [Direction::Ltr, Direction::Rtl] {
+                for child_direction in [Direction::Ltr, Direction::Rtl] {
+                    for display in [Display::Block, Display::Flex, Display::Grid] {
+                        let layout = layout_orthogonal_absolute_overflow(
+                            display,
+                            container_direction,
+                            child_direction,
+                            writing_mode,
+                            Size { width: 120.0, height: 20.0 },
+                        );
+                        let (x, left, right) = match container_direction {
+                            Direction::Ltr => (0.0, 0.0, -20.0),
+                            Direction::Rtl => (-20.0, -20.0, 0.0),
+                        };
+                        assert_eq!(
+                            layout.location,
+                            Point { x, y: 40.0 },
+                            "{display:?} {writing_mode:?} {container_direction:?} {child_direction:?}"
+                        );
+                        assert_eq!(
+                            layout.margin,
+                            Rect { left, right, top: 40.0, bottom: 40.0 },
+                            "{display:?} {writing_mode:?} {container_direction:?} {child_direction:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_overconstraint_uses_containing_blocks_physical_start_sides() {
+        for writing_mode in [
+            taffy::WritingMode::HorizontalTb,
+            taffy::WritingMode::VerticalLr,
+            taffy::WritingMode::VerticalRl,
+            taffy::WritingMode::SidewaysLr,
+            taffy::WritingMode::SidewaysRl,
+        ] {
+            for direction in [Direction::Ltr, Direction::Rtl] {
+                for display in [Display::Block, Display::Flex, Display::Grid] {
+                    let mut tree = new_test_tree();
+                    tree.disable_rounding();
+                    let absolute = tree
+                        .new_leaf(Style {
+                            display: Display::Block,
+                            position: Position::Absolute,
+                            direction,
+                            size: Size::from_lengths(120.0, 120.0),
+                            inset: Rect {
+                                left: length(0.0),
+                                right: length(0.0),
+                                top: length(0.0),
+                                bottom: length(0.0),
+                            },
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    tree.set_writing_mode(absolute, writing_mode).unwrap();
+                    let root = tree
+                        .new_with_children(
+                            Style { display, direction, size: Size::from_lengths(100.0, 100.0), ..Default::default() },
+                            &[absolute],
+                        )
+                        .unwrap();
+                    tree.set_writing_mode(root, writing_mode).unwrap();
+
+                    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+                    let expected = Point {
+                        x: if writing_mode.is_axis_flow_reversed(taffy::AbsoluteAxis::Horizontal, direction) {
+                            -20.0
+                        } else {
+                            0.0
+                        },
+                        y: if writing_mode.is_axis_flow_reversed(taffy::AbsoluteAxis::Vertical, direction) {
+                            -20.0
+                        } else {
+                            0.0
+                        },
+                    };
+                    assert_eq!(
+                        tree.layout(absolute).unwrap().location,
+                        expected,
+                        "{display:?} {writing_mode:?} {direction:?}"
+                    );
+                }
+            }
         }
     }
 
