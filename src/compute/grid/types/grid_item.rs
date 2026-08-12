@@ -151,8 +151,8 @@ impl GridItem {
         parent_alignment: InBothAbstractAxis<AlignItems>,
         source_order: u16,
     ) -> Self {
-        let align_self = style.align_self().unwrap_or(parent_alignment.block);
-        let justify_self = style.justify_self().unwrap_or(parent_alignment.inline);
+        let align_self = GridItemStyle::align_self(&style).unwrap_or(parent_alignment.block);
+        let justify_self = GridItemStyle::justify_self(&style).unwrap_or(parent_alignment.inline);
         GridItem {
             node,
             parent_writing_direction,

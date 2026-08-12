@@ -17,7 +17,8 @@ use crate::geometry::{
     Rect, Size, StaticPositionEdge,
 };
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, Overflow, Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
+    Position,
 };
 use crate::tree::{
     AutoSizeBehavior, ChildLayoutInput, Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
@@ -141,7 +142,7 @@ pub(super) fn align_and_position_item(
     let overflow = style.overflow();
     let scrollbar_width = style.scrollbar_width();
     let item_direction = style.direction();
-    let inline_self = style.justify_self().map(|align| {
+    let inline_self = GridItemStyle::justify_self(&style).map(|align| {
         align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
@@ -150,7 +151,7 @@ pub(super) fn align_and_position_item(
             parent_writing_mode.inline_axis(),
         )
     });
-    let block_self = style.align_self().map(|align| {
+    let block_self = GridItemStyle::align_self(&style).map(|align| {
         align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
@@ -598,7 +599,7 @@ pub(super) fn out_of_flow_static_position(
     let item_writing_mode = tree.get_writing_mode(node);
     let style = tree.get_grid_child_style(node);
     let item_direction = style.direction();
-    let inline_self = style.justify_self().map(|align| {
+    let inline_self = GridItemStyle::justify_self(&style).map(|align| {
         align.resolve_axis_relative(
             item_writing_mode,
             item_direction,
@@ -607,7 +608,7 @@ pub(super) fn out_of_flow_static_position(
             parent_writing_mode.inline_axis(),
         )
     });
-    let block_self = style.align_self().map(|align| {
+    let block_self = GridItemStyle::align_self(&style).map(|align| {
         align.resolve_axis_relative(
             item_writing_mode,
             item_direction,

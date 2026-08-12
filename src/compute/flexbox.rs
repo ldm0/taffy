@@ -954,13 +954,14 @@ fn generate_anonymous_flex_items(
                 .inset()
                 .zip_size(constants.node_inner_size, |p, s| p.maybe_resolve(s, |val, basis| tree.calc(val, basis)));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_axis_relative(
-                child_writing_mode,
-                child_style.direction(),
-                constants.writing_mode,
-                constants.inline_direction,
-                constants.dir.cross_axis(),
-            );
+            let align_self =
+                FlexboxItemStyle::align_self(&child_style).unwrap_or(constants.align_items).resolve_axis_relative(
+                    child_writing_mode,
+                    child_style.direction(),
+                    constants.writing_mode,
+                    constants.inline_direction,
+                    constants.dir.cross_axis(),
+                );
             let baseline_writing_mode = determine_baseline_writing_mode(
                 constants.writing_direction(),
                 child_writing_mode,
@@ -2989,13 +2990,14 @@ fn perform_absolute_layout_on_absolute_children(
         {
             continue;
         }
-        let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_axis_relative(
-            child_writing_mode,
-            child_style.direction(),
-            constants.writing_mode,
-            constants.inline_direction,
-            constants.dir.cross_axis(),
-        );
+        let align_self =
+            FlexboxItemStyle::align_self(&child_style).unwrap_or(constants.align_items).resolve_axis_relative(
+                child_writing_mode,
+                child_style.direction(),
+                constants.writing_mode,
+                constants.inline_direction,
+                constants.dir.cross_axis(),
+            );
         drop(child_style);
 
         let local_static_position = flex_static_position(constants, align_self);
