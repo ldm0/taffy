@@ -512,7 +512,6 @@ pub fn compute_flexbox_layout(
     let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
-    let flex_direction = style.flex_direction();
     drop(style);
 
     let node_sizing = resolve_node_size_constraints(
@@ -552,8 +551,6 @@ pub fn compute_flexbox_layout(
             }
         }
     }
-
-    debug_log!("FLEX:", dbg:flex_direction);
 
     compute_preliminary(tree, node, inputs, node_sizing, content_based_block_size)
         .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
