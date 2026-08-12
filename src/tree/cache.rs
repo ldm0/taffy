@@ -2,7 +2,7 @@
 
 #![allow(clippy::unusual_byte_groupings)]
 
-use crate::geometry::{LogicalSize, Size, WritingMode};
+use crate::geometry::{Line, LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
     AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RunMode, SizingMode,
@@ -100,6 +100,8 @@ fn size_mixed_cache_key(kd: Size<Option<f32>>, avs: Size<AvailableSpace>) -> u64
 struct CacheKey {
     /// The initial cached size of the node itself
     kd_available_space: u64,
+    /// Dimensions that descendants may use as percentage-resolution bases.
+    definite_dimensions: u64,
     /// The containing block size in its own logical axes.
     logical_parent_size: u64,
     /// Physical size of the initial containing block inherited by descendants.
@@ -114,6 +116,8 @@ struct CacheKey {
     inline_auto_behavior: AutoSizeBehavior,
     /// How an authored logical block-size auto resolves in this space.
     block_auto_behavior: AutoSizeBehavior,
+    /// Whether block-start/end margins may collapse through this boundary.
+    block_margins_are_collapsible: Line<bool>,
 }
 
 impl CacheKey {
@@ -129,6 +133,7 @@ impl CacheKey {
 
         Self {
             kd_available_space: size_mixed_cache_key(input.known_dimensions, input.available_space),
+            definite_dimensions: size_option_cache_key(input.definite_dimensions),
             logical_parent_size: (logical_size_option_cache_key(
                 input.parent_writing_mode.to_logical(input.parent_size),
             ) & NON_SIGN_BITS_MASK)
@@ -139,6 +144,7 @@ impl CacheKey {
             sizing_purpose: input.sizing_purpose,
             inline_auto_behavior: input.inline_auto_behavior,
             block_auto_behavior: input.block_auto_behavior,
+            block_margins_are_collapsible: input.block_margins_are_collapsible,
         }
     }
 
@@ -318,6 +324,7 @@ impl Cache {
         let key = CacheKey::new(input, environment);
         for entry in self.measure_entries.iter().flatten() {
             if entry.key.kd_available_space == key.kd_available_space
+                && entry.key.definite_dimensions == key.definite_dimensions
                 && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
                 && entry.key.initial_containing_block_size == key.initial_containing_block_size
                 && entry.key.parent_writing_mode == key.parent_writing_mode
@@ -325,6 +332,7 @@ impl Cache {
                 && entry.key.sizing_purpose == key.sizing_purpose
                 && entry.key.inline_auto_behavior == key.inline_auto_behavior
                 && entry.key.block_auto_behavior == key.block_auto_behavior
+                && entry.key.block_margins_are_collapsible == key.block_margins_are_collapsible
             {
                 return Some(IntrinsicSizeResult {
                     size: entry.content.size,
@@ -538,6 +546,29 @@ mod tests {
         let stretch = LayoutInput { inline_auto_behavior: AutoSizeBehavior::StretchImplicit, ..fit_content };
         assert!(cache.get(&stretch).is_none());
         assert_eq!(cache.get(&fit_content).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_definite_dimensions() {
+        let mut cache = Cache::new();
+        let indefinite = input(SizingPurpose::IntrinsicContribution);
+        cache.store(&indefinite, LayoutOutput::from_outer_size(Size { width: 60.0, height: 25.0 }));
+
+        let definite = LayoutInput { definite_dimensions: Size { width: Some(60.0), height: None }, ..indefinite };
+        assert!(cache.get(&definite).is_none());
+        assert_eq!(cache.get(&indefinite).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_margin_collapse_constraints() {
+        let mut cache = Cache::new();
+        let non_collapsible = input(SizingPurpose::IntrinsicContribution);
+        cache.store(&non_collapsible, LayoutOutput::from_outer_size(Size { width: 60.0, height: 25.0 }));
+
+        let collapsible =
+            LayoutInput { block_margins_are_collapsible: Line { start: true, end: false }, ..non_collapsible };
+        assert!(cache.get(&collapsible).is_none());
+        assert_eq!(cache.get(&non_collapsible).unwrap().size.height, 25.0);
     }
 
     #[test]
