@@ -1,6 +1,7 @@
 //! Computes the CSS block layout algorithm in the case that the block container being laid out contains only block-level boxes
 use crate::geometry::{
-    AbsoluteAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size, WritingDirection,
+    AbsoluteAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size,
+    StaticPositionEdge, WritingDirection,
 };
 use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
@@ -19,7 +20,7 @@ use crate::{
     TextAlign, WritingMode,
 };
 
-use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
+use super::common::absolute::{fit_content_width, logical_inset_modified_containing_block_size};
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
@@ -394,7 +395,7 @@ struct BlockItem {
 
     /// The computed static position in the parent's flow-relative coordinate
     /// space, before relative or absolute insets are applied.
-    static_position: LogicalOffset<f32>,
+    static_position: LogicalStaticPosition,
     /// Whether margins can be collapsed through this item
     can_be_collapsed_through: bool,
 
@@ -718,6 +719,7 @@ fn compute_inner(
         tree,
         &mut items,
         BlockContainerLayoutContext {
+            node_id,
             run_mode,
             outer_inline_size: container_outer_inline_size,
             percentage_resolution_block_size: container_percentage_resolution_block_size,
@@ -874,6 +876,7 @@ fn compute_inner(
     let absolute_position_offset = Point { x: absolute_position_inset.left, y: absolute_position_inset.top };
     let absolute_content_size = perform_absolute_layout_on_absolute_children(
         tree,
+        node_id,
         &items,
         absolute_position_area,
         absolute_position_offset,
@@ -1172,7 +1175,7 @@ fn generate_item_list(
                 padding_border_sum: pb_sum,
 
                 // Fields to be computed later (for now we initialise with dummy values)
-                static_position: LogicalOffset::ZERO,
+                static_position: LogicalStaticPosition::default(),
                 can_be_collapsed_through: false,
                 depends_on_block_constraints,
                 pending_layout: None,
@@ -1317,6 +1320,8 @@ fn resolve_block_item_final_style(
 /// Immutable container state shared while positioning in-flow block children.
 #[derive(Clone, Copy, Debug)]
 struct BlockContainerLayoutContext {
+    /// Numeric node that owns this block formatting context.
+    node_id: NodeId,
     /// Whether this pass measures the box or commits final fragments.
     run_mode: RunMode,
     /// Used logical border-box inline size of the container.
@@ -1371,6 +1376,7 @@ fn perform_final_layout_on_in_flow_children(
     block_ctx: &mut BlockContext<'_>,
 ) -> (LogicalSize<f32>, f32, CollapsibleMarginSet, CollapsibleMarginSet, Option<f32>, Option<f32>) {
     let BlockContainerLayoutContext {
+        node_id,
         run_mode,
         outer_inline_size: container_outer_inline_size,
         percentage_resolution_block_size: container_percentage_resolution_block_size,
@@ -1430,10 +1436,13 @@ fn perform_final_layout_on_in_flow_children(
 
     for item in items.iter_mut() {
         if item.position == Position::Absolute {
-            item.static_position = LogicalOffset {
+            item.static_position = LogicalStaticPosition::new(LogicalOffset {
                 inline_offset: content_box_inset.inline_start,
                 block_offset: block_offset_for_absolute,
-            };
+            });
+            if run_mode == RunMode::PerformLayout {
+                tree.set_out_of_flow_static_position(node_id, item.node_id, item.static_position);
+            }
         } else {
             resolve_block_item_final_style(tree, item, parent_size, writing_mode);
             let item_margin =
@@ -1810,7 +1819,7 @@ fn perform_final_layout_on_in_flow_children(
             }
 
             item.can_be_collapsed_through = item_layout.margins_can_collapse_through && !has_clearance;
-            item.static_position = if item.is_in_same_bfc {
+            let static_offset = if item.is_in_same_bfc {
                 let uncleared_block_offset = committed_block_offset + active_collapsible_margin_set.resolve();
                 LogicalOffset {
                     inline_offset: content_box_inset.inline_start,
@@ -1819,6 +1828,7 @@ fn perform_final_layout_on_in_flow_children(
             } else {
                 float_avoiding_position
             };
+            item.static_position = LogicalStaticPosition::new(static_offset);
             let mut logical_location = if item.is_in_same_bfc {
                 LogicalOffset {
                     inline_offset: content_box_inset.inline_start
@@ -2051,10 +2061,51 @@ fn resolve_absolute_axis_margins(
     }
 }
 
+/// Resolve a static-position anchor to the out-of-flow box's physical
+/// border-box origin after its size and margins are known.
+#[inline]
+fn resolve_static_position_location(
+    static_position: LogicalStaticPosition,
+    writing_direction: WritingDirection,
+    containing_outer_size: Size<f32>,
+    box_size: Size<f32>,
+    margin: Rect<f32>,
+) -> Point<f32> {
+    #[inline(always)]
+    fn axis_start(anchor: f32, edge: StaticPositionEdge, size: f32, margin_start: f32, margin_end: f32) -> f32 {
+        match edge {
+            StaticPositionEdge::Start => anchor + margin_start,
+            StaticPositionEdge::Center => anchor + (margin_start - margin_end - size) / 2.0,
+            StaticPositionEdge::End => anchor - size - margin_end,
+        }
+    }
+
+    let logical_size = writing_direction.mode.to_logical(box_size);
+    let logical_margin = writing_direction.to_logical_box_strut(margin);
+    let logical_location = LogicalOffset {
+        inline_offset: axis_start(
+            static_position.offset.inline_offset,
+            static_position.inline_edge,
+            logical_size.inline_size,
+            logical_margin.inline_start,
+            logical_margin.inline_end,
+        ),
+        block_offset: axis_start(
+            static_position.offset.block_offset,
+            static_position.block_edge,
+            logical_size.block_size,
+            logical_margin.block_start,
+            logical_margin.block_end,
+        ),
+    };
+    writing_direction.converter(containing_outer_size).to_physical_point(logical_location, box_size)
+}
+
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
 fn perform_absolute_layout_on_absolute_children(
     tree: &mut impl LayoutBlockContainer,
+    containing_block_node_id: NodeId,
     items: &[BlockItem],
     area_size: Size<f32>,
     area_offset: Point<f32>,
@@ -2072,6 +2123,14 @@ fn perform_absolute_layout_on_absolute_children(
     let mut absolute_content_size = Size::ZERO;
 
     for item in items.iter().filter(|item| item.position == Position::Absolute) {
+        let static_position = tree
+            .get_out_of_flow_static_position(
+                containing_block_node_id,
+                item.node_id,
+                containing_outer_size,
+                writing_direction,
+            )
+            .unwrap_or(item.static_position);
         let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
         let child_writing_mode = tree.get_writing_mode(item.node_id);
         let child_style = tree.get_block_child_style(item.node_id);
@@ -2125,12 +2184,19 @@ fn perform_absolute_layout_on_absolute_children(
 
         drop(child_style);
 
-        let static_edge = converter.to_physical_point(item.static_position, Size::ZERO);
-        let inset_modified_containing_block = inset_modified_containing_block_size(
+        let static_anchor = converter.to_physical_point(static_position.offset, Size::ZERO);
+        let static_position_in_area = LogicalStaticPosition {
+            offset: writing_direction.converter(area_size).to_logical_point(
+                Point { x: static_anchor.x - area_offset.x, y: static_anchor.y - area_offset.y },
+                Size::ZERO,
+            ),
+            ..static_position
+        };
+        let inset_modified_containing_block = logical_inset_modified_containing_block_size(
             area_size,
             Rect { left, right, top, bottom },
-            Point { x: static_edge.x - area_offset.x, y: static_edge.y - area_offset.y },
-            direction.is_rtl(),
+            static_position_in_area,
+            writing_direction,
         );
         let inset_modified_size =
             (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
@@ -2323,7 +2389,6 @@ fn perform_absolute_layout_on_absolute_children(
         );
 
         let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
-        let static_position = converter.to_physical_point(item.static_position, final_size);
 
         let layout_output = tree.compute_child_layout(
             item.node_id,
@@ -2368,6 +2433,13 @@ fn perform_absolute_layout_on_absolute_children(
             top: vertical_margin.start,
             bottom: vertical_margin.end,
         };
+        let static_location = resolve_static_position_location(
+            static_position,
+            writing_direction,
+            containing_outer_size,
+            final_size,
+            resolved_margin,
+        );
 
         let x_offset = match (left, right) {
             (Some(left), Some(right)) => {
@@ -2379,13 +2451,7 @@ fn perform_absolute_layout_on_absolute_children(
             }
             (Some(left), None) => left + resolved_margin.left,
             (None, Some(right)) => area_size.width - final_size.width - right - resolved_margin.right,
-            (None, None) => {
-                if direction.is_rtl() {
-                    static_position.x - resolved_margin.right - area_offset.x
-                } else {
-                    static_position.x + resolved_margin.left - area_offset.x
-                }
-            }
+            (None, None) => static_location.x - area_offset.x,
         };
         let location = Point {
             x: x_offset + area_offset.x,
@@ -2393,7 +2459,7 @@ fn perform_absolute_layout_on_absolute_children(
                 .map(|top| top + resolved_margin.top)
                 .or(bottom.map(|bottom| area_size.height - final_size.height - bottom - resolved_margin.bottom))
                 .maybe_add(area_offset.y)
-                .unwrap_or(static_position.y + resolved_margin.top),
+                .unwrap_or(static_location.y),
         };
         // Note: axis intentionally switched here as scrollbars take up space in the opposite axis
         // to the axis in which scrolling is enabled.

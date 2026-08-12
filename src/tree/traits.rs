@@ -132,7 +132,7 @@ use super::{
 };
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Size, WritingMode};
+use crate::geometry::{AbsoluteAxis, LogicalStaticPosition, Size, WritingDirection, WritingMode};
 use crate::style::{CoreStyle, ResolvedAspectRatio, SizeContainment};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
@@ -248,6 +248,47 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Set the node's unrounded layout
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout);
+
+    /// Record a static-position candidate produced for an out-of-flow child by
+    /// its original formatting context.
+    ///
+    /// Standalone Taffy trees normally lay the child in that same context and
+    /// need no separate record. Browser adapters may use this callback when
+    /// the child's actual containing block is an ancestor of its box-tree
+    /// parent.
+    fn set_out_of_flow_static_position(
+        &mut self,
+        _container_node_id: NodeId,
+        _child_node_id: NodeId,
+        _static_position: LogicalStaticPosition,
+    ) {
+    }
+
+    /// Return a previously recorded static-position candidate in the current
+    /// containing block's logical coordinate space.
+    ///
+    /// `containing_block_size` is the used border-box size. It is supplied so
+    /// adapters can correctly rebase candidates across reversed or orthogonal
+    /// writing modes before absolute sizing begins.
+    fn get_out_of_flow_static_position(
+        &self,
+        _containing_block_node_id: NodeId,
+        _child_node_id: NodeId,
+        _containing_block_size: Size<f32>,
+        _containing_block_writing_direction: WritingDirection,
+    ) -> Option<LogicalStaticPosition> {
+        None
+    }
+
+    /// Whether `container_node_id` supplies the actual containing block for
+    /// this out-of-flow child.
+    ///
+    /// The default matches Taffy's standalone numeric-tree contract. Browser
+    /// adapters can return `false` for a proxy that exists only to obtain a
+    /// static position from the child's original formatting context.
+    fn is_out_of_flow_containing_block(&self, _container_node_id: NodeId, _child_node_id: NodeId) -> bool {
+        true
+    }
 
     /// Compute the specified node's size or full layout given the specified constraints
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput;
