@@ -23,6 +23,61 @@ fn overlapping_items(tree: &mut TaffyTree<()>, contributor_size: Size<Dimension>
     (contributor, stretched)
 }
 
+fn layout_grid_item_with_percentage_descendant(
+    writing_mode: WritingMode,
+    mut item_style: Style,
+) -> (Size<f32>, Size<f32>) {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let vertical = !writing_mode.is_horizontal();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: if vertical {
+                Size { width: length(20.0), height: auto() }
+            } else {
+                Size { width: auto(), height: length(20.0) }
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    let percentage = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: if vertical {
+                    Size { width: percent(0.5), height: auto() }
+                } else {
+                    Size { width: auto(), height: percent(0.5) }
+                },
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    item_style.display = Display::Block;
+    let item = tree.new_with_children(item_style, &[percentage]).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: length(100.0) },
+                grid_template_columns: vec![length(100.0)],
+                grid_template_rows: vec![length(100.0)],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    for node in [content, percentage, item, grid] {
+        tree.set_writing_mode(node, writing_mode).unwrap();
+    }
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    (tree.layout(item).unwrap().size, tree.layout(percentage).unwrap().size)
+}
+
 #[test]
 fn percentage_row_uses_intrinsic_contribution_before_min_height_clamp() {
     let mut tree = TaffyTree::<()>::new();
@@ -166,4 +221,88 @@ fn auto_repeat_uses_the_minimum_strategy_for_a_min_clamped_auto_size() {
     assert_eq!(tree.layout(grid).unwrap().size.width, 120.0);
     assert_eq!(tree.layout(child).unwrap().location.x, 80.0);
     assert_eq!(tree.layout(child).unwrap().size.width, 40.0);
+}
+
+#[test]
+fn intrinsic_keyword_grid_item_height_remains_indefinite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(
+        WritingMode::HorizontalTb,
+        Style {
+            size: Size { width: auto(), height: Dimension::max_content() },
+            align_self: Some(AlignSelf::START),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(item.height, 20.0);
+    assert_eq!(percentage.height, 20.0);
+}
+
+#[test]
+fn minimum_clamped_grid_item_height_remains_indefinite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(
+        WritingMode::HorizontalTb,
+        Style {
+            min_size: Size { width: auto(), height: length(100.0) },
+            align_self: Some(AlignSelf::START),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(item.height, 100.0);
+    assert_eq!(percentage.height, 20.0);
+}
+
+#[test]
+fn authored_grid_item_height_is_definite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(
+        WritingMode::HorizontalTb,
+        Style {
+            size: Size { width: auto(), height: length(100.0) },
+            align_self: Some(AlignSelf::START),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(item.height, 100.0);
+    assert_eq!(percentage.height, 50.0);
+}
+
+#[test]
+fn stretched_grid_item_height_is_definite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(WritingMode::HorizontalTb, Style::default());
+
+    assert_eq!(item.height, 100.0);
+    assert_eq!(percentage.height, 50.0);
+}
+
+#[test]
+fn ratio_transferred_grid_item_height_is_definite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(
+        WritingMode::HorizontalTb,
+        Style {
+            size: Size { width: length(100.0), height: auto() },
+            aspect_ratio: Some(2.0),
+            align_self: Some(AlignSelf::START),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(item.height, 50.0);
+    assert_eq!(percentage.height, 25.0);
+}
+
+#[test]
+fn vertical_intrinsic_grid_item_block_size_remains_indefinite_for_descendants() {
+    let (item, percentage) = layout_grid_item_with_percentage_descendant(
+        WritingMode::VerticalRl,
+        Style {
+            size: Size { width: Dimension::max_content(), height: auto() },
+            align_self: Some(AlignSelf::START),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(item.width, 20.0);
+    assert_eq!(percentage.width, 20.0);
 }
