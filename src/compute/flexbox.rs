@@ -9,7 +9,7 @@ use crate::geometry::{
     StaticPositionEdge, WritingDirection, WritingMode,
 };
 use crate::style::{
-    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
+    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, Dimension, FlexWrap,
     JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
@@ -30,8 +30,9 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput, ResolvedNodeSizing,
+    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints,
+    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
+    ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -43,14 +44,33 @@ enum UsedFlexBasis {
     /// The flex basis resolved to a border-box size. The value may itself have
     /// come from an intrinsic preferred size such as `min-content`.
     Resolved(f32),
-    /// Flex basis resolution still requires a content-size measurement.
+    /// The `content` value, an automatic main size, or an unresolved numeric
+    /// value that falls back to the item's content.
     Content,
+    /// An explicit intrinsic sizing function that must retain its own
+    /// min-/max-/fit-content constraint during measurement.
+    Intrinsic(Dimension),
+    /// Stretch the item's margin box into definite main-axis available space.
+    Stretch,
 }
 
 impl UsedFlexBasis {
-    /// Whether flex sizing still needs to obtain the basis from content.
-    fn requires_content_measurement(self) -> bool {
-        matches!(self, Self::Content)
+    /// Preserve the semantic source of a basis that ordinary
+    /// length-percentage resolution could not reduce to a number.
+    fn from_unresolved_dimension(value: Dimension) -> Self {
+        if value.is_intrinsic() {
+            Self::Intrinsic(value)
+        } else if value.is_stretch() {
+            Self::Stretch
+        } else {
+            Self::Content
+        }
+    }
+
+    /// Whether the main-axis basis still needs intrinsic or available-space
+    /// resolution.
+    fn is_unresolved(self) -> bool {
+        !matches!(self, Self::Resolved(_))
     }
 }
 
@@ -926,6 +946,7 @@ fn generate_anonymous_flex_items(
             let mut untransferred_size = raw_size
                 .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
                 .or(stretch_preferred_in_sizing_box);
+            let unresolved_flex_basis = if flex_basis.is_auto() { raw_size.main(constants.dir) } else { flex_basis };
             let resolved_flex_basis = if flex_basis.is_auto() {
                 untransferred_size.main(constants.dir)
             } else {
@@ -933,9 +954,10 @@ fn generate_anonymous_flex_items(
                     .maybe_resolve(constants.node_inner_size.main(constants.dir), |val, basis| tree.calc(val, basis))
             }
             .maybe_add(box_sizing_adjustment.main(constants.dir));
-            let mut used_flex_basis =
-                resolved_flex_basis.map(UsedFlexBasis::Resolved).unwrap_or(UsedFlexBasis::Content);
-            let mut size = if used_flex_basis.requires_content_measurement() {
+            let mut used_flex_basis = resolved_flex_basis
+                .map(UsedFlexBasis::Resolved)
+                .unwrap_or_else(|| UsedFlexBasis::from_unresolved_dimension(unresolved_flex_basis));
+            let mut size = if used_flex_basis.is_unresolved() {
                 untransferred_size.with_main(constants.dir, None)
             } else {
                 untransferred_size
@@ -1023,7 +1045,7 @@ fn generate_anonymous_flex_items(
                 if flex_basis.is_auto() && constants.dir.main_axis() == AbsoluteAxis::Horizontal {
                     used_flex_basis = UsedFlexBasis::Resolved(intrinsic_width);
                 }
-                if !used_flex_basis.requires_content_measurement() || !constants.dir.is_row() {
+                if !used_flex_basis.is_unresolved() || !constants.dir.is_row() {
                     size.width = size.width.or(Some(intrinsic_width));
                 }
             }
@@ -1191,7 +1213,7 @@ fn determine_flex_base_size(
 
     for child in flex_items.iter_mut() {
         let used_flex_basis = child.used_flex_basis;
-        let requires_content_measurement = used_flex_basis.requires_content_measurement();
+        let flex_basis_is_unresolved = used_flex_basis.is_unresolved();
         let aspect_ratio = child.aspect_ratio;
         let padding_border = (child.padding + child.border).sum_axes();
         let box_sizing_adjustment = if child.box_sizing == BoxSizing::ContentBox { padding_border } else { Size::ZERO };
@@ -1219,7 +1241,7 @@ fn determine_flex_base_size(
 
         // Known dimensions for child sizing
         let child_known_dimensions = {
-            let mut ckd = if requires_content_measurement {
+            let mut ckd = if flex_basis_is_unresolved {
                 child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
             } else {
                 child.size.with_main(dir, None)
@@ -1244,7 +1266,7 @@ fn determine_flex_base_size(
             ckd
         };
 
-        let content_ratio_size = if requires_content_measurement {
+        let content_ratio_size = if matches!(used_flex_basis, UsedFlexBasis::Content) {
             child_known_dimensions
                 .maybe_sub(box_sizing_adjustment)
                 .maybe_max(Size::ZERO)
@@ -1273,6 +1295,7 @@ fn determine_flex_base_size(
                         break 'flex_basis content_ratio_size;
                     }
                 }
+                UsedFlexBasis::Intrinsic(_) | UsedFlexBasis::Stretch => {}
             }
 
             // C. If the used flex basis is content or depends on its available space,
@@ -1292,6 +1315,47 @@ fn determine_flex_base_size(
 
             // TODO: implement this orthogonal-flow branch by deriving the
             // child's fit-content cross constraint from its ConstraintSpace.
+
+            // Intrinsic flex-basis keywords are sizing functions, not aliases
+            // for `content`. Resolve them through the shared intrinsic-axis
+            // protocol so min-content, max-content and fit-content retain
+            // their distinct constraints in parallel and orthogonal flows.
+            if let UsedFlexBasis::Intrinsic(value) = used_flex_basis {
+                let basis_available_space = available_space.main(dir).maybe_sub(child.margin.main_axis_sum(dir));
+                let measurement_inputs = ChildLayoutInput::new(
+                    child_known_dimensions,
+                    child_parent_size,
+                    constants.writing_mode,
+                    Size::MAX_CONTENT.with_cross(dir, cross_axis_available_space),
+                    SizingMode::ContentSize,
+                    Line::FALSE,
+                )
+                .into_measurement(dir.main_axis().into());
+                let resolved = resolve_intrinsic_preferred_axis_size(
+                    tree,
+                    child.node,
+                    measurement_inputs,
+                    value,
+                    basis_available_space,
+                    dir.main_axis(),
+                    constants.node_inner_size.main(dir),
+                );
+                child.depends_on_block_constraints |= resolved.depends_on_block_constraints;
+                if let Some(size) = resolved.value {
+                    break 'flex_basis size;
+                }
+            }
+
+            // `stretch` fills definite available space with the margin box.
+            // Under an intrinsic constraint it falls through to the content
+            // sizing rule below, matching the sizing keyword's auto fallback.
+            if used_flex_basis == UsedFlexBasis::Stretch {
+                let stretched_basis =
+                    available_space.main(dir).maybe_sub(child.margin.main_axis_sum(dir)).into_option();
+                if let Some(size) = stretched_basis {
+                    break 'flex_basis f32_max(0.0, size);
+                }
+            }
 
             // E. Otherwise, size the item into the available space using its used flex basis
             //    in place of its main size, treating a value of content as max-content.

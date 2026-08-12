@@ -9,6 +9,7 @@ mod hand_written {
     mod flex_aspect_ratio;
     mod flex_auto_margins;
     mod flex_basis_content;
+    mod flex_basis_intrinsic;
     mod flex_writing_modes;
     mod floats;
     mod grid_automatic_minimum;

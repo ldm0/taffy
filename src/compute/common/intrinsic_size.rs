@@ -89,11 +89,11 @@ fn measure_intrinsic_axis(
 
 /// One resolved intrinsic axis value together with cache dependency metadata.
 #[derive(Clone, Copy, Debug, Default)]
-struct IntrinsicAxisValue {
+pub(crate) struct IntrinsicAxisValue {
     /// Resolved border-box size, or `None` when the value is not intrinsic.
-    value: Option<f32>,
+    pub value: Option<f32>,
     /// Whether measuring the value observed a block-constraint dependency.
-    depends_on_block_constraints: bool,
+    pub depends_on_block_constraints: bool,
 }
 
 /// A measured aspect-ratio automatic minimum and its cache dependency.
@@ -196,6 +196,33 @@ struct FitContentContext {
     box_sizing_adjustment: f32,
 }
 
+/// Resolve decoration and percentage context for a parameterized
+/// `fit-content()` value.
+fn fit_content_context(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+    axis: AbsoluteAxis,
+    percentage_basis: Option<f32>,
+    is_required: bool,
+) -> FitContentContext {
+    if !is_required {
+        return FitContentContext::default();
+    }
+
+    let decoration_percentage_basis =
+        inputs.constraint_space(tree.get_writing_mode(node_id)).margin_padding_percentage_basis();
+    let (padding, border, box_sizing) = {
+        let style = tree.get_core_container_style(node_id);
+        (style.padding(), style.border(), style.box_sizing())
+    };
+    let padding = padding.resolve_or_zero(decoration_percentage_basis, |value, basis| tree.calc(value, basis));
+    let border = border.resolve_or_zero(decoration_percentage_basis, |value, basis| tree.calc(value, basis));
+    let box_sizing_adjustment =
+        if box_sizing == BoxSizing::ContentBox { (padding + border).sum_axes().get_abs(axis) } else { 0.0 };
+    FitContentContext { percentage_basis, box_sizing_adjustment }
+}
+
 /// Pass-local inputs for resolving one intrinsic sizing property.
 #[derive(Clone, Copy, Debug)]
 struct IntrinsicValueInput {
@@ -279,6 +306,33 @@ fn resolve_intrinsic_axis_value(
         depends_on_block_constraints: min_content.depends_on_block_constraints
             || max_content.depends_on_block_constraints,
     }
+}
+
+/// Resolve a preferred intrinsic sizing value for a formatting-context-owned
+/// axis.
+///
+/// Flex basis resolution uses the flex container's main-axis percentage basis,
+/// which can intentionally differ from the parent-size state supplied to the
+/// child's content probe. Keeping that basis explicit lets the shared
+/// min/max/fit-content resolver retain CSS's cyclic-percentage behavior without
+/// making the child contribution itself definite.
+pub(crate) fn resolve_intrinsic_preferred_axis_size(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+    value: Dimension,
+    available_space: AvailableSpace,
+    axis: AbsoluteAxis,
+    percentage_basis: Option<f32>,
+) -> IntrinsicAxisValue {
+    let fit_content =
+        fit_content_context(tree, node_id, inputs, axis, percentage_basis, value.is_fit_content_function());
+    resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        value,
+        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Preferred, fit_content },
+    )
 }
 
 /// Intrinsic components of preferred, minimum and maximum sizes in one axis.
@@ -644,21 +698,8 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
     let has_fit_content_function =
         preferred.is_fit_content_function() || min.is_fit_content_function() || max.is_fit_content_function();
-    let fit_content = if has_fit_content_function {
-        let percentage_basis =
-            inputs.constraint_space(tree.get_writing_mode(node_id)).margin_padding_percentage_basis();
-        let (padding, border, box_sizing) = {
-            let style = tree.get_core_container_style(node_id);
-            (style.padding(), style.border(), style.box_sizing())
-        };
-        let padding = padding.resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
-        let border = border.resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
-        let box_sizing_adjustment =
-            if box_sizing == BoxSizing::ContentBox { (padding + border).sum_axes().get_abs(axis) } else { 0.0 };
-        FitContentContext { percentage_basis: inputs.parent_size.get_abs(axis), box_sizing_adjustment }
-    } else {
-        FitContentContext::default()
-    };
+    let fit_content =
+        fit_content_context(tree, node_id, inputs, axis, inputs.parent_size.get_abs(axis), has_fit_content_function);
     let preferred = resolve_intrinsic_axis_value(
         tree,
         node_id,
