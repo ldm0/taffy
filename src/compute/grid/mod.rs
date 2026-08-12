@@ -10,7 +10,7 @@ use crate::tree::{
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
 use crate::util::MaybeMath;
-use crate::util::{MaybeResolve, ResolveOrZero};
+use crate::util::ResolveOrZero;
 use crate::{
     style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
     JustifyContent, LayoutGridContainer, RequestedAxis,
@@ -25,13 +25,10 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::{
-    resolve_size_constraints, ResolvedSizeConstraints, SizeConstraintInput, TransferredSizesMode,
-};
 use super::common::intrinsic_size::{
-    apply_contained_intrinsic_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
+    apply_contained_intrinsic_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
+    ContentBasedBlockSize, NodeSizeConstraintInput,
 };
-use super::common::stretch::resolve_stretch_size_constraints;
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 #[cfg(feature = "detailed_layout_info")]
@@ -113,55 +110,31 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
+    drop(style);
 
-    let mut resolved_constraints = match inputs.sizing_mode {
-        SizingMode::ContentSize => ResolvedSizeConstraints::NONE,
-        SizingMode::InherentSize => {
-            let stretch = resolve_stretch_size_constraints(
-                raw_size,
-                raw_min_size,
-                raw_max_size,
-                available_space.into_options(),
-                padding_border_size,
-            );
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment)
-                    .or(stretch.preferred),
-                min_size: raw_min_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment)
-                    .or(stretch.min),
-                max_size: raw_max_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment)
-                    .or(stretch.max),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inline_auto_behavior: inputs.inline_auto_behavior,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: padding_border_size,
-            });
-            apply_contained_intrinsic_size_constraints(
-                resolved,
-                raw_size,
-                raw_min_size,
-                raw_max_size,
-                explicit_contained_outer_size,
-            )
-        }
-    };
-    let preferred_inline_from_aspect_ratio = resolved_constraints.aspect_ratio_applied.width;
+    let node_sizing = resolve_node_size_constraints(
+        tree,
+        node,
+        inputs,
+        NodeSizeConstraintInput {
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            box_sizing_adjustment,
+            padding_border_size,
+            aspect_ratio,
+            contained_outer_size: explicit_contained_outer_size,
+        },
+    );
+    let mut resolved_constraints = node_sizing.constraints;
     let mut min_size = resolved_constraints.min_size;
     let mut max_size = resolved_constraints.max_size;
-    let mut preferred_size = resolved_constraints.size;
-    let applied_aspect_ratio =
-        run_mode == RunMode::ComputeSize && known_dimensions.width.is_none() && preferred_inline_from_aspect_ratio;
+    let mut preferred_size = node_sizing.preferred_size;
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
 
     preferred_size = preferred_size.or(explicit_contained_outer_size.maybe_clamp(min_size, max_size));
+
+    let style = tree.get_grid_container_style(node);
 
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
@@ -191,7 +164,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let grid_auto_columns = style.grid_auto_columns();
     let grid_auto_rows = style.grid_auto_rows();
 
-    let outer_node_size = resolve_used_size(known_dimensions, preferred_size, min_size, max_size, padding_border_size);
+    let outer_node_size = node_sizing.outer_size;
     let constrained_available_space = outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
         .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
@@ -242,6 +215,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     {
         if let Size { width: Some(width), height: Some(height) } = outer_node_size {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
@@ -249,6 +223,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         if inputs.axis == RequestedAxis::Horizontal {
             if let Some(width) = outer_node_size.width {
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
@@ -477,6 +452,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     max_size = contained_constraints.max_size;
     preferred_size = contained_constraints.size.or(intrinsic_contained_outer_size.maybe_clamp(min_size, max_size));
     let contained_outer_size = intrinsic_contained_outer_size.maybe_clamp(min_size, max_size);
+    let used_outer_size = resolve_used_size(
+        known_dimensions,
+        node_sizing.outer_size.or(preferred_size).or(contained_outer_size),
+        min_size,
+        max_size,
+        padding_border_size,
+    );
     let logical_min_size = flow.to_logical_size(min_size);
     let logical_max_size = flow.to_logical_size(max_size);
     let inner_min_size = logical_min_size.maybe_sub(logical_content_box_inset);
@@ -492,7 +474,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // available size for the real track pass. Items remain present in that
     // pass and may overflow or enlarge intrinsic tracks; they simply cannot
     // feed back into the container's own used size.
-    let logical_used_outer_size = flow.to_logical_size(known_dimensions.or(preferred_size).or(contained_outer_size));
+    let logical_used_outer_size = flow.to_logical_size(used_outer_size);
     if logical_containment_axes.inline_size {
         if let Some(outer_size) = logical_used_outer_size.inline_size {
             let inner_size = f32_max(0.0, outer_size - logical_content_box_inset.inline_size);
@@ -569,8 +551,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
 
     // 6. Compute container size
-    let numeric_resolved_style_size =
-        flow.to_logical_size(known_dimensions.or(preferred_size).or(contained_outer_size));
+    let numeric_resolved_style_size = flow.to_logical_size(used_outer_size);
     let container_inline_border_box = resolve_used_axis(
         logical_known_dimensions.inline_size,
         numeric_resolved_style_size.inline_size.or(Some(initial_column_sum + logical_content_box_inset.inline_size)),
@@ -619,7 +600,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(flow.to_physical_size(container_border_box))
-            .with_block_constraint_dependency(depends_on_block_constraints)
+            .with_block_constraint_dependency(depends_on_block_constraints || node_sizing.depends_on_block_constraints)
             .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 
@@ -832,7 +813,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(flow.to_physical_size(container_border_box))
-            .with_block_constraint_dependency(depends_on_block_constraints)
+            .with_block_constraint_dependency(depends_on_block_constraints || node_sizing.depends_on_block_constraints)
             .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 
@@ -1091,7 +1072,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // If there are not items then return just the container size (no baseline)
     if items.is_empty() {
-        return LayoutOutput::from_outer_size(physical_container_border_box);
+        return LayoutOutput::from_outer_size(physical_container_border_box)
+            .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
+            .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 
     let (first_baseline, last_baseline) = grid_container_baselines(&items, flow);
@@ -1115,6 +1098,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         physical_baseline(Some(first_baseline), physical_container_border_box, flow.writing_direction()),
         physical_baseline(Some(last_baseline), physical_container_border_box, flow.writing_direction()),
     )
+    .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
+    .with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Size explicit Grid tracks with an empty item set.

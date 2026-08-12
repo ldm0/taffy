@@ -7,7 +7,7 @@
 //! retained intrinsic-size state is required.
 
 use crate::geometry::{AbsoluteAxis, LogicalSize, Size, WritingMode};
-use crate::style::{AvailableSpace, CoreStyle, Dimension};
+use crate::style::{AvailableSpace, CoreStyle, Dimension, Overflow};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis,
     SizingMode,
@@ -16,11 +16,11 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, ResolvedAspectRatio};
 
 use super::aspect_ratio::{
-    resolve_size_constraints, ResolvedAxisConstraints, ResolvedSizeConstraints, SizeConstraintInput,
-    TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, ResolvedSizeConstraints,
+    SizeConstraintInput, TransferredSizesMode,
 };
 use super::stretch::resolve_stretch_size_constraints;
-use super::used_size::resolve_inline_auto_size;
+use super::used_size::{resolve_inline_auto_size, resolve_used_size};
 
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
 /// keywords, then reapply the normal minimum-wins clamp.
@@ -688,88 +688,98 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     }
 }
 
-/// Resolve intrinsic inline-size constraints on a node before its
-/// formatting-context algorithm consumes `known_dimensions`.
+/// Inputs needed to resolve the node's initial preferred and limiting sizes.
 ///
-/// This is public for custom [`LayoutPartialTree`] implementations that
-/// dispatch Taffy's low-level algorithms themselves. It is a pure, pass-local
-/// sizing step: recursive measurements use `SizingMode::ContentSize` and the
-/// existing tree cache.
-pub fn resolve_intrinsic_inline_inputs(
+/// Formatting algorithms already own decoration and containment resolution,
+/// so this context keeps the shared sizing operation independent of any one
+/// display mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NodeSizeConstraintInput {
+    /// Authored physical preferred size.
+    pub raw_size: Size<Dimension>,
+    /// Authored physical minimum size.
+    pub raw_min_size: Size<Dimension>,
+    /// Authored physical maximum size.
+    pub raw_max_size: Size<Dimension>,
+    /// Content-box adjustment applied to resolved authored lengths.
+    pub box_sizing_adjustment: Size<f32>,
+    /// Physical padding-and-border sums.
+    pub padding_border_size: Size<f32>,
+    /// Used preferred aspect ratio.
+    pub aspect_ratio: ResolvedAspectRatio,
+    /// Formatting-context-selected size-containment substitute, including
+    /// decoration.
+    pub contained_outer_size: Size<Option<f32>>,
+}
+
+/// Child-owned initial geometry derived from style and a constraint space.
+///
+/// This is deliberately separate from [`LayoutInput::known_dimensions`]. A
+/// known dimension is a fixed size owned by the parent formatting context;
+/// these values are the node's own preferred/minimum/maximum sizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedNodeSizing {
+    /// Preferred physical border-box size after intrinsic keywords, stretch,
+    /// containment and preferred-ratio transfer.
+    pub preferred_size: Size<Option<f32>>,
+    /// Used physical minimum constraints.
+    pub min_size: Size<Option<f32>>,
+    /// Used physical maximum constraints.
+    pub max_size: Size<Option<f32>>,
+    /// Initial physical border-box geometry after parent-fixed dimensions and
+    /// child-owned sizing have been combined.
+    pub outer_size: Size<Option<f32>>,
+    /// Whether resolving the logical inline axis measured content dependent
+    /// on the containing block's block constraint.
+    pub depends_on_block_constraints: bool,
+    /// Whether the logical inline size was synthesized through the preferred
+    /// aspect ratio.
+    pub applied_aspect_ratio: bool,
+    /// Source-preserving constraints used by block-size resolution.
+    pub(crate) constraints: ResolvedSizeConstraints,
+}
+
+impl ResolvedNodeSizing {
+    /// No authored sizing participates in a content-only measurement.
+    pub(crate) const NONE: Self = Self {
+        preferred_size: Size::NONE,
+        min_size: Size::NONE,
+        max_size: Size::NONE,
+        outer_size: Size::NONE,
+        depends_on_block_constraints: false,
+        applied_aspect_ratio: false,
+        constraints: ResolvedSizeConstraints::NONE,
+    };
+}
+
+/// Resolve a node's initial sizing geometry without changing its constraint
+/// space.
+///
+/// This is Taffy's counterpart to Blink's initial fragment geometry sizing:
+/// parent-fixed dimensions remain in `known_dimensions`, while authored and
+/// intrinsic sizes are returned as child-owned data.
+pub(crate) fn resolve_node_size_constraints(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
-) -> LayoutInput {
-    resolve_intrinsic_inline_inputs_with_provenance(tree, node_id, inputs).inputs
-}
-
-/// Resolved input for an intrinsic sizing operation and the provenance needed
-/// by the node sizing boundary.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ResolvedIntrinsicInlineInputs {
-    /// Layout input with the logical inline-size resolved into a known
-    /// border-box dimension when the constraint space determines it.
-    pub inputs: LayoutInput,
-    /// Whether resolving those keywords measured content whose inline
-    /// contribution depends on the containing block's block-size.
-    pub depends_on_block_constraints: bool,
-    /// Whether resolving the preferred inline size synthesized it from the
-    /// block axis through the node's preferred aspect ratio.
-    pub applied_aspect_ratio: bool,
-}
-
-/// Resolve intrinsic inline-size keywords while retaining dependency
-/// provenance from recursive content measurements.
-///
-/// Browser integrations that implement [`LayoutPartialTree`] directly should
-/// use this entry point before [`crate::compute_cached_size`], so a resolved
-/// `known_dimensions` does not erase the dependency that produced it.
-pub fn resolve_intrinsic_inline_inputs_with_provenance(
-    tree: &mut impl LayoutPartialTree,
-    node_id: crate::NodeId,
-    mut inputs: LayoutInput,
-) -> ResolvedIntrinsicInlineInputs {
-    if inputs.sizing_mode != SizingMode::InherentSize {
-        return ResolvedIntrinsicInlineInputs {
-            inputs,
-            depends_on_block_constraints: false,
-            applied_aspect_ratio: false,
-        };
-    }
-
-    let writing_mode = tree.get_writing_mode(node_id);
-    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let (
+    sizing: NodeSizeConstraintInput,
+) -> ResolvedNodeSizing {
+    let NodeSizeConstraintInput {
         raw_size,
         raw_min_size,
         raw_max_size,
-        padding_border_size,
         box_sizing_adjustment,
+        padding_border_size,
         aspect_ratio,
         contained_outer_size,
-    ) = {
-        let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
-        let size_containment = tree.get_size_containment(node_id);
-        let style = tree.get_core_container_style(node_id);
-        let raw_size = style.size();
-        let raw_min_size = style.min_size();
-        let raw_max_size = style.max_size();
-        let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
-        let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
-        let box_sizing_adjustment =
-            if style.box_sizing() == BoxSizing::ContentBox { (padding + border).sum_axes() } else { Size::ZERO };
-        let padding_border_size = (padding + border).sum_axes();
-        let contained_outer_size = size_containment.resolve_explicit_outer_size(padding_border_size);
-        (
-            raw_size,
-            raw_min_size,
-            raw_max_size,
-            padding_border_size,
-            box_sizing_adjustment,
-            aspect_ratio,
-            contained_outer_size,
-        )
-    };
+    } = sizing;
+    if inputs.sizing_mode != SizingMode::InherentSize {
+        return ResolvedNodeSizing {
+            outer_size: inputs.known_dimensions.or(contained_outer_size),
+            ..ResolvedNodeSizing::NONE
+        };
+    }
+    let writing_mode = tree.get_writing_mode(node_id);
     let inline_axis = writing_mode.inline_axis();
     // `available_space` is the border-box space offered by the containing
     // formatting context. Parent algorithms have already applied their own
@@ -845,20 +855,92 @@ pub fn resolve_intrinsic_inline_inputs_with_provenance(
         inputs.inline_auto_behavior,
         inputs.available_space,
     );
-    let preferred_inline_size = resolved
+    let preferred_size = resolved
         .size
-        .get_abs(inline_axis)
-        .maybe_clamp(resolved.min_size.get_abs(inline_axis), resolved.max_size.get_abs(inline_axis));
-    let applied_aspect_ratio =
-        inputs.known_dimensions.get_abs(inline_axis).is_none() && resolved.aspect_ratio_applied.get_abs(inline_axis);
+        .maybe_clamp(resolved.min_size, resolved.max_size)
+        .or(contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
+    let min_max_definite_size = resolved.min_size.zip_map(resolved.max_size, |min, max| match (min, max) {
+        (Some(min), Some(max)) if max <= min => Some(min),
+        _ => None,
+    });
+    let size_before_fixed_ratio = resolve_used_size(
+        inputs.known_dimensions,
+        min_max_definite_size.or(preferred_size),
+        resolved.min_size,
+        resolved.max_size,
+        padding_border_size,
+    );
+    let size_after_fixed_ratio = apply_preferred_aspect_ratio(
+        size_before_fixed_ratio,
+        raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inputs.inline_auto_behavior,
+        inputs.block_auto_behavior,
+        aspect_ratio,
+        padding_border_size,
+    );
+    let outer_size = resolve_used_size(
+        inputs.known_dimensions,
+        size_after_fixed_ratio,
+        resolved.min_size,
+        resolved.max_size,
+        padding_border_size,
+    );
+    let applied_aspect_ratio = inputs.known_dimensions.get_abs(inline_axis).is_none()
+        && min_max_definite_size.get_abs(inline_axis).is_none()
+        && (resolved.aspect_ratio_applied.get_abs(inline_axis)
+            || (size_before_fixed_ratio.get_abs(inline_axis).is_none()
+                && size_after_fixed_ratio.get_abs(inline_axis).is_some()));
 
-    let mut known_logical_size = writing_mode.to_logical(inputs.known_dimensions);
-    known_logical_size.inline_size = known_logical_size.inline_size.or(preferred_inline_size);
-    inputs.known_dimensions = writing_mode.to_physical(known_logical_size);
-    ResolvedIntrinsicInlineInputs {
-        inputs,
+    ResolvedNodeSizing {
+        preferred_size,
+        min_size: resolved.min_size,
+        max_size: resolved.max_size,
+        outer_size,
         depends_on_block_constraints: intrinsic.depends_on_block_constraints
             || automatic_minimum.depends_on_block_constraints,
         applied_aspect_ratio,
+        constraints: resolved,
     }
+}
+
+/// Resolve leaf sizing directly from its style projection.
+///
+/// Custom tree adapters use this at their cache-miss dispatch boundary before
+/// invoking the low-level leaf algorithm.
+pub fn resolve_leaf_node_sizing(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+) -> ResolvedNodeSizing {
+    let writing_mode = tree.get_writing_mode(node_id);
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
+    let sizing = {
+        let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+        let size_containment = tree.get_size_containment(node_id);
+        let style = tree.get_core_container_style(node_id);
+        let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let padding_border_size = (padding + border).sum_axes();
+        let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
+            Overflow::Scroll => style.scrollbar_width(),
+            _ => 0.0,
+        });
+        let content_box_inset_size =
+            padding_border_size + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+        NodeSizeConstraintInput {
+            raw_size: style.size(),
+            raw_min_size: style.min_size(),
+            raw_max_size: style.max_size(),
+            box_sizing_adjustment: if style.box_sizing() == BoxSizing::ContentBox {
+                padding_border_size
+            } else {
+                Size::ZERO
+            },
+            padding_border_size,
+            aspect_ratio,
+            contained_outer_size: size_containment.resolve_outer_size(Size::ZERO, content_box_inset_size),
+        }
+    };
+    resolve_node_size_constraints(tree, node_id, inputs, sizing)
 }
