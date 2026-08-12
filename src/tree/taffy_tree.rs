@@ -8,7 +8,7 @@ use slotmap::{DefaultKey, SlotMap};
 #[cfg(feature = "block_layout")]
 use crate::block::BlockContext;
 use crate::geometry::{Size, WritingMode};
-use crate::style::{AvailableSpace, Display, Style};
+use crate::style::{AvailableSpace, Display, SizeContainment, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
     Cache, ClearState, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
@@ -18,8 +18,8 @@ use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_cached_size, compute_hidden_layout,
-    compute_leaf_layout_with_aspect_ratio_and_writing_mode, compute_root_layout, round_layout,
+    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_sizing_context,
+    compute_root_layout, round_layout, LeafSizingContext,
 };
 use crate::CacheTree;
 
@@ -100,6 +100,9 @@ struct NodeData {
     /// The inherited writing mode that owns this node's logical axes.
     pub(crate) writing_mode: WritingMode,
 
+    /// Used size-containment state at this layout-node boundary.
+    pub(crate) size_containment: SizeContainment,
+
     /// The always unrounded results of the layout computation. We must store this separately from the rounded
     /// layout to avoid errors from rounding already-rounded values. See <https://github.com/DioxusLabs/taffy/issues/501>.
     pub(crate) unrounded_layout: Layout,
@@ -126,6 +129,7 @@ impl NodeData {
         Self {
             style,
             writing_mode: WritingMode::HorizontalTb,
+            size_containment: SizeContainment::NONE,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
@@ -339,6 +343,7 @@ where
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
                     let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+                    let size_containment = tree.get_size_containment(node_id);
                     let node_key = node_id.into();
                     let writing_mode = tree.taffy.nodes[node_key].writing_mode;
                     let style = &tree.taffy.nodes[node_key].style;
@@ -347,11 +352,10 @@ where
                     let measure_function = |known_dimensions, available_space| {
                         (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
                     };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    compute_leaf_layout_with_sizing_context(
                         inputs,
                         style,
-                        writing_mode,
-                        aspect_ratio,
+                        LeafSizingContext::new(writing_mode, aspect_ratio, size_containment),
                         |_, _| 0.0,
                         measure_function,
                     )
@@ -388,6 +392,7 @@ where
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
                     let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+                    let size_containment = tree.get_size_containment(node_id);
                     let node_key = node_id.into();
                     let writing_mode = tree.taffy.nodes[node_key].writing_mode;
                     let style = &tree.taffy.nodes[node_key].style;
@@ -396,11 +401,10 @@ where
                     let measure_function = |known_dimensions, available_space| {
                         (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
                     };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    compute_leaf_layout_with_sizing_context(
                         inputs,
                         style,
-                        writing_mode,
-                        aspect_ratio,
+                        LeafSizingContext::new(writing_mode, aspect_ratio, size_containment),
                         |_, _| 0.0,
                         measure_function,
                     )
@@ -469,6 +473,11 @@ where
     #[inline(always)]
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.taffy.nodes[node_id.into()].writing_mode
+    }
+
+    #[inline(always)]
+    fn get_size_containment(&self, node_id: NodeId) -> SizeContainment {
+        self.taffy.nodes[node_id.into()].size_containment
     }
 
     #[inline(always)]
@@ -956,6 +965,19 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn writing_mode(&self, node: NodeId) -> TaffyResult<WritingMode> {
         Ok(self.nodes[node.into()].writing_mode)
+    }
+
+    /// Sets the used size-containment state at this node boundary.
+    #[inline]
+    pub fn set_size_containment(&mut self, node: NodeId, size_containment: SizeContainment) -> TaffyResult<()> {
+        self.nodes[node.into()].size_containment = size_containment;
+        self.mark_dirty(node)
+    }
+
+    /// Gets the used size-containment state at this node boundary.
+    #[inline]
+    pub fn size_containment(&self, node: NodeId) -> TaffyResult<SizeContainment> {
+        Ok(self.nodes[node.into()].size_containment)
     }
 
     /// Return this node layout relative to its parent

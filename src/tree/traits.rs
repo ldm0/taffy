@@ -130,7 +130,7 @@ use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOu
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Size, WritingMode};
-use crate::style::{CoreStyle, ResolvedAspectRatio};
+use crate::style::{CoreStyle, ResolvedAspectRatio, SizeContainment};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -204,6 +204,15 @@ pub trait LayoutPartialTree: TraversePartialTree {
     fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> ResolvedAspectRatio {
         let style = self.get_core_container_style(node_id);
         ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() }
+    }
+
+    /// Returns the node's used size-containment state.
+    ///
+    /// Browser integrations may override this node-level seam to apply box
+    /// eligibility and select remembered intrinsic sizes without putting DOM
+    /// lifetime state into numeric style data.
+    fn get_size_containment(&self, _node_id: NodeId) -> SizeContainment {
+        SizeContainment::NONE
     }
 
     /// Resolve calc value

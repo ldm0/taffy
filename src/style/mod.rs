@@ -54,6 +54,79 @@ use crate::util::sys::GridTrackVec;
 
 use crate::sys::String;
 
+/// Used size-containment state at the layout-node boundary.
+///
+/// CSS containment eligibility and `auto` remembered-size selection belong to
+/// the embedding engine. Layout receives the resulting physical axes and the
+/// selected intrinsic content-box override, mirroring Blink's
+/// `OverrideIntrinsicContent*Size` boundary.
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SizeContainment {
+    /// Physical axes whose intrinsic contributions ignore descendants.
+    pub axes: Size<bool>,
+    /// Selected physical intrinsic content-box sizes.
+    ///
+    /// `None` means that the contained axis has no explicit override. The
+    /// formatting context then supplies its intrinsic size without children:
+    /// zero for ordinary boxes, or track-derived size for Grid.
+    pub intrinsic_content_size: Size<Option<f32>>,
+}
+
+impl SizeContainment {
+    /// No size containment.
+    pub const NONE: Self = Self { axes: Size { width: false, height: false }, intrinsic_content_size: Size::NONE };
+
+    /// Construct used physical size-containment state.
+    #[inline(always)]
+    pub const fn new(axes: Size<bool>, intrinsic_content_size: Size<Option<f32>>) -> Self {
+        Self { axes, intrinsic_content_size }
+    }
+
+    /// Resolve contained intrinsic content sizes to outer border-box sizes.
+    ///
+    /// `without_children` is formatting-context specific. Ordinary block,
+    /// flex, and leaf boxes pass zero; Grid passes the size of tracks computed
+    /// without item contributions.
+    #[inline(always)]
+    pub(crate) fn resolve_outer_size(
+        self,
+        without_children: Size<f32>,
+        content_box_inset: Size<f32>,
+    ) -> Size<Option<f32>> {
+        Size {
+            width: self
+                .axes
+                .width
+                .then(|| self.intrinsic_content_size.width.unwrap_or(without_children.width) + content_box_inset.width),
+            height: self.axes.height.then(|| {
+                self.intrinsic_content_size.height.unwrap_or(without_children.height) + content_box_inset.height
+            }),
+        }
+    }
+
+    /// Resolve only authored or remembered intrinsic overrides to outer sizes.
+    ///
+    /// Grid uses this before track sizing because a contained axis without an
+    /// explicit override derives its no-children size from its tracks instead
+    /// of using the ordinary zero fallback.
+    #[inline(always)]
+    pub(crate) fn resolve_explicit_outer_size(self, content_box_inset: Size<f32>) -> Size<Option<f32>> {
+        Size {
+            width: if self.axes.width {
+                self.intrinsic_content_size.width.map(|size| size + content_box_inset.width)
+            } else {
+                None
+            },
+            height: if self.axes.height {
+                self.intrinsic_content_size.height.map(|size| size + content_box_inset.height)
+            } else {
+                None
+            },
+        }
+    }
+}
+
 /// Trait that represents a cheaply clonable string. If you're unsure what to use here
 /// consider `Arc<str>` or `string_cache::Atom`.
 #[cfg(any(feature = "alloc", feature = "std"))]
@@ -179,7 +252,6 @@ pub trait CoreStyle {
     fn aspect_ratio(&self) -> Option<f32> {
         Style::<Self::CustomIdent>::DEFAULT.aspect_ratio
     }
-
     // Spacing Properties
     /// How large should the margin be on each side?
     #[inline(always)]
@@ -530,7 +602,6 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     ///
     /// The ratio is calculated as width divided by height.
     pub aspect_ratio: Option<f32>,
-
     // Spacing Properties
     /// How large should the margin be on each side?
     #[cfg_attr(feature = "serde", serde(default = "style_helpers::zero"))]

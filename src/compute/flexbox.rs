@@ -31,8 +31,8 @@ use super::common::aspect_ratio::{
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
-    ContentBasedBlockSize,
+    apply_contained_intrinsic_size_constraints, measure_intrinsic_block_size_constraints,
+    resolve_intrinsic_width_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
@@ -459,6 +459,7 @@ pub fn compute_flexbox_layout(
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
+    let size_containment = tree.get_size_containment(node);
     let style = tree.get_flexbox_container_style(node);
 
     // Pull these out earlier to avoid borrowing issues
@@ -472,6 +473,13 @@ pub fn compute_flexbox_layout(
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
+        Overflow::Scroll => style.scrollbar_width(),
+        _ => 0.0,
+    });
+    let content_box_inset_size = padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+    let contained_outer_size = size_containment.resolve_outer_size(Size::ZERO, content_box_inset_size);
+    let contained_outer_block_size = writing_mode.to_logical(contained_outer_size).block_size;
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
     let raw_size = style.size();
@@ -491,9 +499,10 @@ pub fn compute_flexbox_layout(
         padding_border_sum,
         inputs.block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
         is_scroll_container,
+        contained_outer_block_size,
     );
     let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
-        && content_based_block_size.requires_intrinsic_measurement()
+        && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
 
     let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
@@ -516,6 +525,13 @@ pub fn compute_flexbox_layout(
                 aspect_ratio,
                 padding_border: padding_border_sum,
             });
+            let resolved = apply_contained_intrinsic_size_constraints(
+                resolved,
+                raw_size,
+                raw_min_size,
+                raw_max_size,
+                contained_outer_size,
+            );
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
@@ -534,8 +550,9 @@ pub fn compute_flexbox_layout(
         && preferred_inline_from_aspect_ratio;
 
     // The size of the container should be floored by the padding and border
-    let styled_based_known_dimensions =
-        known_dimensions.or(min_max_definite_size.or(clamped_style_size).maybe_max(padding_border_sum));
+    let contained_outer_size = contained_outer_size.maybe_clamp(min_size, max_size);
+    let styled_based_known_dimensions = known_dimensions
+        .or(min_max_definite_size.or(clamped_style_size).or(contained_outer_size).maybe_max(padding_border_sum));
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
@@ -863,7 +880,7 @@ fn compute_constants(
     let raw_size = style.size();
     let resolve_content_based_block_size = sizing_mode == SizingMode::InherentSize
         && inputs.axis.contains(writing_mode.block_axis())
-        && content_based_block_size.requires_intrinsic_measurement();
+        && content_based_block_size.requires_resolution();
     let resolved_constraints = resolve_size_constraints(SizeConstraintInput {
         size: raw_size.maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment),
         min_size: style
@@ -3072,6 +3089,7 @@ fn perform_absolute_layout_on_absolute_children(
             padding_border_sum,
             block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
             overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+            None,
         );
         let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
             tree,

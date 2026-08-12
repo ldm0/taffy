@@ -15,6 +15,58 @@ use crate::tree::{
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, ResolvedAspectRatio};
 
+use super::aspect_ratio::ResolvedSizeConstraints;
+
+/// Substitute a contained intrinsic border-box size for intrinsic sizing
+/// keywords, then reapply the normal minimum-wins clamp.
+///
+/// Length/percentage resolution deliberately leaves intrinsic keywords
+/// unresolved. Size containment makes their min-content and max-content
+/// contributions equal, so formatting contexts can complete that shared step
+/// without recursively measuring descendants.
+pub(crate) fn apply_contained_intrinsic_size_constraints(
+    mut resolved: ResolvedSizeConstraints,
+    raw_size: Size<Dimension>,
+    raw_min_size: Size<Dimension>,
+    raw_max_size: Size<Dimension>,
+    contained_outer_size: Size<Option<f32>>,
+) -> ResolvedSizeConstraints {
+    resolved.size = Size {
+        width: resolved.size.width.or(raw_size.width.is_intrinsic().then_some(contained_outer_size.width).flatten()),
+        height: resolved.size.height.or(raw_size
+            .height
+            .is_intrinsic()
+            .then_some(contained_outer_size.height)
+            .flatten()),
+    };
+    resolved.min_size = Size {
+        width: resolved.min_size.width.or(raw_min_size
+            .width
+            .is_intrinsic()
+            .then_some(contained_outer_size.width)
+            .flatten()),
+        height: resolved.min_size.height.or(raw_min_size
+            .height
+            .is_intrinsic()
+            .then_some(contained_outer_size.height)
+            .flatten()),
+    };
+    resolved.max_size = Size {
+        width: resolved.max_size.width.or(raw_max_size
+            .width
+            .is_intrinsic()
+            .then_some(contained_outer_size.width)
+            .flatten()),
+        height: resolved.max_size.height.or(raw_max_size
+            .height
+            .is_intrinsic()
+            .then_some(contained_outer_size.height)
+            .flatten()),
+    };
+    resolved.size = resolved.size.maybe_clamp(resolved.min_size, resolved.max_size);
+    resolved
+}
+
 /// Measure one intrinsic contribution along a physical axis.
 fn measure_intrinsic_axis(
     tree: &mut impl LayoutPartialTree,
@@ -337,6 +389,8 @@ pub(crate) struct ContentBasedBlockSize {
     auto_size_is_content_based: bool,
     /// Whether overflow establishes a scroll container that disables the automatic minimum.
     is_scroll_container: bool,
+    /// Contained intrinsic border-box size selected by the formatting-context boundary.
+    intrinsic_border_box_override: Option<f32>,
 }
 
 impl ContentBasedBlockSize {
@@ -348,8 +402,41 @@ impl ContentBasedBlockSize {
         padding_border: Size<f32>,
         auto_size_is_content_based: bool,
         is_scroll_container: bool,
+        intrinsic_border_box_override: Option<f32>,
     ) -> Self {
-        Self { properties, aspect_ratio, padding_border, auto_size_is_content_based, is_scroll_container }
+        Self {
+            properties,
+            aspect_ratio,
+            padding_border,
+            auto_size_is_content_based,
+            is_scroll_container,
+            intrinsic_border_box_override,
+        }
+    }
+
+    /// Replace the formatting context's intrinsic block-size contribution.
+    ///
+    /// Grid discovers its no-children track size after constructing its track
+    /// collection, whereas ordinary formatting contexts know their zero-based
+    /// override at construction time.
+    #[inline(always)]
+    pub(crate) const fn with_intrinsic_border_box_override(
+        mut self,
+        intrinsic_border_box_override: Option<f32>,
+    ) -> Self {
+        self.intrinsic_border_box_override = intrinsic_border_box_override;
+        self
+    }
+
+    /// Whether content-based block-axis properties need to be resolved.
+    #[inline(always)]
+    pub(crate) fn requires_resolution(self) -> bool {
+        self.properties.uses_intrinsic_size()
+            || self.properties.applies_automatic_minimum(
+                self.aspect_ratio.ratio.is_some(),
+                self.auto_size_is_content_based,
+                self.is_scroll_container,
+            )
     }
 
     /// Whether this pass needs the formatting context's real intrinsic block
@@ -361,12 +448,7 @@ impl ContentBasedBlockSize {
     /// `SizeType::kIntrinsic` callbacks in `ComputeBlockSizeForFragment`.
     #[inline(always)]
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
-        self.properties.uses_intrinsic_size()
-            || self.properties.applies_automatic_minimum(
-                self.aspect_ratio.ratio.is_some(),
-                self.auto_size_is_content_based,
-                self.is_scroll_container,
-            )
+        self.requires_resolution() && self.intrinsic_border_box_override.is_none()
     }
 
     /// Resolve preferred/minimum/maximum content-based block constraints from
@@ -381,7 +463,7 @@ impl ContentBasedBlockSize {
         let ratio_block_size =
             resolve_aspect_ratio_block_size(writing_mode, outer_inline_size, self.aspect_ratio, self.padding_border);
         self.properties.resolve_content_based_constraints(
-            intrinsic_border_box_size,
+            self.intrinsic_border_box_override.unwrap_or(intrinsic_border_box_size),
             ratio_block_size,
             self.auto_size_is_content_based,
             self.is_scroll_container,
@@ -420,13 +502,16 @@ pub(crate) fn measure_intrinsic_block_size_constraints(
     mut child_input: ChildLayoutInput,
     resolver: ContentBasedBlockSize,
 ) -> IntrinsicSizeConstraints {
-    if !resolver.requires_intrinsic_measurement() {
+    if !resolver.requires_resolution() {
         return IntrinsicSizeConstraints::default();
     }
 
     let writing_mode = tree.get_writing_mode(node_id);
     let mut known_logical_size = writing_mode.to_logical(child_input.known_dimensions);
     let outer_inline_size = known_logical_size.inline_size;
+    if !resolver.requires_intrinsic_measurement() {
+        return resolver.resolve(writing_mode, outer_inline_size, 0.0);
+    }
     known_logical_size.block_size = None;
     child_input.known_dimensions = writing_mode.to_physical(known_logical_size);
     child_input.sizing_mode = SizingMode::ContentSize;
