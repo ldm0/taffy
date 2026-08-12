@@ -20,6 +20,7 @@ use super::aspect_ratio::{
     TransferredSizesMode,
 };
 use super::stretch::resolve_stretch_size_constraints;
+use super::used_size::resolve_inline_auto_size;
 
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
 /// keywords, then reapply the normal minimum-wins clamp.
@@ -687,27 +688,27 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     }
 }
 
-/// Resolve intrinsic width/min-width/max-width values on a node before its
+/// Resolve intrinsic inline-size constraints on a node before its
 /// formatting-context algorithm consumes `known_dimensions`.
 ///
 /// This is public for custom [`LayoutPartialTree`] implementations that
 /// dispatch Taffy's low-level algorithms themselves. It is a pure, pass-local
 /// sizing step: recursive measurements use `SizingMode::ContentSize` and the
 /// existing tree cache.
-pub fn resolve_intrinsic_width_inputs(
+pub fn resolve_intrinsic_inline_inputs(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
 ) -> LayoutInput {
-    resolve_intrinsic_width_inputs_with_provenance(tree, node_id, inputs).inputs
+    resolve_intrinsic_inline_inputs_with_provenance(tree, node_id, inputs).inputs
 }
 
 /// Resolved input for an intrinsic sizing operation and the provenance needed
 /// by the node sizing boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ResolvedIntrinsicWidthInputs {
-    /// Layout input with intrinsic inline-size keywords resolved into a known
-    /// border-box width.
+pub struct ResolvedIntrinsicInlineInputs {
+    /// Layout input with the logical inline-size resolved into a known
+    /// border-box dimension when the constraint space determines it.
     pub inputs: LayoutInput,
     /// Whether resolving those keywords measured content whose inline
     /// contribution depends on the containing block's block-size.
@@ -722,14 +723,14 @@ pub struct ResolvedIntrinsicWidthInputs {
 ///
 /// Browser integrations that implement [`LayoutPartialTree`] directly should
 /// use this entry point before [`crate::compute_cached_size`], so a resolved
-/// `known_dimensions.width` does not erase the dependency that produced it.
-pub fn resolve_intrinsic_width_inputs_with_provenance(
+/// `known_dimensions` does not erase the dependency that produced it.
+pub fn resolve_intrinsic_inline_inputs_with_provenance(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     mut inputs: LayoutInput,
-) -> ResolvedIntrinsicWidthInputs {
+) -> ResolvedIntrinsicInlineInputs {
     if inputs.sizing_mode != SizingMode::InherentSize {
-        return ResolvedIntrinsicWidthInputs {
+        return ResolvedIntrinsicInlineInputs {
             inputs,
             depends_on_block_constraints: false,
             applied_aspect_ratio: false,
@@ -742,7 +743,6 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         raw_size,
         raw_min_size,
         raw_max_size,
-        margin,
         padding_border_size,
         box_sizing_adjustment,
         aspect_ratio,
@@ -754,7 +754,6 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         let raw_size = style.size();
         let raw_min_size = style.min_size();
         let raw_max_size = style.max_size();
-        let margin = style.margin().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let box_sizing_adjustment =
@@ -765,45 +764,59 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
             raw_size,
             raw_min_size,
             raw_max_size,
-            margin,
             padding_border_size,
             box_sizing_adjustment,
             aspect_ratio,
             contained_outer_size,
         )
     };
-    let available_width = inputs.available_space.width.maybe_sub(margin.horizontal_axis_sum());
+    let inline_axis = writing_mode.inline_axis();
+    // `available_space` is the border-box space offered by the containing
+    // formatting context. Parent algorithms have already applied their own
+    // margin, alignment, track, line and inset rules at that boundary.
+    let available_inline_size = inputs.available_space.get_abs(inline_axis);
+    let available_border_box_space = inputs.available_space.into_options();
     let stretch = resolve_stretch_size_constraints(
         raw_size,
         raw_min_size,
         raw_max_size,
-        Size { width: available_width.into_option(), height: None },
+        available_border_box_space,
         padding_border_size,
     );
 
-    let intrinsic = resolve_intrinsic_width_constraints(
+    let logical_raw_size = writing_mode.to_logical(raw_size);
+    let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
+    let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
+    let intrinsic = resolve_intrinsic_axis_constraints(
         tree,
         node_id,
         inputs,
-        raw_size.width,
-        raw_min_size.width,
-        raw_max_size.width,
-        available_width,
+        IntrinsicAxisInput {
+            preferred: logical_raw_size.inline_size,
+            min: logical_raw_min_size.inline_size,
+            max: logical_raw_max_size.inline_size,
+            available_space: available_inline_size,
+            axis: inline_axis,
+        },
     );
 
     let mut resolved = apply_contained_intrinsic_size_constraints(
         resolve_size_constraints(SizeConstraintInput {
             size: raw_size
                 .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.preferred),
             min_size: raw_min_size
                 .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.min),
             max_size: raw_max_size
                 .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_add(box_sizing_adjustment),
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.max),
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode,
+            inline_auto_behavior: inputs.inline_auto_behavior,
             block_auto_behavior: inputs.block_auto_behavior,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
@@ -814,26 +827,35 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         raw_max_size,
         contained_outer_size,
     );
-    resolved.size.width = resolved.size.width.or(stretch.preferred.width).or(intrinsic.preferred);
+    let mut logical_resolved_size = writing_mode.to_logical(resolved.size);
+    logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
+    resolved.size = writing_mode.to_physical(logical_resolved_size);
     resolved.apply_late_authored_constraints(
-        Size { width: stretch.min.width.or(intrinsic.min), height: None },
-        Size { width: stretch.max.width.or(intrinsic.max), height: None },
+        writing_mode.to_physical(LogicalSize { inline_size: intrinsic.min, block_size: None }),
+        writing_mode.to_physical(LogicalSize { inline_size: intrinsic.max, block_size: None }),
     );
 
-    let automatic_minimum = measure_aspect_ratio_automatic_minimum(
-        tree,
-        node_id,
-        inputs,
-        AbsoluteAxis::Horizontal,
-        padding_border_size,
-        resolved,
+    let automatic_minimum =
+        measure_aspect_ratio_automatic_minimum(tree, node_id, inputs, inline_axis, padding_border_size, resolved);
+    resolved.apply_automatic_minimum(inline_axis, automatic_minimum.value);
+    resolved.size = resolve_inline_auto_size(
+        resolved.size,
+        raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inputs.inline_auto_behavior,
+        inputs.available_space,
     );
-    resolved.apply_automatic_minimum(AbsoluteAxis::Horizontal, automatic_minimum.value);
-    let preferred_width = resolved.size.width.maybe_clamp(resolved.min_size.width, resolved.max_size.width);
-    let applied_aspect_ratio = inputs.known_dimensions.width.is_none() && resolved.aspect_ratio_applied.width;
+    let preferred_inline_size = resolved
+        .size
+        .get_abs(inline_axis)
+        .maybe_clamp(resolved.min_size.get_abs(inline_axis), resolved.max_size.get_abs(inline_axis));
+    let applied_aspect_ratio =
+        inputs.known_dimensions.get_abs(inline_axis).is_none() && resolved.aspect_ratio_applied.get_abs(inline_axis);
 
-    inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred_width);
-    ResolvedIntrinsicWidthInputs {
+    let mut known_logical_size = writing_mode.to_logical(inputs.known_dimensions);
+    known_logical_size.inline_size = known_logical_size.inline_size.or(preferred_inline_size);
+    inputs.known_dimensions = writing_mode.to_physical(known_logical_size);
+    ResolvedIntrinsicInlineInputs {
         inputs,
         depends_on_block_constraints: intrinsic.depends_on_block_constraints
             || automatic_minimum.depends_on_block_constraints,

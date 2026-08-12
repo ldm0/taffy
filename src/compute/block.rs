@@ -356,6 +356,10 @@ struct BlockItem {
     /// Whether the child is a non-independent block or inline node
     is_in_same_bfc: bool,
 
+    /// How this containing block resolves the child's authored automatic
+    /// logical inline size.
+    inline_auto_behavior: AutoSizeBehavior,
+
     #[cfg(feature = "float_layout")]
     /// The `float` style of the node
     float: Float,
@@ -372,12 +376,6 @@ struct BlockItem {
     /// Content-derived logical inline minimum whose authored/transferred
     /// ordering must be reapplied when percentages become definite.
     automatic_inline_minimum: Option<f32>,
-    /// Authored logical block-axis properties resolved once the item's final
-    /// inline constraint is known.
-    block_size_properties: BlockSizeProperties,
-    /// Source-preserving logical block-axis min/max constraints.
-    block_axis_constraints: ResolvedAxisConstraints,
-
     /// The overflow style of the item
     overflow: Point<Overflow>,
     /// Physical thickness of the item's scrollbars (if it has scrollbars).
@@ -484,18 +482,29 @@ pub fn compute_block_layout(
         match inputs.sizing_mode {
             SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false, ResolvedAxisConstraints::NONE),
             SizingMode::InherentSize => {
+                let stretch = resolve_stretch_size_constraints(
+                    raw_size,
+                    raw_min_size,
+                    raw_max_size,
+                    inputs.available_space.into_options(),
+                    padding_border_size,
+                );
                 let resolved = resolve_size_constraints(SizeConstraintInput {
                     size: raw_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.preferred),
                     min_size: raw_min_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.min),
                     max_size: raw_max_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.max),
                     size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                     writing_mode,
+                    inline_auto_behavior: inputs.inline_auto_behavior,
                     block_auto_behavior: inputs.block_auto_behavior,
                     transferred_sizes_mode: TransferredSizesMode::Normal,
                     aspect_ratio,
@@ -667,6 +676,7 @@ fn compute_inner(
                     .maybe_add(box_sizing_adjustment),
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode,
+                inline_auto_behavior: inputs.inline_auto_behavior,
                 block_auto_behavior: inputs.block_auto_behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
@@ -688,6 +698,7 @@ fn compute_inner(
             known_dimensions,
             raw_size.map(|dimension| dimension.is_auto()),
             writing_mode,
+            inputs.inline_auto_behavior,
             inputs.block_auto_behavior,
             aspect_ratio,
             padding_border_size,
@@ -747,12 +758,13 @@ fn compute_inner(
     // sizing calculation even though normal margin collapsing still controls
     // fragment placement. Keep this as constraint-space state at the parent
     // boundary, matching Blink's IgnoreMarginsForStretch flag.
-    let ignore_stretch_margins = writing_direction.to_physical_box_strut(LogicalBoxStrut {
+    let logical_ignore_stretch_margins = LogicalBoxStrut {
         inline_start: false,
         inline_end: false,
         block_start: !block_ctx.is_bfc_root() && logical_padding_border.block_start == 0.0,
         block_end: !block_ctx.is_bfc_root() && logical_padding_border.block_end == 0.0,
-    });
+    };
+    let ignore_stretch_margins = writing_direction.to_physical_box_strut(logical_ignore_stretch_margins);
 
     // 1. Generate items
     let mut items = generate_item_list(
@@ -837,6 +849,7 @@ fn compute_inner(
             text_align,
             writing_direction,
             own_margins_collapse_with_children,
+            ignore_stretch_margins: logical_ignore_stretch_margins,
         },
         block_ctx,
     );
@@ -1073,11 +1086,6 @@ fn generate_item_list(
             let child_logical_size = child_writing_mode.to_logical(raw_size);
             let child_logical_min_size = child_writing_mode.to_logical(raw_min_size);
             let child_logical_max_size = child_writing_mode.to_logical(raw_max_size);
-            let block_size_properties = BlockSizeProperties::new(
-                child_logical_size.block_size,
-                child_logical_min_size.block_size,
-                child_logical_max_size.block_size,
-            );
             let child_block_size_depends_on_parent =
                 [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
                     .into_iter()
@@ -1114,6 +1122,16 @@ fn generate_item_list(
             let is_table = child_style.is_table();
             let is_replaced = child_style.is_compressible_replaced();
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+            let inline_auto_behavior = if position != Position::Absolute
+                && is_not_floated
+                && !is_table
+                && !is_replaced
+                && !child_writing_mode.is_orthogonal_to(writing_mode)
+            {
+                AutoSizeBehavior::StretchImplicit
+            } else {
+                AutoSizeBehavior::FitContent
+            };
 
             // A writing-mode root establishes an independent formatting
             // context. This includes parallel modes with opposite block flow
@@ -1190,6 +1208,7 @@ fn generate_item_list(
                     sizing_mode: SizingMode::InherentSize,
                     sizing_purpose: SizingPurpose::IntrinsicContribution,
                     axis: intrinsic_axis.into(),
+                    inline_auto_behavior: AutoSizeBehavior::FitContent,
                     block_auto_behavior: AutoSizeBehavior::FitContent,
                     known_dimensions: Size::NONE,
                     definite_dimensions: Size::NONE,
@@ -1230,6 +1249,7 @@ fn generate_item_list(
                 max_size,
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode: child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
@@ -1244,7 +1264,6 @@ fn generate_item_list(
                 automatic_inline_minimum = automatic_minimum.value;
                 depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
             }
-            let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
             size = resolved.size;
             min_size = resolved.min_size;
             max_size = resolved.max_size;
@@ -1256,6 +1275,7 @@ fn generate_item_list(
                 is_replaced,
                 uses_block_layout,
                 is_in_same_bfc,
+                inline_auto_behavior,
                 #[cfg(feature = "float_layout")]
                 float,
                 #[cfg(feature = "float_layout")]
@@ -1264,8 +1284,6 @@ fn generate_item_list(
                 min_size,
                 max_size,
                 automatic_inline_minimum,
-                block_size_properties,
-                block_axis_constraints,
                 overflow,
                 scrollbar_width,
                 position,
@@ -1378,7 +1396,7 @@ fn resolve_block_item_final_style(
     let percentage_basis = parent_writing_mode.to_logical(parent_size).inline_size;
     let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
     let child_writing_mode = tree.get_writing_mode(item.node_id);
-    let (size, min_size, max_size, padding, border, block_axis_constraints) = {
+    let (size, min_size, max_size, padding, border) = {
         let style = tree.get_block_child_style(item.node_id);
         let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -1400,20 +1418,14 @@ fn resolve_block_item_final_style(
                 .maybe_add(box_sizing_adjustment),
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode: child_writing_mode,
+            inline_auto_behavior: item.inline_auto_behavior,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_sum,
         });
         resolved.apply_automatic_minimum(child_writing_mode.inline_axis(), item.automatic_inline_minimum);
-        (
-            resolved.size,
-            resolved.min_size,
-            resolved.max_size,
-            padding,
-            border,
-            resolved.block_axis_constraints(child_writing_mode),
-        )
+        (resolved.size, resolved.min_size, resolved.max_size, padding, border)
     };
 
     item.size = size.or(item.size);
@@ -1422,66 +1434,6 @@ fn resolve_block_item_final_style(
     item.padding = padding;
     item.border = border;
     item.padding_border_sum = (padding + border).sum_axes();
-    item.block_axis_constraints = block_axis_constraints;
-}
-
-/// Complete a block item's logical block-axis sizing after its owning block
-/// formatting context has fixed the inline constraint.
-///
-/// Intrinsic block-size keywords and the aspect-ratio automatic minimum need
-/// both the final inline border-box size and the box's real intrinsic block
-/// contribution. Resolving them here prevents a provisional ratio size from
-/// being mislabeled as an exact `known_dimensions` input to the child.
-fn resolve_block_item_known_dimensions(
-    tree: &mut impl LayoutBlockContainer,
-    item: &mut BlockItem,
-    known_dimensions: Size<Option<f32>>,
-    parent_size: Size<Option<f32>>,
-    parent_writing_mode: WritingMode,
-    available_space: Size<AvailableSpace>,
-    block_margins_are_collapsible: Line<bool>,
-) -> Size<Option<f32>> {
-    let child_writing_mode = tree.get_writing_mode(item.node_id);
-    let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
-    let contained_outer_size =
-        tree.get_size_containment(item.node_id).resolve_explicit_outer_size(item.padding_border_sum);
-    let contained_outer_block_size = child_writing_mode.to_logical(contained_outer_size).block_size;
-    let resolver = ContentBasedBlockSize::new(
-        item.block_size_properties,
-        aspect_ratio,
-        item.padding_border_sum,
-        AutoSizeBehavior::FitContent.is_content_based(aspect_ratio.ratio.is_some()),
-        item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container(),
-        contained_outer_block_size,
-    )
-    .with_resolved_constraints(item.block_axis_constraints);
-    let intrinsic_constraints = measure_intrinsic_block_size_constraints(
-        tree,
-        item.node_id,
-        ChildLayoutInput::new(
-            known_dimensions,
-            parent_size,
-            parent_writing_mode,
-            available_space,
-            SizingMode::ContentSize,
-            block_margins_are_collapsible,
-        ),
-        resolver,
-    );
-    item.depends_on_block_constraints |= intrinsic_constraints.depends_on_block_constraints;
-
-    let mut used_size = known_dimensions;
-    let mut min_size = item.min_size;
-    let mut max_size = item.max_size;
-    intrinsic_constraints.apply_to_block_axis(
-        child_writing_mode,
-        item.block_axis_constraints,
-        item.padding_border_sum,
-        &mut used_size,
-        &mut min_size,
-        &mut max_size,
-    );
-    used_size
 }
 
 /// Immutable container state shared while positioning in-flow block children.
@@ -1505,6 +1457,8 @@ struct BlockContainerLayoutContext {
     writing_direction: WritingDirection,
     /// Whether block-start/end margins may collapse with children.
     own_margins_collapse_with_children: Line<bool>,
+    /// Child margins omitted while resolving the CSS `stretch` keyword.
+    ignore_stretch_margins: LogicalBoxStrut<bool>,
 }
 
 #[cfg(feature = "content_size")]
@@ -1548,6 +1502,7 @@ fn perform_final_layout_on_in_flow_children(
         text_align,
         writing_direction,
         own_margins_collapse_with_children,
+        ignore_stretch_margins,
     } = context;
     let writing_mode = writing_direction.mode;
     let direction = writing_direction.direction;
@@ -1609,6 +1564,12 @@ fn perform_final_layout_on_in_flow_children(
                 }));
             let item_non_auto_margin = item_margin.map(|m| m.unwrap_or(0.0));
             let item_non_auto_inline_margin_sum = item_non_auto_margin.inline_axis_sum();
+            let stretch_block_margin_sum =
+                if ignore_stretch_margins.block_start { 0.0 } else { item_non_auto_margin.block_start }
+                    + if ignore_stretch_margins.block_end { 0.0 } else { item_non_auto_margin.block_end };
+            let child_available_block_space = container_percentage_resolution_block_size
+                .map(|size| AvailableSpace::Definite(f32_max(0.0, size - stretch_block_margin_sum)))
+                .unwrap_or(AvailableSpace::MaxContent);
 
             let scrollbar_size = Size {
                 width: if item.overflow.y == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
@@ -1623,29 +1584,14 @@ fn perform_final_layout_on_in_flow_children(
                 // A float with an automatic inline size is shrink-to-fit
                 // (fit-content) sized against the available inline space.
                 let available_inline_size = container_inner_inline_size - item_non_auto_inline_margin_sum;
-                // Item materialization has already resolved explicit intrinsic
-                // and stretch keywords against that margin-adjusted space.
-                // Carry those used dimensions into child layout; otherwise the
-                // generic child seam would subtract the float's margins from
-                // the already-adjusted inline size a second time.
-                let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
                 let child_available_space = writing_mode.to_physical(LogicalSize {
                     inline_size: AvailableSpace::Definite(available_inline_size),
-                    block_size: AvailableSpace::MaxContent,
+                    block_size: child_available_block_space,
                 });
-                let known_dimensions = resolve_block_item_known_dimensions(
-                    tree,
-                    item,
-                    known_dimensions,
-                    parent_size,
-                    writing_mode,
-                    child_available_space,
-                    Line::FALSE,
-                );
                 let item_layout = tree.perform_child_layout(
                     item.node_id,
                     ChildLayoutInput::new(
-                        known_dimensions,
+                        Size::NONE,
                         parent_size,
                         writing_mode,
                         child_available_space,
@@ -1653,7 +1599,8 @@ fn perform_final_layout_on_in_flow_children(
                         // A float establishes a new block formatting context: its margins do not
                         // collapse with the margins of its children
                         Line::FALSE,
-                    ),
+                    )
+                    .with_inline_auto_behavior(item.inline_auto_behavior),
                 );
                 let logical_item_size = writing_mode.to_logical(item_layout.size);
                 let margin_box = logical_item_size + item_non_auto_margin.sum_axes();
@@ -1827,49 +1774,32 @@ fn perform_final_layout_on_in_flow_children(
                 }
             };
 
-            // Tables and replaced elements are not stretch-sized: they resolve
-            // their own inline size (a replaced element's automatic inline
-            // size is intrinsic).
-            let known_dimensions = if item.is_table || item.is_replaced {
-                // Preserve auto as unknown, but carry explicit numeric or
-                // intrinsic keyword sizes resolved during item materialization.
-                // This also keeps margin-adjusted fit-content/stretch widths
-                // from being resolved a second time inside the child seam.
-                item.size.maybe_clamp(item.min_size, item.max_size)
-            } else {
-                let mut logical_size = writing_mode.to_logical(item.size);
-                let logical_min_size = writing_mode.to_logical(item.min_size);
-                let logical_max_size = writing_mode.to_logical(item.max_size);
-                logical_size.inline_size = Some(
-                    logical_size
-                        .inline_size
-                        .unwrap_or(stretch_inline_size)
-                        .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size),
-                );
-                writing_mode.to_physical(logical_size).maybe_clamp(item.min_size, item.max_size)
-            };
+            // The child owns its authored sizes. The parent supplies only the
+            // available space and its auto-inline policy; `known_dimensions`
+            // remains reserved for sizes actually fixed by a formatting
+            // context (for example a Grid area or a flexed main size).
+            let logical_item_size = writing_mode.to_logical(item.size);
+            let logical_min_size = writing_mode.to_logical(item.min_size);
+            let logical_max_size = writing_mode.to_logical(item.max_size);
+            let anticipated_inline_size = logical_item_size
+                .inline_size
+                .or_else(|| (item.inline_auto_behavior != AutoSizeBehavior::FitContent).then_some(stretch_inline_size))
+                .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size)
+                .unwrap_or(stretch_inline_size);
 
             let child_available_space = writing_mode.to_physical(LogicalSize {
                 inline_size: AvailableSpace::Definite(stretch_inline_size),
-                block_size: AvailableSpace::MaxContent,
+                block_size: child_available_block_space,
             });
-            let known_dimensions = resolve_block_item_known_dimensions(
-                tree,
-                item,
-                known_dimensions,
-                parent_size,
-                writing_mode,
-                child_available_space,
-                if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
-            );
             let inputs = LayoutInput {
                 run_mode,
                 sizing_mode: SizingMode::InherentSize,
                 sizing_purpose: SizingPurpose::Layout,
                 axis: RequestedAxis::Both,
+                inline_auto_behavior: item.inline_auto_behavior,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
-                known_dimensions,
-                definite_dimensions: known_dimensions,
+                known_dimensions: Size::NONE,
+                definite_dimensions: Size::NONE,
                 parent_size,
                 parent_writing_mode: writing_mode,
                 available_space: child_available_space,
@@ -1884,13 +1814,9 @@ fn perform_final_layout_on_in_flow_children(
             let clear_pos = f32::NEG_INFINITY;
 
             let item_layout = if item.is_in_same_bfc {
-                // Replaced elements may not have a known inline size; their
-                // measure function sizes them instead of stretch sizing.
-                let inline_size = writing_mode.to_logical(known_dimensions).inline_size.unwrap_or(stretch_inline_size);
-
                 // TODO: account for auto margins
                 let inset_start = item_non_auto_margin.inline_start + content_box_inset.inline_start;
-                let inset_end = container_outer_inline_size - inline_size - inset_start;
+                let inset_end = container_outer_inline_size - anticipated_inline_size - inset_start;
                 let line_insets = logical_line_to_bfc_sides(Line { start: inset_start, end: inset_end }, direction);
 
                 // Compute child layout
@@ -2299,6 +2225,11 @@ fn perform_absolute_layout_on_absolute_children(
             AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
             _ => AutoSizeBehavior::FitContent,
         };
+        let inline_auto_behavior = match child_writing_mode.inline_axis() {
+            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
+            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
+            _ => AutoSizeBehavior::FitContent,
+        };
 
         // Keep the unresolved values: intrinsic widths need the absolute
         // containing block after insets and non-auto margins are known.
@@ -2342,6 +2273,7 @@ fn perform_absolute_layout_on_absolute_children(
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size { width: None, height: style_size.height },
             definite_dimensions: Size::NONE,
@@ -2372,6 +2304,7 @@ fn perform_absolute_layout_on_absolute_children(
             max_size,
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode: child_writing_mode,
+            inline_auto_behavior,
             block_auto_behavior,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
@@ -2392,6 +2325,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
@@ -2426,6 +2360,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
@@ -2485,6 +2420,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
@@ -2525,6 +2461,7 @@ fn perform_absolute_layout_on_absolute_children(
                 sizing_mode: SizingMode::ContentSize,
                 sizing_purpose: SizingPurpose::Layout,
                 axis: RequestedAxis::Both,
+                inline_auto_behavior,
                 block_auto_behavior,
                 run_mode: RunMode::PerformLayout,
                 block_margins_are_collapsible: Line::FALSE,

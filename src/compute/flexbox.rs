@@ -519,18 +519,29 @@ pub fn compute_flexbox_layout(
         match inputs.sizing_mode {
             SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false, ResolvedAxisConstraints::NONE),
             SizingMode::InherentSize => {
+                let stretch = resolve_stretch_size_constraints(
+                    raw_size,
+                    raw_min_size,
+                    raw_max_size,
+                    inputs.available_space.into_options(),
+                    padding_border_sum,
+                );
                 let resolved = resolve_size_constraints(SizeConstraintInput {
                     size: raw_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.preferred),
                     min_size: raw_min_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.min),
                     max_size: raw_max_size
                         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.max),
                     size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                     writing_mode,
+                    inline_auto_behavior: inputs.inline_auto_behavior,
                     block_auto_behavior: inputs.block_auto_behavior,
                     transferred_sizes_mode: TransferredSizesMode::Normal,
                     aspect_ratio,
@@ -916,6 +927,7 @@ fn compute_constants(
             .maybe_add(box_sizing_adjustment),
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode,
+        inline_auto_behavior: inputs.inline_auto_behavior,
         block_auto_behavior: inputs.block_auto_behavior,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
@@ -1079,6 +1091,7 @@ fn generate_anonymous_flex_items(
                 sizing_mode: SizingMode::InherentSize,
                 sizing_purpose: SizingPurpose::IntrinsicContribution,
                 axis: RequestedAxis::Horizontal,
+                inline_auto_behavior: AutoSizeBehavior::FitContent,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
                 known_dimensions: Size::NONE,
                 definite_dimensions: Size::NONE,
@@ -1121,6 +1134,7 @@ fn generate_anonymous_flex_items(
                 max_size,
                 size_is_auto,
                 writing_mode: child_writing_mode,
+                inline_auto_behavior: AutoSizeBehavior::FitContent,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
@@ -2986,6 +3000,11 @@ fn perform_absolute_layout_on_absolute_children(
             AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
             _ => AutoSizeBehavior::FitContent,
         };
+        let inline_auto_behavior = match child_writing_mode.inline_axis() {
+            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
+            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
+            _ => AutoSizeBehavior::FitContent,
+        };
 
         // Keep intrinsic keywords unresolved until the absolute containing
         // block and inset-constrained available width are known.
@@ -3029,6 +3048,7 @@ fn perform_absolute_layout_on_absolute_children(
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size { width: None, height: style_size.height },
             definite_dimensions: Size::NONE,
@@ -3059,6 +3079,7 @@ fn perform_absolute_layout_on_absolute_children(
             max_size,
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode: child_writing_mode,
+            inline_auto_behavior,
             block_auto_behavior,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
@@ -3079,6 +3100,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
@@ -3109,6 +3131,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
@@ -3166,6 +3189,7 @@ fn perform_absolute_layout_on_absolute_children(
                 known_dimensions,
                 raw_size.map(|dimension| dimension.is_auto()),
                 child_writing_mode,
+                inline_auto_behavior,
                 block_auto_behavior,
                 aspect_ratio,
                 padding_border_sum,
