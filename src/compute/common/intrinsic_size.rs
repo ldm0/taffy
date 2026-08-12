@@ -879,10 +879,25 @@ fn resolve_direct_node_size_constraints(
 #[inline(always)]
 fn used_definite_size(
     used_size: Size<Option<f32>>,
+    known_size: Size<Option<f32>>,
     parent_definite_size: Size<Option<f32>>,
     own_definite_size: Size<Option<f32>>,
 ) -> Size<Option<f32>> {
-    let definite_source = parent_definite_size.or(own_definite_size);
+    // A parent-fixed used axis replaces the child's authored preferred size.
+    // Its definiteness therefore belongs exclusively to the parent formatting
+    // context; an authored length cannot make the overridden target definite.
+    let definite_source = Size {
+        width: if known_size.width.is_some() {
+            parent_definite_size.width
+        } else {
+            parent_definite_size.width.or(own_definite_size.width)
+        },
+        height: if known_size.height.is_some() {
+            parent_definite_size.height
+        } else {
+            parent_definite_size.height.or(own_definite_size.height)
+        },
+    };
     Size { width: definite_source.width.and(used_size.width), height: definite_source.height.and(used_size.height) }
 }
 
@@ -930,7 +945,12 @@ pub(crate) fn resolve_node_size_constraints(
             resolved.max_size,
             sizing.padding_border_size,
         );
-        let definite_size = used_definite_size(outer_size, inputs.definite_dimensions, direct.definite_preferred_size);
+        let definite_size = used_definite_size(
+            outer_size,
+            inputs.known_dimensions,
+            inputs.definite_dimensions,
+            direct.definite_preferred_size,
+        );
         return ResolvedNodeSizing {
             preferred_size,
             min_size: resolved.min_size,
@@ -1030,7 +1050,8 @@ pub(crate) fn resolve_node_size_constraints(
         resolved.max_size,
         padding_border_size,
     );
-    let definite_size = used_definite_size(outer_size, inputs.definite_dimensions, own_definite_size);
+    let definite_size =
+        used_definite_size(outer_size, inputs.known_dimensions, inputs.definite_dimensions, own_definite_size);
     let applied_aspect_ratio = inputs.known_dimensions.get_abs(inline_axis).is_none()
         && min_max_definite_size.get_abs(inline_axis).is_none()
         && (resolved.aspect_ratio_applied.get_abs(inline_axis)

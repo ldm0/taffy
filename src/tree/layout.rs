@@ -414,6 +414,13 @@ impl ChildLayoutInput {
         }
     }
 
+    /// Set which known child dimensions descendants may use as percentage bases.
+    #[inline(always)]
+    pub const fn with_definite_dimensions(mut self, dimensions: Size<Option<f32>>) -> Self {
+        self.definite_dimensions = dimensions;
+        self
+    }
+
     /// Set the containing formatting context's inline-axis auto behavior.
     #[inline(always)]
     pub const fn with_inline_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {

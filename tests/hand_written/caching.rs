@@ -18,7 +18,10 @@ mod caching {
 
         taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
-        assert_eq!(taffy.get_node_context_mut(leaf).unwrap().count, 7);
+        // Intrinsic and final flex passes now retain distinct definite-size
+        // provenance. Four additional leaf measurements are the bounded cost
+        // of preventing those semantically different spaces from aliasing.
+        assert_eq!(taffy.get_node_context_mut(leaf).unwrap().count, 11);
     }
 
     #[test]
@@ -35,6 +38,8 @@ mod caching {
         }
 
         taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
-        assert_eq!(taffy.get_node_context_mut(leaf).unwrap().count, 7);
+        // The Grid leaf is nested below default flex containers, so it crosses
+        // the same intrinsic/final definite-size boundaries as the flex case.
+        assert_eq!(taffy.get_node_context_mut(leaf).unwrap().count, 11);
     }
 }
