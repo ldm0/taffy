@@ -6,7 +6,7 @@ use crate::compute::common::alignment::{
 use crate::compute::common::aspect_ratio::apply_preferred_aspect_ratio;
 use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
 use crate::compute::common::intrinsic_size::{
-    measure_intrinsic_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
+    resolve_content_based_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
     ContentBasedBlockSize, NodeSizeConstraintInput,
 };
 use crate::geometry::{
@@ -337,7 +337,7 @@ pub(super) fn align_and_position_item(
         overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
         None,
     );
-    let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+    let content_based_block_constraints = resolve_content_based_block_size_constraints(
         tree,
         node,
         ChildLayoutInput::new(
@@ -353,7 +353,7 @@ pub(super) fn align_and_position_item(
         content_based_block_size,
     );
     let mut resolved_size = Size { width, height };
-    intrinsic_block_constraints.apply_to_block_axis(
+    content_based_block_constraints.apply_to_block_axis(
         item_writing_mode,
         block_axis_constraints,
         padding_border_size,

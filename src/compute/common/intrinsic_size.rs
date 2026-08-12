@@ -335,20 +335,21 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     )
 }
 
-/// Intrinsic components of preferred, minimum and maximum sizes in one axis.
+/// Content-derived components of preferred, minimum and maximum sizes in one
+/// axis.
 ///
 /// Numeric and percentage components are resolved by the formatting-context
-/// algorithm that owns their containing block. These fields contain only the
-/// values that required intrinsic content measurement. Available-size values
-/// such as `stretch` are resolved separately by the containing formatting
-/// context.
+/// algorithm that owns their containing block. These fields contain values
+/// resolved from intrinsic keywords, preferred aspect-ratio transfer, or the
+/// content-based automatic minimum. Available-size values such as `stretch`
+/// are resolved separately by the containing formatting context.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct IntrinsicSizeConstraints {
-    /// Intrinsic component of the preferred size.
+pub(crate) struct ContentBasedSizeConstraints {
+    /// Content-derived component of the preferred size.
     pub preferred: Option<f32>,
-    /// Intrinsic component of the minimum size.
+    /// Content-derived component of the minimum size.
     pub min: Option<f32>,
-    /// Intrinsic component of the maximum size.
+    /// Content-derived component of the maximum size.
     pub max: Option<f32>,
     /// Content-based automatic minimum before the authored maximum clamps it.
     automatic_min: Option<f32>,
@@ -357,7 +358,7 @@ pub(crate) struct IntrinsicSizeConstraints {
     pub depends_on_block_constraints: bool,
 }
 
-impl IntrinsicSizeConstraints {
+impl ContentBasedSizeConstraints {
     /// Merge content-derived components with source-preserving constraints.
     ///
     /// The shared axis resolver applies the aspect-ratio automatic minimum
@@ -375,8 +376,9 @@ impl IntrinsicSizeConstraints {
         }
     }
 
-    /// Merge intrinsic components into already-resolved physical preferred,
-    /// minimum, and maximum sizes along `writing_mode`'s block axis.
+    /// Merge content-derived components into already-resolved physical
+    /// preferred, minimum, and maximum sizes along `writing_mode`'s block
+    /// axis.
     ///
     /// Existing numeric or aspect-ratio-transferred values retain precedence;
     /// the minimum-wins clamp is applied after projecting back to physical
@@ -439,6 +441,14 @@ impl BlockSizeProperties {
         self.preferred.is_intrinsic() || self.min.is_intrinsic() || self.max.is_intrinsic()
     }
 
+    /// Whether an automatic preferred block size is transferred through the
+    /// preferred aspect ratio after the formatting context has established
+    /// its final inline size.
+    #[inline(always)]
+    fn resolves_auto_size_from_ratio(self, has_preferred_aspect_ratio: bool, auto_size_is_content_based: bool) -> bool {
+        self.preferred.is_auto() && has_preferred_aspect_ratio && auto_size_is_content_based
+    }
+
     #[inline(always)]
     /// Resolve authored content-based constraints and their automatic minimum.
     fn resolve_content_based_constraints(
@@ -447,16 +457,17 @@ impl BlockSizeProperties {
         ratio_block_size: Option<f32>,
         auto_size_is_content_based: bool,
         is_scroll_container: bool,
-    ) -> IntrinsicSizeConstraints {
+    ) -> ContentBasedSizeConstraints {
         let content_block_size = ratio_block_size.unwrap_or(intrinsic_border_box_size);
         let resolve_explicit = |value: Dimension| value.is_intrinsic().then_some(content_block_size);
+        let resolves_auto_size_from_ratio =
+            self.resolves_auto_size_from_ratio(ratio_block_size.is_some(), auto_size_is_content_based);
         let automatic_minimum = self
             .applies_automatic_minimum(ratio_block_size.is_some(), auto_size_is_content_based, is_scroll_container)
             .then_some(intrinsic_border_box_size);
-        IntrinsicSizeConstraints {
-            preferred: resolve_explicit(self.preferred).or_else(|| {
-                (self.preferred.is_auto() && auto_size_is_content_based).then_some(ratio_block_size).flatten()
-            }),
+        ContentBasedSizeConstraints {
+            preferred: resolve_explicit(self.preferred)
+                .or_else(|| resolves_auto_size_from_ratio.then_some(ratio_block_size).flatten()),
             min: resolve_explicit(self.min),
             max: resolve_explicit(self.max),
             automatic_min: automatic_minimum,
@@ -556,9 +567,13 @@ impl ContentBasedBlockSize {
     /// Whether content-based block-axis properties need to be resolved.
     #[inline(always)]
     pub(crate) fn requires_resolution(self) -> bool {
+        let has_preferred_aspect_ratio = self.aspect_ratio.ratio.is_some();
         self.properties.uses_intrinsic_size()
+            || self
+                .properties
+                .resolves_auto_size_from_ratio(has_preferred_aspect_ratio, self.auto_size_is_content_based)
             || self.properties.applies_automatic_minimum(
-                self.aspect_ratio.ratio.is_some(),
+                has_preferred_aspect_ratio,
                 self.auto_size_is_content_based,
                 self.is_scroll_container,
             )
@@ -573,7 +588,14 @@ impl ContentBasedBlockSize {
     /// `SizeType::kIntrinsic` callbacks in `ComputeBlockSizeForFragment`.
     #[inline(always)]
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
-        self.requires_resolution() && self.intrinsic_border_box_override.is_none()
+        let has_preferred_aspect_ratio = self.aspect_ratio.ratio.is_some();
+        self.intrinsic_border_box_override.is_none()
+            && (self.properties.uses_intrinsic_size()
+                || self.properties.applies_automatic_minimum(
+                    has_preferred_aspect_ratio,
+                    self.auto_size_is_content_based,
+                    self.is_scroll_container,
+                ))
     }
 
     /// Resolve preferred/minimum/maximum content-based block constraints from
@@ -584,7 +606,7 @@ impl ContentBasedBlockSize {
         writing_mode: WritingMode,
         outer_inline_size: Option<f32>,
         intrinsic_border_box_size: f32,
-    ) -> IntrinsicSizeConstraints {
+    ) -> ContentBasedSizeConstraints {
         let ratio_block_size =
             resolve_aspect_ratio_block_size(writing_mode, outer_inline_size, self.aspect_ratio, self.padding_border);
         self.properties.resolve_content_based_constraints(
@@ -614,21 +636,22 @@ fn resolve_aspect_ratio_block_size(
     writing_mode.to_logical(ratio_size).block_size
 }
 
-/// Measure and resolve intrinsic block-size properties after the caller has
+/// Resolve content-based block-size properties after the caller has
 /// established the box's inline-size constraint.
 ///
 /// This is primarily used by out-of-flow sizing algorithms, which must decide
 /// whether opposing insets stretch an automatic block size. Passing the
-/// resolved inline size into a content-size probe preserves wrapping while
-/// deliberately removing any preliminary block-size stretch.
-pub(crate) fn measure_intrinsic_block_size_constraints(
+/// resolved inline size into a content-size probe preserves wrapping when an
+/// intrinsic keyword or automatic minimum needs real content. Ratio-only
+/// resolution bypasses that measurement.
+pub(crate) fn resolve_content_based_block_size_constraints(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     mut child_input: ChildLayoutInput,
     resolver: ContentBasedBlockSize,
-) -> IntrinsicSizeConstraints {
+) -> ContentBasedSizeConstraints {
     if !resolver.requires_resolution() {
-        return IntrinsicSizeConstraints::default();
+        return ContentBasedSizeConstraints::default();
     }
 
     let writing_mode = tree.get_writing_mode(node_id);
@@ -677,7 +700,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     min: Dimension,
     max: Dimension,
     available_width: AvailableSpace,
-) -> IntrinsicSizeConstraints {
+) -> ContentBasedSizeConstraints {
     resolve_intrinsic_axis_constraints(
         tree,
         node_id,
@@ -694,7 +717,7 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     node_id: crate::NodeId,
     inputs: LayoutInput,
     axis_input: IntrinsicAxisInput,
-) -> IntrinsicSizeConstraints {
+) -> ContentBasedSizeConstraints {
     let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
     let has_fit_content_function =
         preferred.is_fit_content_function() || min.is_fit_content_function() || max.is_fit_content_function();
@@ -718,7 +741,7 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
         max,
         IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Maximum, fit_content },
     );
-    IntrinsicSizeConstraints {
+    ContentBasedSizeConstraints {
         preferred: preferred.value,
         min: min.value,
         max: max.value,

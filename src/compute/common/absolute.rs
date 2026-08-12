@@ -16,7 +16,7 @@ use super::aspect_ratio::apply_preferred_aspect_ratio;
 #[cfg(feature = "content_size")]
 use super::content_size::compute_content_size_contribution;
 use super::intrinsic_size::{
-    measure_intrinsic_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
+    resolve_content_based_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
     ContentBasedBlockSize, NodeSizeConstraintInput,
 };
 
@@ -692,7 +692,7 @@ pub(crate) fn layout_out_of_flow_item(
         is_scroll_container,
         None,
     );
-    let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
+    let content_based_block_constraints = resolve_content_based_block_size_constraints(
         tree,
         item.node,
         ChildLayoutInput::new(
@@ -709,7 +709,7 @@ pub(crate) fn layout_out_of_flow_item(
         .with_block_auto_behavior(block_auto_behavior),
         content_based_block_size,
     );
-    intrinsic_block_constraints.apply_to_block_axis(
+    content_based_block_constraints.apply_to_block_axis(
         child_writing_mode,
         block_axis_constraints,
         padding_border_sum,

@@ -470,7 +470,7 @@ pub fn compute_block_layout(
         is_scroll_container,
         contained_outer_block_size,
     );
-    let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
+    let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
@@ -496,7 +496,7 @@ pub fn compute_block_layout(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
+    if run_mode == RunMode::ComputeSize && !needs_content_based_block_resolution {
         if let Size { width: Some(width), height: Some(height) } = node_outer_size {
             return LayoutOutput::from_outer_size(Size { width, height })
                 .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)

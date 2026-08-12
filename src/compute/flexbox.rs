@@ -588,7 +588,7 @@ pub fn compute_flexbox_layout(
         is_scroll_container,
         contained_outer_block_size,
     );
-    let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
+    let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
@@ -614,7 +614,7 @@ pub fn compute_flexbox_layout(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
+    if run_mode == RunMode::ComputeSize && !needs_content_based_block_resolution {
         if let Size { width: Some(width), height: Some(height) } = node_outer_size {
             return LayoutOutput::from_outer_size(Size { width, height })
                 .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
@@ -1828,8 +1828,9 @@ fn determine_container_main_size(
     let main_content_box_inset = constants.content_box_inset.main_axis_sum(constants.dir);
 
     let specified_outer_main_size = constants.node_outer_size.main(constants.dir);
-    let needs_intrinsic_block_size = constants.main_axis_is_block && constants.resolve_content_based_block_size;
-    let needs_intrinsic_main_size = specified_outer_main_size.is_none() || needs_intrinsic_block_size;
+    let needs_content_based_block_resolution =
+        constants.main_axis_is_block && constants.resolve_content_based_block_size;
+    let needs_intrinsic_main_size = specified_outer_main_size.is_none() || needs_content_based_block_resolution;
     let intrinsic_outer_main_size = if !needs_intrinsic_main_size {
         None
     } else if let FlexSizingPhase::RowIntrinsic(constraint) = constants.sizing_phase {

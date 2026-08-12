@@ -224,6 +224,35 @@ fn auto_repeat_uses_the_minimum_strategy_for_a_min_clamped_auto_size() {
 }
 
 #[test]
+fn final_auto_repeat_inline_size_reresolves_ratio_dependent_block_size() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let child =
+        tree.new_leaf(Style { grid_column: Line { start: line(2), end: line(3) }, ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                min_size: Size { width: auto(), height: length(60.0) },
+                aspect_ratio: Some(1.0),
+                grid_template_columns: vec![repeat("auto-fill", vec![length(50.0)])],
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The transferred minimum admits one track, then the explicitly placed
+    // item creates a second. The final 100px inline size must transfer back to
+    // the automatic block size instead of leaving the initial 60px minimum.
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(child).unwrap().location.x, 50.0);
+    assert_eq!(tree.layout(child).unwrap().size.width, 50.0);
+}
+
+#[test]
 fn intrinsic_keyword_grid_item_height_remains_indefinite_for_descendants() {
     let (item, percentage) = layout_grid_item_with_percentage_descendant(
         WritingMode::HorizontalTb,

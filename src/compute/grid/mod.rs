@@ -163,7 +163,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         is_scroll_container,
         explicit_contained_outer_block_size,
     );
-    let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
+    let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
@@ -252,7 +252,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .block_size
             .map(|space| space - logical_content_box_inset.block_size),
     };
-    if needs_intrinsic_block_size {
+    if needs_content_based_block_resolution {
         // The authored block size still participates in the final used-size
         // clamp, but it must not stretch rows before their intrinsic block
         // contribution has been established. Blink expresses this with an
@@ -268,7 +268,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
     if run_mode == RunMode::ComputeSize
-        && !needs_intrinsic_block_size
+        && !needs_content_based_block_resolution
         && !derive_contained_inline_size
         && !derive_contained_block_size
     {
@@ -628,7 +628,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         logical_padding_border_size.inline_size,
     )
     .unwrap();
-    let intrinsic_block_constraints = if needs_intrinsic_block_size {
+    let content_based_block_constraints = if needs_content_based_block_resolution {
         content_based_block_size.resolve(
             writing_mode,
             Some(container_inline_border_box),
@@ -640,12 +640,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     .resolve_against(numeric_resolved_style_size.block_size, content_based_block_size.resolved_constraints());
     let resolved_style_size = LogicalSize {
         inline_size: numeric_resolved_style_size.inline_size,
-        block_size: intrinsic_block_constraints.preferred,
+        block_size: content_based_block_constraints.preferred,
     };
     let used_logical_min_size =
-        LogicalSize { inline_size: logical_min_size.inline_size, block_size: intrinsic_block_constraints.min };
+        LogicalSize { inline_size: logical_min_size.inline_size, block_size: content_based_block_constraints.min };
     let used_logical_max_size =
-        LogicalSize { inline_size: logical_max_size.inline_size, block_size: intrinsic_block_constraints.max };
+        LogicalSize { inline_size: logical_max_size.inline_size, block_size: content_based_block_constraints.max };
     let mut container_border_box = LogicalSize {
         inline_size: container_inline_border_box,
         block_size: resolve_used_axis(
@@ -818,7 +818,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         }
 
         if intrinsic_row_contribution_changed && !has_percentage_row {
-            let intrinsic_block_constraints = if needs_intrinsic_block_size {
+            let content_based_block_constraints = if needs_content_based_block_resolution {
                 content_based_block_size.resolve(
                     writing_mode,
                     Some(container_border_box.inline_size),
@@ -830,9 +830,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .resolve_against(numeric_resolved_style_size.block_size, content_based_block_size.resolved_constraints());
             container_border_box.block_size = resolve_used_axis(
                 logical_known_dimensions.block_size,
-                intrinsic_block_constraints.preferred.or(Some(final_row_sum + logical_content_box_inset.block_size)),
-                intrinsic_block_constraints.min,
-                intrinsic_block_constraints.max,
+                content_based_block_constraints
+                    .preferred
+                    .or(Some(final_row_sum + logical_content_box_inset.block_size)),
+                content_based_block_constraints.min,
+                content_based_block_constraints.max,
                 logical_padding_border_size.block_size,
             )
             .unwrap();
