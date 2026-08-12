@@ -12,6 +12,13 @@ use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
 const CACHE_SIZE: usize = 9;
+/// Number of entries retained for each known-dimension/available-space shape.
+///
+/// Complete constraint spaces can share the same shape while differing in
+/// definite-size or formatting-context provenance. Two-way associativity
+/// prevents the common alternating intrinsic/final probes from evicting each
+/// other without allowing one shape to evict another.
+const CACHE_WAYS: usize = 2;
 /// Number of additional entries retained for measurements whose intrinsic
 /// inline size depends on a definite block constraint. Grid sizing commonly
 /// probes several such constraints in one pass.
@@ -191,7 +198,9 @@ pub struct Cache {
     /// The cache entry for the node's final layout
     final_layout_entry: Option<CacheEntry<LayoutOutput>>,
     /// The cache entries for the node's preliminary size measurements
-    measure_entries: [Option<CacheEntry<CachedMeasurement>>; CACHE_SIZE],
+    measure_entries: [[Option<CacheEntry<CachedMeasurement>>; CACHE_WAYS]; CACHE_SIZE],
+    /// Next way replaced in each measurement-cache set.
+    next_measure_entry: [u8; CACHE_SIZE],
     /// Bounded cache for measurements that must be keyed by parent block-size.
     block_constraint_entries: [Option<CacheEntry<CachedMeasurement>>; BLOCK_CONSTRAINT_CACHE_SIZE],
     /// Next entry replaced when the block-constraint cache is full.
@@ -211,7 +220,8 @@ impl Cache {
     pub const fn new() -> Self {
         Self {
             final_layout_entry: None,
-            measure_entries: [None; CACHE_SIZE],
+            measure_entries: [[None; CACHE_WAYS]; CACHE_SIZE],
+            next_measure_entry: [0; CACHE_SIZE],
             block_constraint_entries: [None; BLOCK_CONSTRAINT_CACHE_SIZE],
             next_block_constraint_entry: 0,
             is_empty: true,
@@ -322,7 +332,7 @@ impl Cache {
     ) -> Option<IntrinsicSizeResult> {
         debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
         let key = CacheKey::new(input, environment);
-        for entry in self.measure_entries.iter().flatten() {
+        for entry in self.measure_entries.iter().flatten().flatten() {
             if entry.key.kd_available_space == key.kd_available_space
                 && entry.key.definite_dimensions == key.definite_dimensions
                 && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
@@ -421,7 +431,18 @@ impl Cache {
             self.next_block_constraint_entry = ((cache_slot + 1) % BLOCK_CONSTRAINT_CACHE_SIZE) as u8;
         } else {
             let cache_slot = Self::compute_cache_slot(input.known_dimensions, input.available_space);
-            self.measure_entries[cache_slot] = Some(entry);
+            let cache_set = &mut self.measure_entries[cache_slot];
+            if let Some(existing_index) = cache_set.iter().position(|existing| match existing {
+                Some(existing) => existing.key == key,
+                None => false,
+            }) {
+                cache_set[existing_index] = Some(entry);
+                return;
+            }
+            let cache_way =
+                cache_set.iter().position(Option::is_none).unwrap_or(self.next_measure_entry[cache_slot] as usize);
+            cache_set[cache_way] = Some(entry);
+            self.next_measure_entry[cache_slot] = ((cache_way + 1) % CACHE_WAYS) as u8;
         }
     }
 
@@ -432,7 +453,8 @@ impl Cache {
         }
         self.is_empty = true;
         self.final_layout_entry = None;
-        self.measure_entries = [None; CACHE_SIZE];
+        self.measure_entries = [[None; CACHE_WAYS]; CACHE_SIZE];
+        self.next_measure_entry = [0; CACHE_SIZE];
         self.block_constraint_entries = [None; BLOCK_CONSTRAINT_CACHE_SIZE];
         self.next_block_constraint_entry = 0;
         ClearState::Cleared
@@ -441,7 +463,7 @@ impl Cache {
     /// Returns true if all cache entries are None, else false
     pub fn is_empty(&self) -> bool {
         self.final_layout_entry.is_none()
-            && !self.measure_entries.iter().any(|entry| entry.is_some())
+            && !self.measure_entries.iter().flatten().any(Option::is_some)
             && !self.block_constraint_entries.iter().any(|entry| entry.is_some())
     }
 }
@@ -557,6 +579,10 @@ mod tests {
         let definite = LayoutInput { definite_dimensions: Size { width: Some(60.0), height: None }, ..indefinite };
         assert!(cache.get(&definite).is_none());
         assert_eq!(cache.get(&indefinite).unwrap().size.width, 60.0);
+
+        cache.store(&definite, LayoutOutput::from_outer_size(Size { width: 70.0, height: 25.0 }));
+        assert_eq!(cache.get(&indefinite).unwrap().size.width, 60.0);
+        assert_eq!(cache.get(&definite).unwrap().size.width, 70.0);
     }
 
     #[test]
