@@ -26,6 +26,7 @@
 //!
 pub(crate) mod common;
 pub(crate) mod leaf;
+pub(crate) mod replaced;
 
 #[cfg(feature = "block_layout")]
 pub(crate) mod block;
@@ -43,6 +44,8 @@ pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
     compute_leaf_layout_with_sizing_context, LeafSizingContext,
 };
+
+pub use replaced::{compute_replaced_layout, ReplacedSizingContext};
 
 pub use self::common::alignment::{
     apply_alignment_fallback as resolve_content_alignment_fallback,
