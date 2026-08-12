@@ -13,6 +13,34 @@ use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::WritingMode;
 
+/// Natural content metrics supplied by the embedding engine.
+///
+/// Natural dimensions remain optional even after the resource has a concrete
+/// object size. This distinction is observable when an intrinsic sizing
+/// keyword combines one natural axis with a preferred aspect ratio. The
+/// default object size supplies missing axes only when no ratio participates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplacedNaturalSizing {
+    /// Actual natural content-box dimensions. A missing dimension must remain
+    /// `None`; it is not the corresponding default-object-size dimension.
+    pub dimensions: Size<Option<f32>>,
+    /// Category/resource-specific default content-box size used when natural
+    /// dimensions and a preferred ratio do not determine the box.
+    pub default_object_size: Size<f32>,
+}
+
+impl ReplacedNaturalSizing {
+    /// Construct natural sizing information from independently optional axes.
+    pub const fn new(dimensions: Size<Option<f32>>, default_object_size: Size<f32>) -> Self {
+        Self { dimensions, default_object_size }
+    }
+
+    /// Construct natural sizing information for content with two fixed axes.
+    pub const fn fixed(size: Size<f32>) -> Self {
+        Self { dimensions: Size::new(size.width, size.height), default_object_size: size }
+    }
+}
+
 /// Node-level content metrics and used values for replaced sizing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReplacedSizingContext {
@@ -22,9 +50,8 @@ pub struct ReplacedSizingContext {
     pub aspect_ratio: ResolvedAspectRatio,
     /// Used size-containment state for the generated box.
     pub size_containment: SizeContainment,
-    /// Natural content-box size after the embedding engine has applied the
-    /// default object size and normalized any natural aspect ratio.
-    pub natural_size: Size<f32>,
+    /// Natural dimensions and the embedding category's default object size.
+    pub natural_sizing: ReplacedNaturalSizing,
     /// Host-provided preferred-size hint used only when CSS leaves both
     /// physical preferred axes automatic. HTML dimension attributes are one
     /// source of such a hint.
@@ -37,10 +64,10 @@ impl ReplacedSizingContext {
         writing_mode: WritingMode,
         aspect_ratio: ResolvedAspectRatio,
         size_containment: SizeContainment,
-        natural_size: Size<f32>,
+        natural_sizing: ReplacedNaturalSizing,
         preferred_size_hint: Size<Option<f32>>,
     ) -> Self {
-        Self { writing_mode, aspect_ratio, size_containment, natural_size, preferred_size_hint }
+        Self { writing_mode, aspect_ratio, size_containment, natural_sizing, preferred_size_hint }
     }
 }
 
@@ -96,10 +123,21 @@ pub fn compute_replaced_layout(
             .height
             .then_some(context.size_containment.intrinsic_content_size.height.unwrap_or(0.0)),
     };
-    let natural_size = Size {
-        width: contained_content_size.width.unwrap_or(context.natural_size.width),
-        height: contained_content_size.height.unwrap_or(context.natural_size.height),
+    let natural_dimensions = Size {
+        width: contained_content_size.width.or(context.natural_sizing.dimensions.width),
+        height: contained_content_size.height.or(context.natural_sizing.dimensions.height),
     };
+    let default_object_size = Size {
+        width: contained_content_size.width.unwrap_or(context.natural_sizing.default_object_size.width),
+        height: contained_content_size.height.unwrap_or(context.natural_sizing.default_object_size.height),
+    };
+    let natural_size = normalized_natural_size(
+        natural_dimensions,
+        default_object_size,
+        context.aspect_ratio,
+        context.writing_mode,
+        padding_border_sum,
+    );
     let preferred_size_hint = Size {
         width: if context.size_containment.axes.width { None } else { context.preferred_size_hint.width },
         height: if context.size_containment.axes.height { None } else { context.preferred_size_hint.height },
@@ -184,24 +222,35 @@ pub fn compute_replaced_layout(
             .maybe_sub(box_sizing_adjustment)
             .maybe_max(min_size);
         let content_known = known_dimensions.maybe_sub(padding_border_sum);
-        let transferred = apply_aspect_ratio_to_content_size(
-            content_known.maybe_clamp(min_size, style_max_size),
-            context.aspect_ratio,
-            padding_border_sum,
+        let transferred = complete_replaced_size(
+            apply_aspect_ratio_to_content_size(
+                content_known.maybe_clamp(min_size, style_max_size),
+                context.aspect_ratio,
+                padding_border_sum,
+            ),
+            natural_size,
         )
-        .unwrap_or(natural_size);
+        .expect("known replaced dimensions or natural sizing determine both axes");
         let size = content_known.unwrap_or(transferred.maybe_clamp(min_size, style_max_size));
         return replaced_output(size.map(|value| value.max(0.0)) + padding_border_sum);
     }
 
     let unclamped = if preferred_size.width.is_some() || preferred_size.height.is_some() {
-        apply_aspect_ratio_to_content_size(preferred_size, context.aspect_ratio, padding_border_sum)
-            .unwrap_or(natural_size)
+        complete_replaced_size(
+            apply_aspect_ratio_to_content_size(preferred_size, context.aspect_ratio, padding_border_sum),
+            natural_size,
+        )
+        .expect("preferred replaced dimensions or natural sizing determine both axes")
     } else if preferred_size_hint.width.is_some() || preferred_size_hint.height.is_some() {
-        apply_aspect_ratio_to_content_size(preferred_size_hint, context.aspect_ratio, padding_border_sum)
-            .unwrap_or(natural_size)
+        complete_replaced_size(
+            apply_aspect_ratio_to_content_size(preferred_size_hint, context.aspect_ratio, padding_border_sum),
+            natural_size,
+        )
+        .expect("preferred replaced hints or natural sizing determine both axes")
     } else {
-        natural_size
+        natural_size.unwrap_or_else(|| {
+            ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
+        })
     };
     let size = unclamped.map(|value| value.max(0.0));
     let width_violation = constraint_violation(size.width, min_size.width, max_size.width);
@@ -303,6 +352,68 @@ pub fn compute_replaced_layout(
     replaced_output(size + padding_border_sum)
 }
 
+/// Normalize independently optional natural axes in the node's logical
+/// sizing order. A preferred ratio always reconciles the natural block axis
+/// from the natural inline axis when both exist, matching replaced layout's
+/// inline-first sizing algorithm. The default object size is used only when
+/// there is no ratio to perform that transfer.
+fn normalized_natural_size(
+    dimensions: Size<Option<f32>>,
+    default_object_size: Size<f32>,
+    aspect_ratio: ResolvedAspectRatio,
+    writing_mode: WritingMode,
+    padding_border: Size<f32>,
+) -> Option<Size<f32>> {
+    if !aspect_ratio.ratio.is_some_and(|ratio| ratio.is_finite() && ratio > 0.0) {
+        return Some(dimensions.unwrap_or(default_object_size));
+    }
+
+    let ratio_basis = if writing_mode.is_horizontal() {
+        if let Some(width) = dimensions.width {
+            Size { width: Some(width), height: None }
+        } else {
+            Size { width: None, height: Some(dimensions.height?) }
+        }
+    } else if let Some(height) = dimensions.height {
+        Size { width: None, height: Some(height) }
+    } else {
+        Size { width: Some(dimensions.width?), height: None }
+    };
+
+    complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
+}
+
+/// Resolve the stretch-fit fallback for replaced content that has only a
+/// preferred ratio. Replaced layout stretches in its logical inline axis and
+/// derives the orthogonal axis through that ratio.
+fn ratio_only_stretch_size(
+    available_space: Size<AvailableSpace>,
+    writing_mode: WritingMode,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> Size<f32> {
+    let stretch_axis = |space: AvailableSpace, inset: f32| match space {
+        AvailableSpace::Definite(size) => (size - inset).max(0.0),
+        AvailableSpace::MinContent | AvailableSpace::MaxContent => 0.0,
+    };
+    let ratio_basis = if writing_mode.is_horizontal() {
+        Size { width: Some(stretch_axis(available_space.width, padding_border.width)), height: None }
+    } else {
+        Size { width: None, height: Some(stretch_axis(available_space.height, padding_border.height)) }
+    };
+    complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
+        .expect("a valid preferred ratio resolves the stretch-fit axis")
+}
+
+/// Fill missing candidate axes from a complete natural size, or return a
+/// fully determined candidate when no fallback exists.
+fn complete_replaced_size(size: Size<Option<f32>>, fallback: Option<Size<f32>>) -> Option<Size<f32>> {
+    match fallback {
+        Some(fallback) => Some(size.unwrap_or(fallback)),
+        None => Some(Size { width: size.width?, height: size.height? }),
+    }
+}
+
 /// Construct an output whose content extent is the atomic replaced box.
 fn replaced_output(size: Size<f32>) -> LayoutOutput {
     LayoutOutput::from_sizes(size, size)
@@ -379,7 +490,7 @@ mod tests {
             WritingMode::HorizontalTb,
             aspect_ratio,
             size_containment,
-            Size { width: 60.0, height: 60.0 },
+            ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
             Size::NONE,
         )
     }
@@ -502,6 +613,129 @@ mod tests {
         assert_eq!(measure_with_ratio_box(BoxSizing::ContentBox), Size { width: 100.0, height: 60.0 });
     }
 
+    /// Regression for
+    /// <https://wpt.live/css/css-sizing/aspect-ratio/replaced-element-034.html>.
+    ///
+    /// The resource has a natural width but no natural height or ratio. Its
+    /// fallback object height must not replace the `min-content` height: that
+    /// intrinsic axis is transferred from the natural width through the
+    /// authored border-box ratio.
+    #[test]
+    fn intrinsic_height_uses_natural_width_and_the_preferred_ratio_box() {
+        let style: TestStyle = Style {
+            box_sizing: BoxSizing::BorderBox,
+            size: Size { width: Dimension::auto(), height: Dimension::min_content() },
+            padding: Rect { left: crate::LengthPercentage::length(50.0), ..Rect::zero() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+
+        let size = compute_replaced_layout(
+            inputs(Size::NONE),
+            &style,
+            ReplacedSizingContext::new(
+                WritingMode::HorizontalTb,
+                ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+                SizeContainment::NONE,
+                ReplacedNaturalSizing::new(
+                    Size { width: Some(50.0), height: None },
+                    Size { width: 300.0, height: 150.0 },
+                ),
+                Size::NONE,
+            ),
+            |_, _| 0.0,
+        )
+        .size;
+
+        assert_eq!(size, Size { width: 100.0, height: 100.0 });
+    }
+
+    #[test]
+    fn default_object_size_fills_only_naturally_missing_axes_without_a_ratio() {
+        let style: TestStyle = Style::default();
+        let size = compute_replaced_layout(
+            inputs(Size::NONE),
+            &style,
+            ReplacedSizingContext::new(
+                WritingMode::HorizontalTb,
+                ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::ContentBox },
+                SizeContainment::NONE,
+                ReplacedNaturalSizing::new(
+                    Size { width: Some(50.0), height: None },
+                    Size { width: 300.0, height: 150.0 },
+                ),
+                Size::NONE,
+            ),
+            |_, _| 0.0,
+        )
+        .size;
+
+        assert_eq!(size, Size { width: 50.0, height: 150.0 });
+    }
+
+    #[test]
+    fn preferred_ratio_normalizes_natural_sizes_from_the_logical_inline_axis() {
+        let style: TestStyle = Style::default();
+        let measure = |writing_mode| {
+            compute_replaced_layout(
+                inputs(Size::NONE),
+                &style,
+                ReplacedSizingContext::new(
+                    writing_mode,
+                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    SizeContainment::NONE,
+                    ReplacedNaturalSizing::new(
+                        Size { width: Some(50.0), height: Some(80.0) },
+                        Size { width: 300.0, height: 150.0 },
+                    ),
+                    Size::NONE,
+                ),
+                |_, _| 0.0,
+            )
+            .size
+        };
+
+        assert_eq!(measure(WritingMode::HorizontalTb), Size { width: 50.0, height: 25.0 });
+        assert_eq!(measure(WritingMode::VerticalRl), Size { width: 160.0, height: 80.0 });
+    }
+
+    #[test]
+    fn ratio_only_replaced_content_stretches_in_its_logical_inline_axis() {
+        let style: TestStyle = Style::default();
+        let measure = |writing_mode, available_space| {
+            let mut input = inputs(Size::NONE);
+            input.available_space = available_space;
+            compute_replaced_layout(
+                input,
+                &style,
+                ReplacedSizingContext::new(
+                    writing_mode,
+                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    SizeContainment::NONE,
+                    ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+                    Size::NONE,
+                ),
+                |_, _| 0.0,
+            )
+            .size
+        };
+
+        assert_eq!(
+            measure(
+                WritingMode::HorizontalTb,
+                Size { width: AvailableSpace::Definite(200.0), height: AvailableSpace::MaxContent },
+            ),
+            Size { width: 200.0, height: 100.0 },
+        );
+        assert_eq!(
+            measure(
+                WritingMode::VerticalRl,
+                Size { width: AvailableSpace::MaxContent, height: AvailableSpace::Definite(120.0) },
+            ),
+            Size { width: 240.0, height: 120.0 },
+        );
+    }
+
     #[test]
     fn percentage_padding_uses_the_containing_block_logical_inline_size() {
         let style: TestStyle = Style {
@@ -525,7 +759,7 @@ mod tests {
                 WritingMode::VerticalRl,
                 ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::ContentBox },
                 SizeContainment::NONE,
-                Size { width: 60.0, height: 60.0 },
+                ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
                 Size::NONE,
             ),
             |_, _| 0.0,
