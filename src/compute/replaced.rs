@@ -117,8 +117,6 @@ pub fn compute_replaced_layout(
     let mut min_size = raw_min_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
     let mut max_size = raw_max_size
         .maybe_resolve(preferred_percentage_basis, &resolve_calc_value)
-        .or(available_space.into_options())
-        .maybe_min(available_space.into_options())
         .maybe_sub(box_sizing_adjustment)
         .maybe_max(min_size);
 
@@ -396,6 +394,32 @@ mod tests {
             |_, _| 0.0,
         )
         .size
+    }
+
+    #[test]
+    fn definite_available_space_is_not_an_implicit_maximum() {
+        let natural_style: TestStyle = Style::default();
+        let percentage_style: TestStyle = Style {
+            size: Size { width: Dimension::percent(1.25), height: Dimension::length(40.0) },
+            ..Style::default()
+        };
+        let authored_max_style: TestStyle =
+            Style { max_size: Size { width: Dimension::length(40.0), height: Dimension::auto() }, ..Style::default() };
+        let measure_with_available_width = |style: &TestStyle, parent_width, available_width| {
+            let mut input = inputs(Size { width: parent_width, height: None });
+            input.available_space.width = AvailableSpace::Definite(available_width);
+            compute_replaced_layout(
+                input,
+                style,
+                context(ResolvedAspectRatio { ratio: None, box_sizing: style.box_sizing }, SizeContainment::NONE),
+                |_, _| 0.0,
+            )
+            .size
+        };
+
+        assert_eq!(measure_with_available_width(&natural_style, None, 40.0).width, 60.0);
+        assert_eq!(measure_with_available_width(&percentage_style, Some(200.0), 200.0).width, 250.0);
+        assert_eq!(measure_with_available_width(&authored_max_style, None, 200.0).width, 40.0);
     }
 
     #[test]
