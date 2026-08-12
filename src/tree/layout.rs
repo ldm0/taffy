@@ -368,6 +368,12 @@ impl LayoutInput {
 pub(crate) struct ChildLayoutInput {
     /// Child border-box dimensions that are already known.
     pub known_dimensions: Size<Option<f32>>,
+    /// Known child dimensions that are definite for descendant percentage resolution.
+    ///
+    /// This defaults to `known_dimensions`, but formatting contexts may clear an
+    /// axis when they know its final used size without making that size definite
+    /// under the rules of the formatting model.
+    pub definite_dimensions: Size<Option<f32>>,
     /// Physical containing-block dimensions used to resolve child percentages.
     pub parent_size: Size<Option<f32>>,
     /// Writing mode that establishes the containing block's logical axes.
@@ -397,6 +403,7 @@ impl ChildLayoutInput {
     ) -> Self {
         Self {
             known_dimensions,
+            definite_dimensions: known_dimensions,
             parent_size,
             parent_writing_mode,
             available_space,
@@ -432,7 +439,7 @@ impl ChildLayoutInput {
             inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
@@ -451,7 +458,7 @@ impl ChildLayoutInput {
             inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
@@ -552,6 +559,29 @@ impl ConstraintSpace {
 #[cfg(test)]
 mod constraint_space_tests {
     use super::*;
+
+    #[test]
+    fn child_input_keeps_known_and_definite_dimensions_distinct() {
+        let known_dimensions = Size { width: Some(120.0), height: Some(80.0) };
+        let definite_dimensions = Size { width: Some(120.0), height: None };
+        let mut child_input = ChildLayoutInput::new(
+            known_dimensions,
+            Size { width: Some(300.0), height: None },
+            WritingMode::HorizontalTb,
+            Size { width: AvailableSpace::Definite(120.0), height: AvailableSpace::MaxContent },
+            SizingMode::InherentSize,
+            Line::FALSE,
+        );
+        child_input.definite_dimensions = definite_dimensions;
+
+        let measurement = child_input.into_measurement(RequestedAxis::Vertical);
+        assert_eq!(measurement.known_dimensions, known_dimensions);
+        assert_eq!(measurement.definite_dimensions, definite_dimensions);
+
+        let layout = child_input.into_layout();
+        assert_eq!(layout.known_dimensions, known_dimensions);
+        assert_eq!(layout.definite_dimensions, definite_dimensions);
+    }
 
     #[test]
     fn block_auto_behavior_preserves_aspect_ratio_resolution_order() {
