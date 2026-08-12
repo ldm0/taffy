@@ -3,18 +3,24 @@ use super::types::GridTrack;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
-use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use crate::compute::common::aspect_ratio::{
+    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+};
 use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
 use crate::compute::common::intrinsic_size::{
     measure_intrinsic_block_size_constraints, resolve_intrinsic_width_constraints, BlockSizeProperties,
+    ContentBasedBlockSize,
 };
-use crate::geometry::{InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size};
+use crate::geometry::{
+    AbsoluteAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size,
+};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
     Position,
 };
 use crate::tree::{
-    ChildLayoutInput, Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode, SizingPurpose,
+    AutoSizeBehavior, ChildLayoutInput, Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
+    SizingPurpose,
 };
 use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
@@ -237,6 +243,7 @@ pub(super) fn align_and_position_item(
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
         axis: RequestedAxis::Horizontal,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
         parent_size: grid_area_size.map(Some),
@@ -259,18 +266,6 @@ pub(super) fn align_and_position_item(
     inherent_size.width = inherent_size.width.or(intrinsic.preferred);
     min_size.width = min_size.width.or(intrinsic.min);
     max_size.width = max_size.width.or(intrinsic.max);
-    let resolved = resolve_size_constraints(
-        inherent_size,
-        min_size,
-        max_size,
-        raw_size.map(|dimension| dimension.is_auto()),
-        TransferredSizesMode::Normal,
-        aspect_ratio,
-        padding_border_size,
-    );
-    inherent_size = resolved.size;
-    min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
-    max_size = resolved.max_size;
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
@@ -303,6 +298,45 @@ pub(super) fn align_and_position_item(
         alignment_styles.block = fallback;
     }
     let physical_alignment_styles = flow.to_physical_axes(alignment_styles);
+    let (block_alignment, block_margins_are_non_auto, opposing_block_insets_are_definite) =
+        match item_writing_mode.block_axis() {
+            AbsoluteAxis::Horizontal => (
+                physical_alignment_styles.horizontal,
+                margin.left.is_some() && margin.right.is_some(),
+                inset_horizontal.start.is_some() && inset_horizontal.end.is_some(),
+            ),
+            AbsoluteAxis::Vertical => (
+                physical_alignment_styles.vertical,
+                margin.top.is_some() && margin.bottom.is_some(),
+                inset_vertical.start.is_some() && inset_vertical.end.is_some(),
+            ),
+        };
+    let block_auto_behavior = if (position == Position::Absolute && opposing_block_insets_are_definite)
+        || (position != Position::Absolute && block_margins_are_non_auto && block_alignment == AlignSelf::STRETCH)
+    {
+        AutoSizeBehavior::StretchExplicit
+    } else {
+        AutoSizeBehavior::FitContent
+    };
+    let resolved = resolve_size_constraints(SizeConstraintInput {
+        size: inherent_size,
+        min_size,
+        max_size,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode: item_writing_mode,
+        block_auto_behavior,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
+        aspect_ratio,
+        padding_border: padding_border_size,
+    });
+    let authored_min_size = resolved.min_size;
+    inherent_size = resolved.size;
+    min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
+    max_size = resolved.max_size;
+
+    let raw_logical_size = item_writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = item_writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = item_writing_mode.to_logical(raw_max_size);
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
     // from left, right and container_content_box if both are set.
@@ -331,19 +365,26 @@ pub(super) fn align_and_position_item(
     });
 
     // Reapply aspect ratio after stretch and absolute position width adjustments
-    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio_with_box_sizing(
+    let Size { width, height } = apply_preferred_aspect_ratio(
+        Size { width, height: inherent_size.height },
+        raw_size.map(|dimension| dimension.is_auto()),
+        item_writing_mode,
+        block_auto_behavior,
         aspect_ratio,
-        BoxSizing::BorderBox,
         padding_border_size,
     );
 
-    let raw_logical_size = item_writing_mode.to_logical(raw_size);
-    let raw_logical_min_size = item_writing_mode.to_logical(raw_min_size);
-    let raw_logical_max_size = item_writing_mode.to_logical(raw_max_size);
     let block_size_properties = BlockSizeProperties::new(
         raw_logical_size.block_size,
         raw_logical_min_size.block_size,
         raw_logical_max_size.block_size,
+    );
+    let content_based_block_size = ContentBasedBlockSize::new(
+        block_size_properties,
+        aspect_ratio,
+        padding_border_size,
+        block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
+        overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
     );
     let intrinsic_block_constraints = measure_intrinsic_block_size_constraints(
         tree,
@@ -355,12 +396,15 @@ pub(super) fn align_and_position_item(
             grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
             SizingMode::ContentSize,
             Line::FALSE,
-        ),
-        block_size_properties,
+        )
+        .with_block_auto_behavior(block_auto_behavior),
+        content_based_block_size,
     );
     let mut resolved_size = Size { width, height };
     intrinsic_block_constraints.apply_to_block_axis(
         item_writing_mode,
+        authored_min_size,
+        padding_border_size,
         &mut resolved_size,
         &mut min_size,
         &mut max_size,
@@ -409,7 +453,8 @@ pub(super) fn align_and_position_item(
                 grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_block_auto_behavior(block_auto_behavior),
         )
         .map(Some)
     } else {
@@ -425,7 +470,8 @@ pub(super) fn align_and_position_item(
             grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
-        ),
+        )
+        .with_block_auto_behavior(block_auto_behavior),
     );
 
     // Resolve final size
