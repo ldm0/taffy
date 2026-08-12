@@ -14,7 +14,8 @@ use crate::compute::common::intrinsic_size::{
 };
 use crate::compute::common::stretch::resolve_stretch_size_constraints;
 use crate::geometry::{
-    AbsoluteAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size,
+    AbsoluteAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point,
+    Rect, Size, StaticPositionEdge,
 };
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
@@ -115,6 +116,7 @@ pub(super) fn align_tracks(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn align_and_position_item(
     tree: &mut impl LayoutGridContainer,
+    container_node: NodeId,
     node: NodeId,
     order: u32,
     grid_area: Rect<f32>,
@@ -318,6 +320,13 @@ pub(super) fn align_and_position_item(
     }
     if let Some(fallback) = baseline_fallback.block {
         alignment_styles.block = fallback;
+    }
+    if position == Position::Absolute {
+        tree.set_out_of_flow_static_position(
+            container_node,
+            node,
+            static_position_for_grid_area(logical_grid_area_offset, logical_grid_area_size, alignment_styles),
+        );
     }
     let physical_alignment_styles = flow.to_physical_axes(alignment_styles);
     let (inline_alignment, inline_margins_are_non_auto, opposing_inline_insets_are_definite) =
@@ -624,6 +633,42 @@ pub(super) fn align_and_position_item(
     }
 }
 
+/// Build the size-independent static-position candidate for an out-of-flow
+/// grid child. The actual containing block resolves the selected edge after
+/// the child's used size and margins are known.
+#[inline]
+fn static_position_for_grid_area(
+    area_offset: LogicalOffset<f32>,
+    area_size: LogicalSize<f32>,
+    alignment: InBothAbstractAxis<AlignSelf>,
+) -> LogicalStaticPosition {
+    #[inline(always)]
+    fn axis_anchor(start: f32, size: f32, alignment: AlignSelf) -> (f32, StaticPositionEdge) {
+        match alignment.keyword() {
+            AlignItemsKeyword::Center => (start + size / 2.0, StaticPositionEdge::Center),
+            AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd | AlignItemsKeyword::LastBaseline => {
+                (start + size, StaticPositionEdge::End)
+            }
+            AlignItemsKeyword::Start
+            | AlignItemsKeyword::FlexStart
+            | AlignItemsKeyword::Baseline
+            | AlignItemsKeyword::Stretch => (start, StaticPositionEdge::Start),
+            // Self-relative values are resolved against the item's writing
+            // direction before this helper is called.
+            AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
+        }
+    }
+
+    let (inline_offset, inline_edge) = axis_anchor(area_offset.inline_offset, area_size.inline_size, alignment.inline);
+    let (block_offset, block_edge) = axis_anchor(area_offset.block_offset, area_size.block_size, alignment.block);
+    LogicalStaticPosition {
+        offset: LogicalOffset { inline_offset, block_offset },
+        inline_edge,
+        block_edge,
+        ..LogicalStaticPosition::default()
+    }
+}
+
 /// Align and size a grid item along a single axis
 #[allow(clippy::too_many_arguments)]
 pub(super) fn align_item_within_area(
@@ -700,4 +745,24 @@ pub(super) fn align_item_within_area(
     }
 
     (start, resolved_margin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::static_position_for_grid_area;
+    use crate::{AlignSelf, InBothAbstractAxis, LogicalOffset, LogicalSize, StaticPositionEdge};
+
+    #[test]
+    fn grid_static_position_retains_alignment_edges_before_child_sizing() {
+        let candidate = static_position_for_grid_area(
+            LogicalOffset { inline_offset: 10.0, block_offset: 20.0 },
+            LogicalSize { inline_size: 100.0, block_size: 80.0 },
+            InBothAbstractAxis { inline: AlignSelf::CENTER, block: AlignSelf::END },
+        );
+
+        assert_eq!(candidate.offset.inline_offset, 60.0);
+        assert_eq!(candidate.offset.block_offset, 100.0);
+        assert_eq!(candidate.inline_edge, StaticPositionEdge::Center);
+        assert_eq!(candidate.block_edge, StaticPositionEdge::End);
+    }
 }

@@ -881,6 +881,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
         let placement = align_and_position_item(
             tree,
+            node,
             item.node,
             index as u32,
             grid_area,
@@ -909,6 +910,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let mut order = items.len() as u32;
     (0..tree.child_count(node)).for_each(|index| {
         let child = tree.get_child_id(node, index);
+        let grid_is_containing_block = tree.is_out_of_flow_containing_block(node, child);
         let child_style = tree.get_grid_child_style(child);
 
         // Position hidden child
@@ -1009,34 +1011,51 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     - block_border.end
                     - if block_reversed { 0.0 } else { logical_scrollbar_gutter.block_size },
             };
-            let grid_area = flow.to_physical_rect(
-                Line {
-                    start: maybe_col_indexes
-                        .start
-                        .map(|index| line_as_start_edge(&columns, index))
-                        .unwrap_or(inline_containing_bounds.start),
-                    end: maybe_col_indexes
-                        .end
-                        .map(|index| line_as_end_edge(&columns, index))
-                        .unwrap_or(inline_containing_bounds.end),
-                },
-                Line {
-                    start: maybe_row_indexes
-                        .start
-                        .map(|index| line_as_start_edge(&rows, index))
-                        .unwrap_or(block_containing_bounds.start),
-                    end: maybe_row_indexes
-                        .end
-                        .map(|index| line_as_end_edge(&rows, index))
-                        .unwrap_or(block_containing_bounds.end),
-                },
-            );
+            let inline_grid_bounds = Line {
+                start: maybe_col_indexes
+                    .start
+                    .map(|index| line_as_start_edge(&columns, index))
+                    .unwrap_or(inline_containing_bounds.start),
+                end: maybe_col_indexes
+                    .end
+                    .map(|index| line_as_end_edge(&columns, index))
+                    .unwrap_or(inline_containing_bounds.end),
+            };
+            let block_grid_bounds = Line {
+                start: maybe_row_indexes
+                    .start
+                    .map(|index| line_as_start_edge(&rows, index))
+                    .unwrap_or(block_containing_bounds.start),
+                end: maybe_row_indexes
+                    .end
+                    .map(|index| line_as_end_edge(&rows, index))
+                    .unwrap_or(block_containing_bounds.end),
+            };
+            let inline_padding = flow.physical_axis_line(padding, AbstractAxis::Inline);
+            let block_padding = flow.physical_axis_line(padding, AbstractAxis::Block);
+            let inline_static_position_bounds = Line {
+                start: inline_containing_bounds.start + inline_padding.start,
+                end: inline_containing_bounds.end - inline_padding.end,
+            };
+            let block_static_position_bounds = Line {
+                start: block_containing_bounds.start + block_padding.start,
+                end: block_containing_bounds.end - block_padding.end,
+            };
+            let grid_area = if grid_is_containing_block {
+                flow.to_physical_rect(inline_grid_bounds, block_grid_bounds)
+            } else {
+                // When the grid only supplies a static position, CSS uses its
+                // content box and ignores authored grid lines. The actual
+                // containing block will size and place the real box later.
+                flow.to_physical_rect(inline_static_position_bounds, block_static_position_bounds)
+            };
             drop(child_style);
 
             // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
             let placement = align_and_position_item(
                 tree,
+                node,
                 child,
                 order,
                 grid_area,

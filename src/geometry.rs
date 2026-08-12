@@ -1078,6 +1078,157 @@ impl LogicalOffset<f32> {
     pub const ZERO: Self = Self { inline_offset: 0.0, block_offset: 0.0 };
 }
 
+/// The edge of an out-of-flow box represented by a static-position anchor.
+///
+/// The anchor remains stable while the out-of-flow box is sized. Keeping the
+/// edge separate from the offset lets centered and end-aligned boxes resolve
+/// their final border-box origin only after their used size is known.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum StaticPositionEdge {
+    /// The anchor denotes the box's start edge.
+    #[default]
+    Start,
+    /// The anchor denotes the box's center.
+    Center,
+    /// The anchor denotes the box's end edge.
+    End,
+}
+
+/// Static-position metadata in CSS flow-relative coordinates.
+///
+/// `offset` is the position of the edges named by `inline_edge` and
+/// `block_edge`, relative to the border box of the formatting context that
+/// produced the candidate.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct LogicalStaticPosition {
+    /// Flow-relative anchor point.
+    pub offset: LogicalOffset<f32>,
+    /// Edge represented by the inline-axis anchor.
+    pub inline_edge: StaticPositionEdge,
+    /// Edge represented by the block-axis anchor.
+    pub block_edge: StaticPositionEdge,
+    /// Logical axis to which `align-self` applies in the producing context.
+    pub align_self_axis: AbstractAxis,
+}
+
+impl Default for LogicalStaticPosition {
+    fn default() -> Self {
+        Self::new(LogicalOffset::ZERO)
+    }
+}
+
+impl LogicalStaticPosition {
+    /// Create a start/start candidate at `offset`.
+    #[inline(always)]
+    pub const fn new(offset: LogicalOffset<f32>) -> Self {
+        Self {
+            offset,
+            inline_edge: StaticPositionEdge::Start,
+            block_edge: StaticPositionEdge::Start,
+            align_self_axis: AbstractAxis::Block,
+        }
+    }
+
+    /// Convert this candidate to physical coordinates without resolving the
+    /// eventual out-of-flow box size.
+    #[inline]
+    pub fn to_physical(self, writing_direction: WritingDirection, outer_size: Size<f32>) -> PhysicalStaticPosition {
+        let inline_edge = physical_static_position_edge(self.inline_edge, writing_direction.is_inline_flow_reversed());
+        let block_edge = physical_static_position_edge(self.block_edge, writing_direction.is_block_flow_reversed());
+        let (horizontal_edge, vertical_edge, align_self_axis) = if writing_direction.mode.is_horizontal() {
+            (inline_edge, block_edge, self.align_self_axis.to_absolute(writing_direction.mode))
+        } else {
+            (block_edge, inline_edge, self.align_self_axis.to_absolute(writing_direction.mode))
+        };
+        PhysicalStaticPosition {
+            offset: writing_direction.converter(outer_size).to_physical_point(self.offset, Size::ZERO),
+            horizontal_edge,
+            vertical_edge,
+            align_self_axis,
+        }
+    }
+}
+
+/// A physical-axis static-position edge.
+///
+/// `Low` means left on the horizontal axis and top on the vertical axis;
+/// `High` means right or bottom respectively.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PhysicalStaticPositionEdge {
+    /// Left or top edge.
+    Low,
+    /// Center of the axis.
+    Center,
+    /// Right or bottom edge.
+    High,
+}
+
+/// Static-position metadata expressed in physical coordinates.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PhysicalStaticPosition {
+    /// Physical anchor point.
+    pub offset: Point<f32>,
+    /// Edge represented by the horizontal-axis anchor.
+    pub horizontal_edge: PhysicalStaticPositionEdge,
+    /// Edge represented by the vertical-axis anchor.
+    pub vertical_edge: PhysicalStaticPositionEdge,
+    /// Physical axis to which `align-self` applies.
+    pub align_self_axis: AbsoluteAxis,
+}
+
+impl PhysicalStaticPosition {
+    /// Convert this candidate into the flow-relative coordinate space of a
+    /// containing block without resolving the eventual out-of-flow box size.
+    #[inline]
+    pub fn to_logical(self, writing_direction: WritingDirection, outer_size: Size<f32>) -> LogicalStaticPosition {
+        let (inline_edge, block_edge) = if writing_direction.mode.is_horizontal() {
+            (self.horizontal_edge, self.vertical_edge)
+        } else {
+            (self.vertical_edge, self.horizontal_edge)
+        };
+        LogicalStaticPosition {
+            offset: writing_direction.converter(outer_size).to_logical_point(self.offset, Size::ZERO),
+            inline_edge: logical_static_position_edge(inline_edge, writing_direction.is_inline_flow_reversed()),
+            block_edge: logical_static_position_edge(block_edge, writing_direction.is_block_flow_reversed()),
+            align_self_axis: if writing_direction.mode.is_horizontal() {
+                match self.align_self_axis {
+                    AbsoluteAxis::Horizontal => AbstractAxis::Inline,
+                    AbsoluteAxis::Vertical => AbstractAxis::Block,
+                }
+            } else {
+                match self.align_self_axis {
+                    AbsoluteAxis::Horizontal => AbstractAxis::Block,
+                    AbsoluteAxis::Vertical => AbstractAxis::Inline,
+                }
+            },
+        }
+    }
+}
+
+#[inline(always)]
+/// Project one logical static-position edge to its low/center/high physical edge.
+const fn physical_static_position_edge(edge: StaticPositionEdge, axis_is_reversed: bool) -> PhysicalStaticPositionEdge {
+    match edge {
+        StaticPositionEdge::Center => PhysicalStaticPositionEdge::Center,
+        StaticPositionEdge::Start if axis_is_reversed => PhysicalStaticPositionEdge::High,
+        StaticPositionEdge::Start => PhysicalStaticPositionEdge::Low,
+        StaticPositionEdge::End if axis_is_reversed => PhysicalStaticPositionEdge::Low,
+        StaticPositionEdge::End => PhysicalStaticPositionEdge::High,
+    }
+}
+
+#[inline(always)]
+/// Project one low/center/high physical edge into a logical static-position edge.
+const fn logical_static_position_edge(edge: PhysicalStaticPositionEdge, axis_is_reversed: bool) -> StaticPositionEdge {
+    match edge {
+        PhysicalStaticPositionEdge::Center => StaticPositionEdge::Center,
+        PhysicalStaticPositionEdge::Low if axis_is_reversed => StaticPositionEdge::End,
+        PhysicalStaticPositionEdge::Low => StaticPositionEdge::Start,
+        PhysicalStaticPositionEdge::High if axis_is_reversed => StaticPositionEdge::Start,
+        PhysicalStaticPositionEdge::High => StaticPositionEdge::End,
+    }
+}
+
 /// A 2-dimensional coordinate.
 ///
 /// When used in association with a [`Rect`], represents the top-left corner.
@@ -1283,7 +1434,10 @@ where
 
 #[cfg(test)]
 mod writing_mode_tests {
-    use super::{LogicalBoxStrut, LogicalOffset, Point, Rect, Size, WritingDirection, WritingMode};
+    use super::{
+        AbstractAxis, LogicalBoxStrut, LogicalOffset, LogicalStaticPosition, Point, Rect, Size, StaticPositionEdge,
+        WritingDirection, WritingMode,
+    };
     use crate::Direction;
 
     const OUTER_SIZE: Size<i32> = Size { width: 300, height: 400 };
@@ -1301,6 +1455,25 @@ mod writing_mode_tests {
         WritingDirection::new(WritingMode::SidewaysLr, Direction::Ltr),
         WritingDirection::new(WritingMode::SidewaysLr, Direction::Rtl),
     ];
+
+    #[test]
+    fn static_position_edges_round_trip_through_physical_coordinates() {
+        let candidate = LogicalStaticPosition {
+            offset: LogicalOffset { inline_offset: 70.0, block_offset: 90.0 },
+            inline_edge: StaticPositionEdge::Center,
+            block_edge: StaticPositionEdge::End,
+            align_self_axis: AbstractAxis::Inline,
+        };
+        let outer_size = Size { width: 300.0, height: 400.0 };
+
+        for writing_direction in WRITING_DIRECTIONS {
+            assert_eq!(
+                candidate.to_physical(writing_direction, outer_size).to_logical(writing_direction, outer_size),
+                candidate,
+                "{writing_direction:?}",
+            );
+        }
+    }
 
     #[test]
     fn logical_offsets_convert_to_physical_top_left_points() {
