@@ -14,7 +14,7 @@ use core::unreachable;
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
-use super::common::intrinsic_size::apply_contained_intrinsic_size_constraints;
+use super::common::intrinsic_size::{apply_contained_intrinsic_size_constraints, ResolvedNodeSizing};
 use super::common::stretch::resolve_stretch_size_constraints;
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
@@ -32,6 +32,10 @@ pub struct LeafSizingContext {
     pub aspect_ratio: ResolvedAspectRatio,
     /// Used physical size-containment state.
     pub size_containment: SizeContainment,
+    /// Child-owned initial sizing resolved at the tree cache-miss boundary.
+    /// When absent, the standalone leaf API resolves numeric style values
+    /// locally; tree adapters provide it when intrinsic keywords are enabled.
+    pub node_sizing: Option<ResolvedNodeSizing>,
 }
 
 impl LeafSizingContext {
@@ -42,7 +46,14 @@ impl LeafSizingContext {
         aspect_ratio: ResolvedAspectRatio,
         size_containment: SizeContainment,
     ) -> Self {
-        Self { writing_mode, aspect_ratio, size_containment }
+        Self { writing_mode, aspect_ratio, size_containment, node_sizing: None }
+    }
+
+    /// Attach initial node sizing without changing the parent constraint space.
+    #[inline(always)]
+    pub const fn with_node_sizing(mut self, node_sizing: ResolvedNodeSizing) -> Self {
+        self.node_sizing = Some(node_sizing);
+        self
     }
 }
 
@@ -132,7 +143,9 @@ pub fn compute_leaf_layout_with_sizing_context<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    let LeafSizingContext { writing_mode, aspect_ratio: resolved_aspect_ratio, size_containment } = sizing_context;
+    let LeafSizingContext { writing_mode, aspect_ratio: resolved_aspect_ratio, size_containment, node_sizing } =
+        sizing_context;
+    let node_sizing_dependency = node_sizing.is_some_and(|sizing| sizing.depends_on_block_constraints);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
@@ -158,14 +171,22 @@ where
 
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match sizing_mode {
-        SizingMode::ContentSize => {
-            let node_size = known_dimensions.or(contained_outer_size);
-            let node_min_size = Size::NONE;
-            let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled(), false)
+    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match (sizing_mode, node_sizing)
+    {
+        (SizingMode::ContentSize, Some(node_sizing)) => {
+            (node_sizing.outer_size, Size::NONE, Size::NONE, resolved_aspect_ratio.disabled(), false)
         }
-        SizingMode::InherentSize => {
+        (SizingMode::ContentSize, None) => {
+            (known_dimensions.or(contained_outer_size), Size::NONE, Size::NONE, resolved_aspect_ratio.disabled(), false)
+        }
+        (SizingMode::InherentSize, Some(node_sizing)) => (
+            node_sizing.outer_size,
+            node_sizing.min_size,
+            node_sizing.max_size,
+            resolved_aspect_ratio,
+            run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio,
+        ),
+        (SizingMode::InherentSize, None) => {
             let raw_size = style.size();
             let raw_min_size = style.min_size();
             let raw_max_size = style.max_size();
@@ -206,7 +227,7 @@ where
             let style_size = resolved.size;
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
-            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
+            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.get_abs(writing_mode.inline_axis());
 
             // A parent formatting context may make exactly one border-box axis
             // definite (for example a stretched flex cross size). Resolve the
@@ -223,10 +244,12 @@ where
                 resolved_aspect_ratio,
                 pb_sum,
             );
+            let inline_axis = writing_mode.inline_axis();
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-                && known_dimensions.width.is_none()
+                && known_dimensions.get_abs(inline_axis).is_none()
                 && (preferred_inline_from_aspect_ratio
-                    || (size_before_ratio.width.is_none() && size_after_ratio.width.is_some()));
+                    || (size_before_ratio.get_abs(inline_axis).is_none()
+                        && size_after_ratio.get_abs(inline_axis).is_some()));
             (size_after_ratio, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
         }
     };
@@ -252,7 +275,9 @@ where
         let used_size = resolve_used_size(known_dimensions, node_size, node_min_size, node_max_size, pb_sum);
         if let Size { width: Some(width), height: Some(height) } = used_size {
             let size = Size { width, height };
-            return LayoutOutput::from_outer_size(size).with_applied_aspect_ratio(applied_aspect_ratio);
+            return LayoutOutput::from_outer_size(size)
+                .with_block_constraint_dependency(node_sizing_dependency)
+                .with_applied_aspect_ratio(applied_aspect_ratio);
         };
     }
 
@@ -328,5 +353,5 @@ where
     let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
     output.margins_can_collapse_through =
         !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
-    output.with_applied_aspect_ratio(applied_aspect_ratio)
+    output.with_block_constraint_dependency(node_sizing_dependency).with_applied_aspect_ratio(applied_aspect_ratio)
 }

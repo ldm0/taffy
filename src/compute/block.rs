@@ -21,17 +21,15 @@ use crate::{
 
 use super::common::absolute::{fit_content_width, inset_modified_containing_block_size};
 use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput,
-    TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
-    apply_contained_intrinsic_size_constraints, measure_aspect_ratio_automatic_minimum,
-    measure_intrinsic_block_size_constraints, resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
+    measure_aspect_ratio_automatic_minimum, measure_intrinsic_block_size_constraints,
+    resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
-use super::common::used_size::resolve_used_size;
 
 #[cfg(feature = "float_layout")]
 use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
@@ -429,7 +427,7 @@ pub fn compute_block_layout(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node_id);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { known_dimensions, parent_size, run_mode, .. } = inputs;
+    let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
     let size_containment = tree.get_size_containment(node_id);
     let style = tree.get_block_container_style(node_id);
@@ -477,93 +475,41 @@ pub fn compute_block_layout(
     let needs_intrinsic_block_size = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
-
-    let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio, block_axis_constraints) =
-        match inputs.sizing_mode {
-            SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false, ResolvedAxisConstraints::NONE),
-            SizingMode::InherentSize => {
-                let stretch = resolve_stretch_size_constraints(
-                    raw_size,
-                    raw_min_size,
-                    raw_max_size,
-                    inputs.available_space.into_options(),
-                    padding_border_size,
-                );
-                let resolved = resolve_size_constraints(SizeConstraintInput {
-                    size: raw_size
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment)
-                        .or(stretch.preferred),
-                    min_size: raw_min_size
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment)
-                        .or(stretch.min),
-                    max_size: raw_max_size
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment)
-                        .or(stretch.max),
-                    size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                    writing_mode,
-                    inline_auto_behavior: inputs.inline_auto_behavior,
-                    block_auto_behavior: inputs.block_auto_behavior,
-                    transferred_sizes_mode: TransferredSizesMode::Normal,
-                    aspect_ratio,
-                    padding_border: padding_border_size,
-                });
-                let resolved = apply_contained_intrinsic_size_constraints(
-                    resolved,
-                    raw_size,
-                    raw_min_size,
-                    raw_max_size,
-                    contained_outer_size,
-                );
-                let min_size = resolved.min_size;
-                let max_size = resolved.max_size;
-                let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
-                (
-                    min_size,
-                    max_size,
-                    preferred_size,
-                    resolved.aspect_ratio_applied.width,
-                    resolved.block_axis_constraints(writing_mode),
-                )
-            }
-        };
-    let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
-
     drop(style);
 
-    // If both min and max in a given axis are set and max <= min then this determines the size in that axis
-    let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
-        (Some(min), Some(max)) if max <= min => Some(min),
-        _ => None,
-    });
-    let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-        && known_dimensions.width.is_none()
-        && min_max_definite_size.width.is_none()
-        && preferred_inline_from_aspect_ratio;
-
-    let contained_outer_size = contained_outer_size.maybe_clamp(min_size, max_size);
-    let styled_based_known_dimensions = resolve_used_size(
-        known_dimensions,
-        min_max_definite_size.or(clamped_style_size).or(contained_outer_size),
-        Size::NONE,
-        Size::NONE,
-        padding_border_size,
+    let node_sizing = resolve_node_size_constraints(
+        tree,
+        node_id,
+        inputs,
+        NodeSizeConstraintInput {
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            box_sizing_adjustment,
+            padding_border_size,
+            aspect_ratio,
+            contained_outer_size,
+        },
     );
+    let block_axis_constraints = node_sizing.constraints.block_axis_constraints(writing_mode);
+    let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
+    let node_outer_size = node_sizing.outer_size;
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
     if run_mode == RunMode::ComputeSize && !needs_intrinsic_block_size {
-        if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
+        if let Size { width: Some(width), height: Some(height) } = node_outer_size {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
         // We can also short-circuit if the width is known and only the width has been requested.
         if inputs.axis == RequestedAxis::Horizontal {
-            if let Some(width) = styled_based_known_dimensions.width {
+            if let Some(width) = node_outer_size.width {
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
@@ -572,26 +518,18 @@ pub fn compute_block_layout(
     // Unwrap the block formatting context if one was passed, or else create a new one
     debug_log!("BLOCK");
     let output = match block_ctx {
-        Some(inherited_bfc) if !is_scroll_container => compute_inner(
-            tree,
-            node_id,
-            LayoutInput { known_dimensions: styled_based_known_dimensions, ..inputs },
-            inherited_bfc,
-            content_based_block_size,
-        ),
+        Some(inherited_bfc) if !is_scroll_container => {
+            compute_inner(tree, node_id, inputs, node_sizing, inherited_bfc, content_based_block_size)
+        }
         _ => {
             let mut root_bfc = BlockFormattingContext::new();
             let mut root_ctx = root_bfc.root_block_context();
-            compute_inner(
-                tree,
-                node_id,
-                LayoutInput { known_dimensions: styled_based_known_dimensions, ..inputs },
-                &mut root_ctx,
-                content_based_block_size,
-            )
+            compute_inner(tree, node_id, inputs, node_sizing, &mut root_ctx, content_based_block_size)
         }
     };
-    output.with_applied_aspect_ratio(applied_aspect_ratio)
+    output
+        .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
+        .with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Computes the layout of [`LayoutBlockContainer`] according to the block layout algorithm
@@ -599,27 +537,16 @@ fn compute_inner(
     tree: &mut impl LayoutBlockContainer,
     node_id: NodeId,
     inputs: LayoutInput,
+    node_sizing: ResolvedNodeSizing,
     #[allow(unused_mut)] mut block_ctx: &mut BlockContext<'_>,
     content_based_block_size: ContentBasedBlockSize,
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node_id);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput {
-        known_dimensions,
-        definite_dimensions,
-        parent_size,
-        available_space,
-        run_mode,
-        sizing_mode,
-        block_margins_are_collapsible,
-        ..
-    } = inputs;
+    let LayoutInput { definite_dimensions, available_space, run_mode, block_margins_are_collapsible, .. } = inputs;
 
-    let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
     let style = tree.get_block_container_style(node_id);
     let raw_margin = style.margin();
-    let aspect_ratio =
-        if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { resolved_aspect_ratio.disabled() };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let direction = style.direction();
@@ -639,7 +566,6 @@ fn compute_inner(
         }
     };
     let padding_border = padding + border;
-    let padding_border_size = padding_border.sum_axes();
     let content_box_inset = padding_border + scrollbar_gutter;
     let logical_padding = writing_direction.to_logical_box_strut(padding);
     let logical_border = writing_direction.to_logical_box_strut(border);
@@ -654,66 +580,18 @@ fn compute_inner(
         direction,
     ));
 
-    let box_sizing = style.box_sizing();
-    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
     let raw_size = style.size();
     let raw_min_size = style.min_size();
-    let raw_max_size = style.max_size();
     let raw_size_logical = writing_mode.to_logical(raw_size);
     let raw_min_size_logical = writing_mode.to_logical(raw_min_size);
-    let (size, min_size, max_size) = match sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
-        SizingMode::InherentSize => {
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                min_size: raw_min_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                max_size: raw_max_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inline_auto_behavior: inputs.inline_auto_behavior,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: padding_border_size,
-            });
-            (resolved.size, resolved.min_size, resolved.max_size)
-        }
-    };
-
-    // css-sizing-4: a definite size in one axis transfers through `aspect-ratio`
-    // to make the other definite. Deriving it from `known_dimensions` self-gates
-    // the transfer — a block parent fills an axis only when it's a real
-    // constraint (e.g. the stretched width at final layout) and leaves it None
-    // while probing intrinsic sizes, so measure passes stay content-based. Only a
-    // newly-filled axis is adopted (and clamped); an incoming known size is left
-    // as the parent resolved it (re-clamping would undo padding/border overrides).
-    let known_dimensions = {
-        let derived = apply_preferred_aspect_ratio(
-            known_dimensions,
-            raw_size.map(|dimension| dimension.is_auto()),
-            writing_mode,
-            inputs.inline_auto_behavior,
-            inputs.block_auto_behavior,
-            aspect_ratio,
-            padding_border_size,
-        )
-        .maybe_clamp(min_size, max_size);
-        Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
-    };
-    let known_logical_size = writing_mode.to_logical(known_dimensions);
+    let outer_logical_size = writing_mode.to_logical(node_sizing.outer_size);
     let definite_logical_size = writing_mode.to_logical(definite_dimensions);
-    let size_logical = writing_mode.to_logical(size);
-    let min_size_logical = writing_mode.to_logical(min_size);
-    let max_size_logical = writing_mode.to_logical(max_size);
+    let size_logical = writing_mode.to_logical(node_sizing.preferred_size);
+    let min_size_logical = writing_mode.to_logical(node_sizing.min_size);
+    let max_size_logical = writing_mode.to_logical(node_sizing.max_size);
     let container_content_box_size = LogicalSize {
-        inline_size: known_logical_size.inline_size.maybe_sub(logical_content_box_inset.inline_axis_sum()),
-        block_size: known_logical_size.block_size.maybe_sub(logical_content_box_inset.block_axis_sum()),
+        inline_size: outer_logical_size.inline_size.maybe_sub(logical_content_box_inset.inline_axis_sum()),
+        block_size: outer_logical_size.block_size.maybe_sub(logical_content_box_inset.block_axis_sum()),
     };
 
     let overflow = style.overflow();
@@ -779,7 +657,7 @@ fn compute_inner(
     // 2. Compute the container inline size. Block layout stretches and stacks
     // in flow-relative axes; width is only the inline axis in horizontal-tb.
     let (container_outer_inline_size, content_inline_size_depends_on_block_constraints) =
-        match known_logical_size.inline_size {
+        match outer_logical_size.inline_size {
             Some(inline_size) => (inline_size, false),
             None => {
                 let available_inline_size =
@@ -800,7 +678,7 @@ fn compute_inner(
         };
 
     // Short-circuit if computing size and both logical dimensions are known.
-    if let (RunMode::ComputeSize, Some(container_outer_block_size)) = (run_mode, known_logical_size.block_size) {
+    if let (RunMode::ComputeSize, Some(container_outer_block_size)) = (run_mode, outer_logical_size.block_size) {
         let outer_size = writing_mode.to_physical(LogicalSize {
             inline_size: container_outer_inline_size,
             block_size: container_outer_block_size,
@@ -818,7 +696,7 @@ fn compute_inner(
             .with_block_constraint_dependency(content_inline_size_depends_on_block_constraints);
     }
 
-    let container_percentage_resolution_block_size = known_logical_size
+    let container_percentage_resolution_block_size = outer_logical_size
         .block_size
         .or(size_logical.block_size.maybe_max(min_size_logical.block_size))
         .or(min_size_logical.block_size);
@@ -863,7 +741,7 @@ fn compute_inner(
     let block_size_constraints = content_based_block_size
         .resolve(writing_mode, Some(container_outer_inline_size), intrinsic_outer_block_size)
         .resolve_against(size_logical.block_size, content_based_block_size.resolved_constraints());
-    let container_outer_block_size = known_logical_size
+    let container_outer_block_size = outer_logical_size
         .block_size
         .or(block_size_constraints.preferred)
         .unwrap_or(intrinsic_outer_block_size)

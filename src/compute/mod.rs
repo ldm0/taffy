@@ -76,38 +76,30 @@ use crate::tree::{
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
 use crate::util::ResolveOrZero;
-use crate::{AutoSizeBehavior, CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
+use crate::{AutoSizeBehavior, CacheTree, RequestedAxis};
 
-use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-pub use self::common::intrinsic_size::{
-    resolve_intrinsic_inline_inputs, resolve_intrinsic_inline_inputs_with_provenance, ResolvedIntrinsicInlineInputs,
-};
+#[cfg(feature = "block_layout")]
+use crate::{AbsoluteAxis, MaybeMath};
+
+pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
     let root_writing_mode = tree.get_writing_mode(root);
-    // A block root only falls back to filling definite available space when
-    // its preferred width is auto. Resolve intrinsic sizing keywords before
-    // that fallback so they remain explicit used sizes at the root seam.
-    let root_inputs = resolve_intrinsic_inline_inputs(
-        tree,
-        root,
-        LayoutInput {
-            run_mode: RunMode::PerformLayout,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::Layout,
-            axis: RequestedAxis::Both,
-            inline_auto_behavior: AutoSizeBehavior::FitContent,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
-            known_dimensions: Size::NONE,
-            definite_dimensions: Size::NONE,
-            parent_size: available_space.into_options(),
-            parent_writing_mode: root_writing_mode,
-            available_space,
-            block_margins_are_collapsible: Line::FALSE,
-        },
-    );
-    let mut known_dimensions = root_inputs.known_dimensions;
+    let root_inputs = LayoutInput {
+        run_mode: RunMode::PerformLayout,
+        sizing_mode: SizingMode::InherentSize,
+        sizing_purpose: SizingPurpose::Layout,
+        axis: RequestedAxis::Both,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
+        known_dimensions: Size::NONE,
+        definite_dimensions: Size::NONE,
+        parent_size: available_space.into_options(),
+        parent_writing_mode: root_writing_mode,
+        available_space,
+        block_margins_are_collapsible: Line::FALSE,
+    };
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
     let (root_padding, root_border) = {
         let style = tree.get_core_container_style(root);
@@ -116,85 +108,40 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis)),
         )
     };
-    let root_padding_border_size = (root_padding + root_border).sum_axes();
+    let mut root_available_space = available_space;
+    let mut root_inline_auto_behavior = AutoSizeBehavior::FitContent;
 
     #[cfg(feature = "block_layout")]
     {
-        use crate::BoxSizing;
-
-        let parent_size = available_space.into_options();
-        let aspect_ratio = tree.get_resolved_aspect_ratio(root);
         let style = tree.get_core_container_style(root);
 
+        let inline_axis = root_writing_mode.inline_axis();
         if style.is_block() {
-            // Pull these out earlier to avoid borrowing issues
             let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let box_sizing = style.box_sizing();
-            let box_sizing_adjustment =
-                if box_sizing == BoxSizing::ContentBox { root_padding_border_size } else { Size::ZERO };
-
-            let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode: root_writing_mode,
-                inline_auto_behavior: root_inputs.inline_auto_behavior,
-                block_auto_behavior: root_inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: root_padding_border_size,
-            });
-            let min_size = resolved.min_size;
-            let max_size = resolved.max_size;
-            let clamped_style_size = resolved.size.maybe_clamp(min_size, max_size);
-
-            // If both min and max in a given axis are set and max <= min then this determines the size in that axis
-            let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
-                (Some(min), Some(max)) if max <= min => Some(min),
-                _ => None,
-            });
-
-            // Block nodes automatically stretch fit their width to fit available space if available space is definite
-            let available_space_based_size = Size {
-                width: available_space.width.into_option().maybe_sub(margin.horizontal_axis_sum()),
-                height: None,
-            };
-
-            let styled_based_known_dimensions = known_dimensions
-                .or(min_max_definite_size)
-                .or(clamped_style_size)
-                .or(available_space_based_size)
-                .maybe_max(root_padding_border_size);
-
-            known_dimensions = styled_based_known_dimensions;
+            let available_inline_space =
+                available_space.get_abs(inline_axis).maybe_sub(margin.grid_axis_sum(inline_axis));
+            match inline_axis {
+                AbsoluteAxis::Horizontal => root_available_space.width = available_inline_space,
+                AbsoluteAxis::Vertical => root_available_space.height = available_inline_space,
+            }
+            if style.size().get_abs(inline_axis).is_auto() {
+                root_inline_auto_behavior = AutoSizeBehavior::StretchImplicit;
+            }
         }
     }
-
-    // The root seam synthesizes these dimensions itself; floor every axis it
-    // marks as known before handing the exact used size to a child algorithm.
-    known_dimensions = known_dimensions.maybe_max(root_padding_border_size);
 
     // Recursively compute node layout
     let output = tree.perform_child_layout(
         root,
         ChildLayoutInput::new(
-            known_dimensions,
+            Size::NONE,
             available_space.into_options(),
             root_writing_mode,
-            available_space,
+            root_available_space,
             SizingMode::InherentSize,
             Line::FALSE,
-        ),
+        )
+        .with_inline_auto_behavior(root_inline_auto_behavior),
     );
     let style = tree.get_core_container_style(root);
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -275,10 +222,9 @@ where
 
 /// Compute or retrieve a dedicated intrinsic size result for a node.
 ///
-/// This is the sizing counterpart to [`compute_cached_layout`]. It keeps
-/// measurement provenance out of the public layout result protocol while the
-/// formatting-context implementations are incrementally moved off the legacy
-/// combined dispatcher.
+/// This is the sizing counterpart to [`compute_cached_layout`]. Its cache
+/// stores only sizing geometry and measurement provenance; final fragment
+/// state remains in the layout cache.
 pub fn compute_cached_size<Tree: CacheTree + LayoutPartialTree + ?Sized, ComputeFunction>(
     tree: &mut Tree,
     node: NodeId,

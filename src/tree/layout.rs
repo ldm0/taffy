@@ -705,8 +705,7 @@ impl LayoutOutput {
         self
     }
 
-    /// Return whether this combined dispatcher result depends on the parent
-    /// block constraint.
+    /// Return whether this result depends on the parent block constraint.
     #[inline(always)]
     pub(crate) fn block_constraint_dependency(&self) -> bool {
         self.depends_on_block_constraints
@@ -718,16 +717,14 @@ impl LayoutOutput {
         self.depends_on_block_constraints = depends;
     }
 
-    /// Record operation-local aspect-ratio provenance on a transitional
-    /// combined dispatcher result.
+    /// Record operation-local aspect-ratio provenance.
     #[inline(always)]
     pub(crate) fn with_applied_aspect_ratio(mut self, applied: bool) -> Self {
         self.applied_aspect_ratio |= applied;
         self
     }
 
-    /// Construct the transitional combined result from a dedicated intrinsic
-    /// sizing result.
+    /// Construct an algorithm result from a dedicated intrinsic sizing result.
     #[inline(always)]
     pub(crate) fn from_intrinsic_size_result(result: IntrinsicSizeResult) -> Self {
         let mut output = Self::from_outer_size(result.size);
@@ -736,13 +733,10 @@ impl LayoutOutput {
         output
     }
 
-    /// Project the measurement portion of this transitional combined result.
+    /// Project the measurement portion of this algorithm result.
     ///
-    /// Layout algorithms should exchange [`IntrinsicSizeResult`] through
-    /// [`LayoutPartialTree::compute_child_size`](super::LayoutPartialTree::compute_child_size)
-    /// instead of consuming this projection directly. It exists while the
-    /// low-level cached layout dispatcher still transports both operation
-    /// results through `LayoutOutput`.
+    /// Parent formatting contexts exchange this projection through
+    /// [`LayoutPartialTree::compute_child_size`](super::LayoutPartialTree::compute_child_size).
     #[inline(always)]
     pub fn into_intrinsic_size_result(self) -> IntrinsicSizeResult {
         IntrinsicSizeResult {
