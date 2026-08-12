@@ -201,7 +201,6 @@ where
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
-    let margin = style.margin().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let padding = style.padding().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let border = style.border().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let padding_border = padding + border;
@@ -337,13 +336,12 @@ where
     let resolve_available_axis = |known_dimension: Option<f32>,
                                   node_size: Option<f32>,
                                   available_space: AvailableSpace,
-                                  margin_sum: f32,
                                   min_size: Option<f32>,
                                   max_size: Option<f32>,
                                   minimum_border_box_size: f32,
                                   content_box_inset: f32| {
         let resolved_size = resolve_used_axis(known_dimension, node_size, min_size, max_size, minimum_border_box_size);
-        available_space.maybe_sub(margin_sum).maybe_set(resolved_size).map_definite_value(|size| {
+        available_space.maybe_set(resolved_size).map_definite_value(|size| {
             let outer_size = if resolved_size.is_some() {
                 size
             } else {
@@ -357,7 +355,6 @@ where
             known_dimensions.width,
             node_size.width,
             available_space.width,
-            margin.horizontal_axis_sum(),
             node_min_size.width,
             node_max_size.width,
             pb_sum.width,
@@ -367,7 +364,6 @@ where
             known_dimensions.height,
             node_size.height,
             available_space.height,
-            margin.vertical_axis_sum(),
             node_min_size.height,
             node_max_size.height,
             pb_sum.height,
@@ -406,4 +402,47 @@ where
     output.margins_can_collapse_through =
         !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
     output.with_block_constraint_dependency(node_sizing_dependency).with_applied_aspect_ratio(applied_aspect_ratio)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Dimension, Rect, RunMode, SizingPurpose, Style};
+
+    type TestStyle = Style<crate::sys::DefaultCheapStr>;
+
+    #[test]
+    fn leaf_measurement_consumes_margin_excluded_available_space() {
+        let style: TestStyle = Style {
+            margin: Rect {
+                left: crate::LengthPercentageAuto::length(10.0),
+                right: crate::LengthPercentageAuto::length(15.0),
+                top: crate::LengthPercentageAuto::length(0.0),
+                bottom: crate::LengthPercentageAuto::length(0.0),
+            },
+            size: Size { width: Dimension::auto(), height: Dimension::auto() },
+            ..Style::default()
+        };
+        let inputs = LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::Layout,
+            available_space: Size { width: AvailableSpace::Definite(175.0), height: AvailableSpace::MaxContent },
+            ..LayoutInput::HIDDEN
+        };
+        let mut measured_available_width = None;
+
+        let output = compute_leaf_layout(
+            inputs,
+            &style,
+            |_, _| 0.0,
+            |_, available_space| {
+                measured_available_width = available_space.width.into_option();
+                Size { width: measured_available_width.unwrap_or(0.0), height: 20.0 }
+            },
+        );
+
+        assert_eq!(measured_available_width, Some(175.0));
+        assert_eq!(output.size, Size { width: 175.0, height: 20.0 });
+    }
 }

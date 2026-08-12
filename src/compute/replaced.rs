@@ -63,6 +63,10 @@ enum ConstraintViolation {
 /// conversion and size containment. This is intentionally separate from
 /// compute_leaf_layout, whose measurement callback returns content size and
 /// must not duplicate style constraint resolution.
+///
+/// As with every child layout algorithm, definite available space is the
+/// margin-excluded border-box space offered by the parent. It controls
+/// intrinsic contribution semantics but is not an implicit maximum size.
 pub fn compute_replaced_layout(
     inputs: LayoutInput,
     style: &impl CoreStyle,
