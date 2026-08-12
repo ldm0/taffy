@@ -53,7 +53,7 @@ pub(crate) fn apply_contained_intrinsic_size_constraints(
         height: raw_max_size.height.is_intrinsic().then_some(contained_outer_size.height).flatten(),
     };
     resolved.apply_late_authored_constraints(late_min_size, late_max_size);
-    resolved.size = resolved.size.maybe_clamp(resolved.min_size, resolved.max_size);
+    resolved.size = resolved.used_preferred_size();
     resolved
 }
 
@@ -958,8 +958,7 @@ pub(crate) fn resolve_node_size_constraints(
         );
         let resolved = direct.constraints;
         let preferred_size = resolved
-            .size
-            .maybe_clamp(resolved.min_size, resolved.max_size)
+            .used_preferred_size()
             .or(sizing.contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
         let outer_size = resolve_used_size(
             inputs.known_dimensions,
@@ -1059,10 +1058,8 @@ pub(crate) fn resolve_node_size_constraints(
         aspect_ratio,
     })
     .size;
-    let preferred_size = resolved
-        .size
-        .maybe_clamp(resolved.min_size, resolved.max_size)
-        .or(contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
+    let preferred_size =
+        resolved.used_preferred_size().or(contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
     let min_max_definite_size = resolved.min_size.zip_map(resolved.max_size, |min, max| match (min, max) {
         (Some(min), Some(max)) if max <= min => Some(min),
         _ => None,

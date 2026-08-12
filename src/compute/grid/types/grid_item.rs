@@ -784,7 +784,7 @@ impl GridItem {
         });
         let physical_axis = axis.to_absolute(self.parent_writing_direction.mode);
         resolved
-            .size
+            .used_preferred_size()
             .get_abs(physical_axis)
             .or_else(|| resolved.min_size.get_abs(physical_axis))
             .or_else(|| self.overflow.get(axis).maybe_into_automatic_min_size())

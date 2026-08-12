@@ -1,6 +1,6 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
+use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, MaybeMath, ResolvedAspectRatio, Size, WritingMode};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,6 +71,17 @@ impl ResolvedAxisConstraints {
 }
 
 impl ResolvedSizeConstraints {
+    /// Return the preferred border-box size after applying the source-ordered
+    /// minimum and maximum constraints.
+    ///
+    /// The unclamped [`Self::size`] remains available to algorithms that need
+    /// sizing provenance; layout and contribution boundaries consume this
+    /// value when they need the actual preferred used size.
+    #[inline(always)]
+    pub(crate) fn used_preferred_size(self) -> Size<Option<f32>> {
+        self.size.maybe_clamp(self.min_size, self.max_size)
+    }
+
     /// Return the source-preserving constraints for the logical block axis.
     pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
         writing_mode.to_logical(self.constraint_sources).block_size
@@ -418,6 +429,7 @@ mod tests {
         assert_eq!(resolved.aspect_ratio_applied, Size { width: false, height: true });
         assert_eq!(resolved.min_size, Size { width: Some(100.0), height: Some(100.0) });
         assert_eq!(resolved.max_size, Size { width: None, height: Some(100.0) });
+        assert_eq!(resolved.used_preferred_size(), Size { width: Some(100.0), height: Some(100.0) });
     }
 
     #[test]
