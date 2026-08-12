@@ -20,7 +20,7 @@ use super::aspect_ratio::{
     SizeConstraintInput, TransferredSizesMode,
 };
 use super::stretch::resolve_stretch_size_constraints;
-use super::used_size::{resolve_inline_auto_size, resolve_used_size};
+use super::used_size::{resolve_inline_auto_size_preference, resolve_used_size, InlineAutoSizeInput};
 
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
 /// keywords, then reapply the normal minimum-wins clamp.
@@ -1025,23 +1025,40 @@ pub(crate) fn resolve_node_size_constraints(
         writing_mode.to_physical(LogicalSize { inline_size: intrinsic.max, block_size: None }),
     );
 
+    let inline_auto_size = resolve_inline_auto_size_preference(InlineAutoSizeInput {
+        preferred_size: resolved.size,
+        fixed_size: inputs.known_dimensions,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inline_behavior: inputs.inline_auto_behavior,
+        block_behavior: inputs.block_auto_behavior,
+        available_space: inputs.available_space,
+        min_size: resolved.min_size,
+        max_size: resolved.max_size,
+        minimum_border_box_size: padding_border_size,
+        aspect_ratio,
+    });
+    resolved.size = inline_auto_size.size;
+    resolved.aspect_ratio_applied.width |= inline_auto_size.aspect_ratio_applied.width;
+    resolved.aspect_ratio_applied.height |= inline_auto_size.aspect_ratio_applied.height;
+
     let automatic_minimum =
         measure_aspect_ratio_automatic_minimum(tree, node_id, inputs, inline_axis, padding_border_size, resolved);
     resolved.apply_automatic_minimum(inline_axis, automatic_minimum.value);
-    resolved.size = resolve_inline_auto_size(
-        resolved.size,
-        raw_size.map(|dimension| dimension.is_auto()),
+    let own_definite_size = resolve_inline_auto_size_preference(InlineAutoSizeInput {
+        preferred_size: direct.definite_preferred_size,
+        fixed_size: inputs.definite_dimensions,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode,
-        inputs.inline_auto_behavior,
-        inputs.available_space,
-    );
-    let own_definite_size = resolve_inline_auto_size(
-        direct.definite_preferred_size,
-        raw_size.map(|dimension| dimension.is_auto()),
-        writing_mode,
-        inputs.inline_auto_behavior,
-        inputs.available_space,
-    );
+        inline_behavior: inputs.inline_auto_behavior,
+        block_behavior: inputs.block_auto_behavior,
+        available_space: inputs.available_space,
+        min_size: resolved.min_size,
+        max_size: resolved.max_size,
+        minimum_border_box_size: padding_border_size,
+        aspect_ratio,
+    })
+    .size;
     let preferred_size = resolved
         .size
         .maybe_clamp(resolved.min_size, resolved.max_size)

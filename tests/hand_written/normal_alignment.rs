@@ -108,6 +108,36 @@ fn grid_normal_lets_a_preferred_ratio_precede_implicit_stretch() {
     assert_eq!(stretch.size, Size { width: 100.0, height: 20.0 });
 }
 
+#[test]
+fn grid_explicit_block_stretch_precedes_implicit_inline_stretch() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item = tree
+        .new_leaf(Style {
+            aspect_ratio: Some(1.0),
+            align_self: Some(AlignSelf::STRETCH),
+            justify_self: Some(AlignSelf::NORMAL),
+            ..Default::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                grid_template_columns: vec![length(50.0)],
+                grid_template_rows: vec![length(100.0)],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 50.0, height: 100.0 });
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
 fn layout_absolute_item(parent_display: Display, is_replaced: bool, alignment: AlignSelf) -> Layout {
     layout_measured_item(
         parent_display,
