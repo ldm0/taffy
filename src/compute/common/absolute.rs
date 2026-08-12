@@ -1,6 +1,6 @@
 use crate::geometry::{
-    AbsoluteAxis, Line, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size, StaticPositionEdge,
-    WritingDirection,
+    AbsoluteAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size,
+    StaticPositionEdge, WritingDirection,
 };
 use crate::style::{AvailableSpace, BoxGenerationMode, BoxSizing, CoreStyle, Overflow, Position};
 use crate::tree::{
@@ -123,15 +123,17 @@ pub(crate) fn fit_content_inline_size(
 /// Resolve auto margins in one axis of an absolutely positioned box.
 ///
 /// Auto margins only participate when both insets in the axis are definite.
-/// Negative inline free space is assigned to the non-dominant side, while
-/// block-axis negative space is shared equally.
+/// Negative free space in the containing block's inline direction is assigned
+/// to the non-dominant side, while free space in its block direction is shared
+/// equally. The selected axis and margins are expressed in the positioned
+/// box's writing direction.
 #[inline]
 fn resolve_absolute_axis_margins(
     margin: Line<Option<f32>>,
     inset: Line<Option<f32>>,
     area_size: f32,
     box_size: f32,
-    share_negative_space: bool,
+    is_containing_block_block_direction: bool,
     start_is_dominant: bool,
 ) -> Line<f32> {
     if inset.start.is_none() || inset.end.is_none() {
@@ -149,12 +151,34 @@ fn resolve_absolute_axis_margins(
         (Some(start), Some(end)) => Line { start, end },
         (None, Some(end)) => Line { start: free_space, end },
         (Some(start), None) => Line { start, end: free_space },
-        (None, None) if free_space > 0.0 || share_negative_space => {
+        (None, None) if free_space > 0.0 || is_containing_block_block_direction => {
             let start = free_space / 2.0;
             Line { start, end: free_space - start }
         }
         (None, None) if start_is_dominant => Line { start: 0.0, end: free_space },
         (None, None) => Line { start: free_space, end: 0.0 },
+    }
+}
+
+/// Resolve one physical low-axis location from physical insets and margins.
+///
+/// When both insets are definite, the containing block's logical start side
+/// is the dominant equation edge. This applies to either physical axis in
+/// vertical writing modes.
+#[inline]
+fn resolve_absolute_axis_location(
+    inset: Line<Option<f32>>,
+    area_size: f32,
+    box_size: f32,
+    margin: Line<f32>,
+    static_location: f32,
+    low_side_is_dominant: bool,
+) -> f32 {
+    match (inset.start, inset.end) {
+        (Some(_), Some(high)) if !low_side_is_dominant => area_size - box_size - high - margin.end,
+        (Some(low), _) => low + margin.start,
+        (None, Some(high)) => area_size - box_size - high - margin.end,
+        (None, None) => static_location,
     }
 }
 
@@ -213,7 +237,6 @@ pub(crate) fn layout_out_of_flow_item(
     containing_block: OutOfFlowContainingBlock,
 ) -> Option<OutOfFlowLayoutOutput> {
     let OutOfFlowContainingBlock { outer_size, area_offset, area_size, writing_direction } = containing_block;
-    let direction = writing_direction.direction;
     let writing_mode = writing_direction.mode;
     let area_width = area_size.width;
     let area_height = area_size.height;
@@ -227,6 +250,8 @@ pub(crate) fn layout_out_of_flow_item(
     }
 
     let overflow = child_style.overflow();
+    let child_direction = child_style.direction();
+    let child_writing_direction = WritingDirection::new(child_writing_mode, child_direction);
     let scrollbar_width = child_style.scrollbar_width();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
     let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
@@ -261,20 +286,15 @@ pub(crate) fn layout_out_of_flow_item(
     let raw_max_size = child_style.max_size();
     drop(child_style);
 
-    let static_anchor =
-        writing_direction.converter(outer_size).to_physical_point(item.static_position.offset, Size::ZERO);
-    let static_position_in_area = LogicalStaticPosition {
-        offset: writing_direction.converter(area_size).to_logical_point(
-            Point { x: static_anchor.x - area_offset.x, y: static_anchor.y - area_offset.y },
-            Size::ZERO,
-        ),
-        ..item.static_position
-    };
+    let mut physical_static_position = item.static_position.to_physical(writing_direction, outer_size);
+    physical_static_position.offset.x -= area_offset.x;
+    physical_static_position.offset.y -= area_offset.y;
+    let static_position_in_area = physical_static_position.to_logical(child_writing_direction, area_size);
     let inset_modified_containing_block = logical_inset_modified_containing_block_size(
         area_size,
         Rect { left, right, top, bottom },
         static_position_in_area,
-        writing_direction,
+        child_writing_direction,
     );
     let inset_modified_size =
         (inset_modified_containing_block - margin.map(|value| value.unwrap_or(0.0)).sum_axes()).f32_max(Size::ZERO);
@@ -450,46 +470,67 @@ pub(crate) fn layout_out_of_flow_item(
         },
     );
 
-    let horizontal_margin = resolve_absolute_axis_margins(
-        Line { start: margin.left, end: margin.right },
-        Line { start: left, end: right },
-        area_width,
-        final_size.width,
-        false,
-        !direction.is_rtl(),
+    let logical_margin = child_writing_direction.to_logical_box_strut(margin);
+    let logical_inset = child_writing_direction.to_logical_box_strut(Rect { left, right, top, bottom });
+    let logical_area_size = child_writing_mode.to_logical(area_size);
+    let logical_box_size = child_writing_mode.to_logical(final_size);
+    let containing_start_sides =
+        child_writing_direction.to_logical_box_strut(writing_direction.to_physical_box_strut(LogicalBoxStrut {
+            inline_start: true,
+            inline_end: false,
+            block_start: true,
+            block_end: false,
+        }));
+    let is_orthogonal = child_writing_mode.is_orthogonal_to(writing_mode);
+    let inline_margin = resolve_absolute_axis_margins(
+        Line { start: logical_margin.inline_start, end: logical_margin.inline_end },
+        Line { start: logical_inset.inline_start, end: logical_inset.inline_end },
+        logical_area_size.inline_size,
+        logical_box_size.inline_size,
+        is_orthogonal,
+        containing_start_sides.inline_start,
     );
-    let vertical_margin = resolve_absolute_axis_margins(
-        Line { start: margin.top, end: margin.bottom },
-        Line { start: top, end: bottom },
-        area_height,
-        final_size.height,
-        true,
-        true,
+    let block_margin = resolve_absolute_axis_margins(
+        Line { start: logical_margin.block_start, end: logical_margin.block_end },
+        Line { start: logical_inset.block_start, end: logical_inset.block_end },
+        logical_area_size.block_size,
+        logical_box_size.block_size,
+        !is_orthogonal,
+        containing_start_sides.block_start,
     );
-    let resolved_margin = Rect {
-        left: horizontal_margin.start,
-        right: horizontal_margin.end,
-        top: vertical_margin.start,
-        bottom: vertical_margin.end,
-    };
-    let static_location = resolve_static_position_location(
-        item.static_position,
-        writing_direction,
-        outer_size,
+    let resolved_margin = child_writing_direction.to_physical_box_strut(LogicalBoxStrut {
+        inline_start: inline_margin.start,
+        inline_end: inline_margin.end,
+        block_start: block_margin.start,
+        block_end: block_margin.end,
+    });
+    let static_location_in_area = resolve_static_position_location(
+        static_position_in_area,
+        child_writing_direction,
+        area_size,
         final_size,
         resolved_margin,
     );
-    let x = match (left, right) {
-        (Some(_), Some(right)) if direction.is_rtl() => area_width - final_size.width - right - resolved_margin.right,
-        (Some(left), _) => left + resolved_margin.left,
-        (None, Some(right)) => area_width - final_size.width - right - resolved_margin.right,
-        (None, None) => static_location.x - area_offset.x,
-    } + area_offset.x;
-    let y = top
-        .map(|top| top + resolved_margin.top)
-        .or(bottom.map(|bottom| area_height - final_size.height - bottom - resolved_margin.bottom))
-        .map(|offset| offset + area_offset.y)
-        .unwrap_or(static_location.y);
+    let horizontal_low_is_dominant =
+        !writing_mode.is_axis_flow_reversed(AbsoluteAxis::Horizontal, writing_direction.direction);
+    let vertical_low_is_dominant =
+        !writing_mode.is_axis_flow_reversed(AbsoluteAxis::Vertical, writing_direction.direction);
+    let x = resolve_absolute_axis_location(
+        Line { start: left, end: right },
+        area_width,
+        final_size.width,
+        Line { start: resolved_margin.left, end: resolved_margin.right },
+        static_location_in_area.x,
+        horizontal_low_is_dominant,
+    ) + area_offset.x;
+    let y = resolve_absolute_axis_location(
+        Line { start: top, end: bottom },
+        area_height,
+        final_size.height,
+        Line { start: resolved_margin.top, end: resolved_margin.bottom },
+        static_location_in_area.y,
+        vertical_low_is_dominant,
+    ) + area_offset.y;
     let location = Point { x, y };
     let scrollbar_size = Size {
         width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
