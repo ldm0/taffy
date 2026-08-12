@@ -17,6 +17,9 @@ pub(crate) struct ResolvedSizeConstraints {
     /// Authored and transferred constraint sources before the used min/max
     /// pair is collapsed.
     constraint_sources: Size<ResolvedAxisConstraints>,
+    /// Content-based automatic minimums retained so a later intrinsic
+    /// authored constraint can recompute the source-ordered used pair.
+    automatic_minimums: Size<Option<f32>>,
 }
 
 /// Resolved min/max sources for one physical axis.
@@ -75,6 +78,7 @@ impl ResolvedSizeConstraints {
         min_size: Size::NONE,
         max_size: Size::NONE,
         constraint_sources: Size { width: ResolvedAxisConstraints::NONE, height: ResolvedAxisConstraints::NONE },
+        automatic_minimums: Size::NONE,
     };
 
     /// Return the source-preserving constraints for the logical block axis.
@@ -97,8 +101,9 @@ impl ResolvedSizeConstraints {
             self.constraint_sources.width.with_late_authored_constraints(min_size.width, max_size.width);
         self.constraint_sources.height =
             self.constraint_sources.height.with_late_authored_constraints(min_size.height, max_size.height);
-        let (min_width, max_width) = self.constraint_sources.width.resolve(None, None, None);
-        let (min_height, max_height) = self.constraint_sources.height.resolve(None, None, None);
+        let (min_width, max_width) = self.constraint_sources.width.resolve(None, None, self.automatic_minimums.width);
+        let (min_height, max_height) =
+            self.constraint_sources.height.resolve(None, None, self.automatic_minimums.height);
         self.min_size = Size { width: min_width, height: min_height };
         self.max_size = Size { width: max_width, height: max_height };
     }
@@ -106,6 +111,10 @@ impl ResolvedSizeConstraints {
     /// Apply CSS Sizing's aspect-ratio automatic minimum in one physical
     /// axis while preserving the authored/transferred ordering.
     pub(crate) fn apply_automatic_minimum(&mut self, axis: AbsoluteAxis, automatic_minimum: Option<f32>) {
+        match axis {
+            AbsoluteAxis::Horizontal => self.automatic_minimums.width = automatic_minimum,
+            AbsoluteAxis::Vertical => self.automatic_minimums.height = automatic_minimum,
+        }
         let (minimum, maximum) = self.axis_constraints(axis).resolve(None, None, automatic_minimum);
         match axis {
             AbsoluteAxis::Horizontal => {
@@ -228,7 +237,14 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         height: size.height.is_none() && resolved_size.height.is_some(),
     };
 
-    ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size, constraint_sources }
+    ResolvedSizeConstraints {
+        size: resolved_size,
+        aspect_ratio_applied,
+        min_size,
+        max_size,
+        constraint_sources,
+        automatic_minimums: Size::NONE,
+    }
 }
 
 /// Apply a preferred ratio while preserving the constraint space's auto-size
@@ -474,5 +490,27 @@ mod tests {
         };
 
         assert_eq!(constraints.resolve(None, None, Some(100.0)), (Some(100.0), Some(100.0)));
+    }
+
+    #[test]
+    fn late_authored_constraints_retain_the_automatic_minimum() {
+        let mut resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(200.0) },
+            min_size: Size::NONE,
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: true, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        resolved.apply_automatic_minimum(AbsoluteAxis::Horizontal, Some(100.0));
+        resolved.apply_late_authored_constraints(Size::NONE, Size { width: Some(120.0), height: None });
+
+        assert_eq!(resolved.min_size.width, Some(100.0));
+        assert_eq!(resolved.max_size.width, Some(100.0));
     }
 }
