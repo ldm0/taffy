@@ -15,6 +15,7 @@ use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
 use super::common::intrinsic_size::apply_contained_intrinsic_size_constraints;
+use super::common::stretch::resolve_stretch_size_constraints;
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 /// Node-level sizing state supplied to leaf layout.
@@ -168,17 +169,30 @@ where
             let raw_size = style.size();
             let raw_min_size = style.min_size();
             let raw_max_size = style.max_size();
+            let stretch = resolve_stretch_size_constraints(
+                raw_size,
+                raw_min_size,
+                raw_max_size,
+                available_space.into_options(),
+                pb_sum,
+            );
             let resolved = apply_contained_intrinsic_size_constraints(
                 resolve_size_constraints(SizeConstraintInput {
-                    size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                    size: raw_size
+                        .maybe_resolve(parent_size, &resolve_calc_value)
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.preferred),
                     min_size: raw_min_size
                         .maybe_resolve(parent_size, &resolve_calc_value)
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.min),
                     max_size: raw_max_size
                         .maybe_resolve(parent_size, &resolve_calc_value)
-                        .maybe_add(box_sizing_adjustment),
+                        .maybe_add(box_sizing_adjustment)
+                        .or(stretch.max),
                     size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                     writing_mode,
+                    inline_auto_behavior: inputs.inline_auto_behavior,
                     block_auto_behavior: inputs.block_auto_behavior,
                     transferred_sizes_mode: TransferredSizesMode::Normal,
                     aspect_ratio: resolved_aspect_ratio,
@@ -200,10 +214,11 @@ where
             // like an authored one-axis size.
             let contained_size = contained_outer_size.maybe_clamp(style_min_size, style_max_size);
             let size_before_ratio = known_dimensions.or(style_size).or(contained_size);
-            let node_size = apply_preferred_aspect_ratio(
+            let size_after_ratio = apply_preferred_aspect_ratio(
                 size_before_ratio,
                 raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode,
+                inputs.inline_auto_behavior,
                 inputs.block_auto_behavior,
                 resolved_aspect_ratio,
                 pb_sum,
@@ -211,8 +226,8 @@ where
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
                 && known_dimensions.width.is_none()
                 && (preferred_inline_from_aspect_ratio
-                    || (size_before_ratio.width.is_none() && node_size.width.is_some()));
-            (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
+                    || (size_before_ratio.width.is_none() && size_after_ratio.width.is_some()));
+            (size_after_ratio, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
         }
     };
 

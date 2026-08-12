@@ -79,7 +79,7 @@ use crate::{AutoSizeBehavior, CacheTree, MaybeMath, MaybeResolve, RequestedAxis}
 
 use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 pub use self::common::intrinsic_size::{
-    resolve_intrinsic_width_inputs, resolve_intrinsic_width_inputs_with_provenance, ResolvedIntrinsicWidthInputs,
+    resolve_intrinsic_inline_inputs, resolve_intrinsic_inline_inputs_with_provenance, ResolvedIntrinsicInlineInputs,
 };
 
 /// Compute layout for the root node in the tree
@@ -88,7 +88,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     // A block root only falls back to filling definite available space when
     // its preferred width is auto. Resolve intrinsic sizing keywords before
     // that fallback so they remain explicit used sizes at the root seam.
-    let root_inputs = resolve_intrinsic_width_inputs(
+    let root_inputs = resolve_intrinsic_inline_inputs(
         tree,
         root,
         LayoutInput {
@@ -96,6 +96,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
@@ -146,6 +147,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                     .maybe_add(box_sizing_adjustment),
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode: root_writing_mode,
+                inline_auto_behavior: root_inputs.inline_auto_behavior,
                 block_auto_behavior: root_inputs.block_auto_behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,

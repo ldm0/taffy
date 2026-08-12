@@ -317,7 +317,7 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_inline_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -372,12 +372,12 @@ where
     }
 
     /// Operation-specific intrinsic sizing path used by parent formatting
-    /// contexts. The formatting algorithms still return a transitional combined
-    /// result internally; only its measurement projection crosses this seam.
+    /// contexts. Inline constraints are resolved once at the dispatch boundary
+    /// before the selected formatting algorithm computes the requested result.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         let inputs = self.prepare_child_layout_input(node_id, inputs);
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_inline_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -1265,6 +1265,7 @@ mod tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
             block_auto_behavior: crate::AutoSizeBehavior::FitContent,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
@@ -1301,6 +1302,7 @@ mod tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
             block_auto_behavior: crate::AutoSizeBehavior::FitContent,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,

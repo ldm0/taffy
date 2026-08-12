@@ -112,7 +112,7 @@ pub use crate::compute::detailed_info::*;
 pub use crate::compute::{
     compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout,
     compute_leaf_layout_with_sizing_context, compute_replaced_layout, compute_root_layout,
-    resolve_intrinsic_width_inputs_with_provenance, round_layout, LeafSizingContext, ReplacedSizingContext,
+    resolve_intrinsic_inline_inputs_with_provenance, round_layout, LeafSizingContext, ReplacedSizingContext,
 };
 #[doc(inline)]
 pub use crate::style::Style;

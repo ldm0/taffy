@@ -42,7 +42,7 @@ pub enum SizingPurpose {
     IntrinsicContribution,
 }
 
-/// How an authored `auto` size behaves in the logical block axis.
+/// How an authored `auto` size behaves in one logical axis.
 ///
 /// This is constraint-space state rather than style state: the containing
 /// formatting context decides whether `auto` is content-sized or stretched
@@ -199,18 +199,21 @@ pub struct LayoutInput {
     pub sizing_purpose: SizingPurpose,
     /// Which axis we need the size of
     pub axis: RequestedAxis,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
 
-    /// Known dimensions represent dimensions (width/height) which should be taken as fixed when performing layout.
-    /// For example, if known_dimensions.width is set to Some(WIDTH) then this means something like:
+    /// Known dimensions represent dimensions (width/height) which the parent
+    /// formatting context has already fixed. For example, if
+    /// `known_dimensions.width` is `Some(WIDTH)`, this means:
     ///
     ///    "What would the height of this node be, assuming the width is WIDTH"
     ///
-    /// Layout functions will be called with both known_dimensions set for final layout. Where the meaning is:
-    ///
-    ///   "The exact size of this node is WIDTHxHEIGHT. Please lay out your children"
-    ///
+    /// Final layout may still receive an unknown axis. In that case the child
+    /// resolves its authored size from the available space and auto-size
+    /// policy; `known_dimensions` is not a carrier for provisional style
+    /// resolution.
     pub known_dimensions: Size<Option<f32>>,
     /// Definite dimensions of this node which descendants may use as a percentage basis.
     ///
@@ -228,8 +231,10 @@ pub struct LayoutInput {
     /// after the physical constraints have been projected into an orthogonal
     /// child's coordinate space.
     pub parent_writing_mode: WritingMode,
-    /// Available space represents an amount of space to layout into, and is used as a soft constraint
-    /// for the purpose of wrapping.
+    /// Border-box space offered by the parent formatting context after its
+    /// margin, alignment, track, line and inset rules have been applied. It is
+    /// a soft constraint for wrapping unless the corresponding auto-size or
+    /// authored `stretch` policy consumes it.
     pub available_space: Size<AvailableSpace>,
     /// Whether this box's block-start/end margins may collapse through the
     /// parent-child boundary. Non-block formatting contexts use `Line::FALSE`.
@@ -250,6 +255,7 @@ impl LayoutInput {
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: AutoSizeBehavior::FitContent,
         block_margins_are_collapsible: Line::FALSE,
     };
@@ -262,6 +268,7 @@ impl LayoutInput {
             run_mode: self.run_mode,
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             writing_mode,
             parent_writing_mode: self.parent_writing_mode,
@@ -337,6 +344,8 @@ pub(crate) struct ChildLayoutInput {
     pub sizing_mode: SizingMode,
     /// Whether the child's block-start/end margins may collapse through the boundary.
     pub block_margins_are_collapsible: Line<bool>,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
 }
@@ -359,8 +368,16 @@ impl ChildLayoutInput {
             available_space,
             sizing_mode,
             block_margins_are_collapsible,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
         }
+    }
+
+    /// Set the containing formatting context's inline-axis auto behavior.
+    #[inline(always)]
+    pub const fn with_inline_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {
+        self.inline_auto_behavior = behavior;
+        self
     }
 
     /// Set the containing formatting context's block-axis auto behavior.
@@ -378,6 +395,7 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
@@ -396,6 +414,7 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
@@ -422,6 +441,8 @@ pub struct ConstraintSpace {
     /// Whether this computation produces final layout or an intrinsic
     /// contribution.
     pub sizing_purpose: SizingPurpose,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
     /// Writing mode whose logical axes own these sizes.
@@ -452,6 +473,7 @@ impl ConstraintSpace {
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
             axis: self.requested_axis,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.writing_mode.to_physical(self.known_size),
             definite_dimensions: self.writing_mode.to_physical(self.definite_size),
@@ -513,6 +535,7 @@ mod constraint_space_tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size { width: Some(30.0), height: None },
             definite_dimensions: Size { width: Some(30.0), height: None },

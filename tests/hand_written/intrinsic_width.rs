@@ -337,6 +337,42 @@ fn block_root_only_stretches_an_auto_preferred_width() {
 }
 
 #[test]
+fn block_child_resolves_auto_inline_policy_at_its_layout_boundary() {
+    let mut tree = new_test_tree();
+    let stretched = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            margin: Rect { left: length(10.0), right: length(20.0), top: length(0.0), bottom: length(0.0) },
+            ..Default::default()
+        })
+        .unwrap();
+    let ratio = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::auto(), height: Dimension::length(50.0) },
+            aspect_ratio: Some(2.0),
+            ..Default::default()
+        })
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size::from_lengths(300.0, 200.0), ..Default::default() },
+            &[stretched, ratio],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::Definite(200.0) },
+        test_measure_function,
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(stretched).unwrap().size.width, 270.0);
+    assert_eq!(tree.layout(ratio).unwrap().size, Size { width: 100.0, height: 50.0 });
+}
+
+#[test]
 fn definite_opposite_size_transfers_before_intrinsic_width_measurement() {
     for display in [Display::Block, Display::Flex, Display::Grid] {
         let mut tree = new_test_tree();

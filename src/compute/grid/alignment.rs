@@ -264,6 +264,7 @@ pub(super) fn align_and_position_item(
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
         axis: RequestedAxis::Horizontal,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: AutoSizeBehavior::FitContent,
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
@@ -319,6 +320,19 @@ pub(super) fn align_and_position_item(
         alignment_styles.block = fallback;
     }
     let physical_alignment_styles = flow.to_physical_axes(alignment_styles);
+    let (inline_alignment, inline_margins_are_non_auto, opposing_inline_insets_are_definite) =
+        match item_writing_mode.inline_axis() {
+            AbsoluteAxis::Horizontal => (
+                physical_alignment_styles.horizontal,
+                margin.left.is_some() && margin.right.is_some(),
+                inset_horizontal.start.is_some() && inset_horizontal.end.is_some(),
+            ),
+            AbsoluteAxis::Vertical => (
+                physical_alignment_styles.vertical,
+                margin.top.is_some() && margin.bottom.is_some(),
+                inset_vertical.start.is_some() && inset_vertical.end.is_some(),
+            ),
+        };
     let (block_alignment, block_margins_are_non_auto, opposing_block_insets_are_definite) =
         match item_writing_mode.block_axis() {
             AbsoluteAxis::Horizontal => (
@@ -339,12 +353,20 @@ pub(super) fn align_and_position_item(
     } else {
         AutoSizeBehavior::FitContent
     };
+    let inline_auto_behavior = if (position == Position::Absolute && opposing_inline_insets_are_definite)
+        || (position != Position::Absolute && inline_margins_are_non_auto && inline_alignment == AlignSelf::STRETCH)
+    {
+        AutoSizeBehavior::StretchExplicit
+    } else {
+        AutoSizeBehavior::FitContent
+    };
     let mut resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
         min_size,
         max_size,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode: item_writing_mode,
+        inline_auto_behavior,
         block_auto_behavior,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
@@ -400,6 +422,7 @@ pub(super) fn align_and_position_item(
         Size { width, height: inherent_size.height },
         raw_size.map(|dimension| dimension.is_auto()),
         item_writing_mode,
+        inline_auto_behavior,
         block_auto_behavior,
         aspect_ratio,
         padding_border_size,

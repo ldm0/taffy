@@ -31,6 +31,7 @@ use super::common::aspect_ratio::{
 use super::common::intrinsic_size::{
     apply_contained_intrinsic_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
+use super::common::stretch::resolve_stretch_size_constraints;
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 #[cfg(feature = "detailed_layout_info")]
@@ -116,18 +117,29 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let mut resolved_constraints = match inputs.sizing_mode {
         SizingMode::ContentSize => ResolvedSizeConstraints::NONE,
         SizingMode::InherentSize => {
+            let stretch = resolve_stretch_size_constraints(
+                raw_size,
+                raw_min_size,
+                raw_max_size,
+                available_space.into_options(),
+                padding_border_size,
+            );
             let resolved = resolve_size_constraints(SizeConstraintInput {
                 size: raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
+                    .maybe_add(box_sizing_adjustment)
+                    .or(stretch.preferred),
                 min_size: raw_min_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
+                    .maybe_add(box_sizing_adjustment)
+                    .or(stretch.min),
                 max_size: raw_max_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
+                    .maybe_add(box_sizing_adjustment)
+                    .or(stretch.max),
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode,
+                inline_auto_behavior: inputs.inline_auto_behavior,
                 block_auto_behavior: inputs.block_auto_behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
