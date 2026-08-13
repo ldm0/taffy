@@ -1,4 +1,4 @@
-use taffy::prelude::*;
+use taffy::{prelude::*, Point};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 fn contained_size(width: Option<f32>, height: Option<f32>) -> SizeContainment {
@@ -165,6 +165,36 @@ fn grid_without_an_override_uses_tracks_sized_without_item_contributions() {
 
     tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
     assert_eq!(tree.layout(root).unwrap().size, Size { width: 55.0, height: 35.0 });
+}
+
+#[test]
+fn out_of_flow_grid_without_an_override_keeps_its_track_derived_size() {
+    let mut tree = new_test_tree();
+    let children = (0..3)
+        .map(|_| tree.new_leaf(Style { size: Size::from_lengths(300.0, 400.0), ..Default::default() }).unwrap())
+        .collect::<Vec<_>>();
+    let subject = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                position: Position::Absolute,
+                inset: Rect { left: length(10.0), top: length(20.0), ..Rect::auto() },
+                grid_template_columns: vec![length(50.0), auto()],
+                grid_template_rows: vec![length(30.0), auto()],
+                gap: Size { width: length(5.0), height: length(5.0) },
+                ..Default::default()
+            },
+            &children,
+        )
+        .unwrap();
+    tree.set_size_containment(subject, contained_size(None, None)).unwrap();
+    let root = tree
+        .new_with_children(Style { size: Size::from_lengths(300.0, 200.0), ..Default::default() }, &[subject])
+        .unwrap();
+
+    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.layout(subject).unwrap().size, Size { width: 55.0, height: 35.0 });
+    assert_eq!(tree.layout(subject).unwrap().location, Point { x: 10.0, y: 20.0 });
 }
 
 #[test]

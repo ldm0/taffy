@@ -631,8 +631,11 @@ pub(crate) fn layout_out_of_flow_item(
             box_sizing_adjustment,
             padding_border_size: padding_border_sum,
             aspect_ratio,
-            contained_outer_size: tree.get_size_containment(item.node).resolve_outer_size(
-                Size::ZERO,
+            // A missing containment override is formatting-context specific:
+            // ordinary boxes use zero while Grid derives a size from tracks
+            // without item contributions. The out-of-flow wrapper cannot
+            // choose that fallback before dispatching the child algorithm.
+            contained_outer_size: tree.get_size_containment(item.node).resolve_explicit_outer_size(
                 padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y },
             ),
         },
@@ -641,6 +644,33 @@ pub(crate) fn layout_out_of_flow_item(
     let mut min_size = node_sizing.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
     let mut max_size = node_sizing.max_size;
     let mut known_dimensions = node_sizing.outer_size.maybe_clamp(min_size, max_size);
+
+    // Replaced layout owns its natural-size and ratio-only stretch fallback.
+    // Blink likewise calls ComputeReplacedSize directly for out-of-flow
+    // replaced boxes instead of deriving their used auto size from generic
+    // min/max-content probes. Ask the child algorithm to complete any axes the
+    // generic authored-size pass could not determine, while preserving axes
+    // fixed by the positioned containing block.
+    if is_compressible_replaced && (known_dimensions.width.is_none() || known_dimensions.height.is_none()) {
+        let measured_size = tree.measure_child_size_both(
+            item.node,
+            ChildLayoutInput::new(
+                known_dimensions,
+                area_size.map(Some),
+                writing_mode,
+                Size {
+                    width: AvailableSpace::Definite(available_width),
+                    height: AvailableSpace::Definite(available_height),
+                },
+                SizingMode::InherentSize,
+                Line::FALSE,
+            )
+            .with_definite_dimensions(node_sizing.definite_size)
+            .with_inline_auto_behavior(inline_auto_behavior)
+            .with_block_auto_behavior(block_auto_behavior),
+        );
+        known_dimensions = known_dimensions.or(measured_size.map(Some)).maybe_clamp(min_size, max_size);
+    }
 
     if known_dimensions.get_abs(inline_axis).is_none() {
         let available_inline_size = inset_modified_size.get_abs(inline_axis);
