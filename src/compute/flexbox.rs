@@ -68,6 +68,13 @@ enum FlexSizingPhase {
     /// Intrinsic main sizing for a row flex container under the given
     /// min-/max-content constraint.
     RowIntrinsic(AvailableSpace),
+    /// Intrinsic inline sizing for a single-line column flex container.
+    ///
+    /// A column's intrinsic inline contribution is the largest item
+    /// contribution. It is deliberately computed before flexible-length
+    /// resolution so a flexed block size cannot feed back through an aspect
+    /// ratio and manufacture an inline contribution.
+    ColumnIntrinsic(AvailableSpace),
     /// Intrinsic inline sizing for a wrapped column under the given
     /// min-/max-content constraint.
     ColumnWrapIntrinsic(AvailableSpace),
@@ -246,6 +253,13 @@ struct FlexItem {
     max_size_with_transfer: Size<Option<f32>>,
     /// The used aspect ratio and the CSS sizing box that it constrains.
     aspect_ratio: ResolvedAspectRatio,
+    /// Whether this item's inline axis is the container's flex main axis.
+    ///
+    /// Intrinsic inline sizing retains a ratio-independent contribution,
+    /// while intrinsic block sizing applies transferred inline min/max
+    /// constraints to the content contribution. This is a child writing-mode
+    /// relation, not merely a row/column property of the container.
+    main_axis_is_inline: bool,
     /// The CSS sizing box used by authored size properties.
     box_sizing: BoxSizing,
     /// Authored stretch constraints retained until the flex line's cross size
@@ -717,6 +731,25 @@ fn compute_preliminary(
     debug_log!("generate_anonymous_flex_items");
     let mut flex_items = generate_anonymous_flex_items(tree, node, &constants, available_space);
 
+    // A single-line column's intrinsic inline contribution is independent of
+    // flexible-length resolution in its block axis. Resolve it directly from
+    // the item contributions, matching the intrinsic sizing entry point used
+    // by block layout, floats, tables, and other shrink-to-fit callers.
+    if let FlexSizingPhase::ColumnIntrinsic(constraint) = constants.sizing_phase {
+        let (intrinsic_cross_size, depends_on_block_constraints) = determine_single_line_column_intrinsic_cross_size(
+            tree,
+            &mut flex_items,
+            constraint,
+            available_space,
+            &constants,
+        );
+        debug_log!("single_line_column_intrinsic_cross_size", intrinsic_cross_size);
+        let mut outer_size = constants.node_outer_size.unwrap_or(Size::ZERO);
+        outer_size.set_cross(constants.dir, intrinsic_cross_size);
+        return LayoutOutput::from_outer_size(outer_size)
+            .with_block_constraint_dependency(depends_on_block_constraints);
+    }
+
     // 3. Determine the flex base size and hypothetical main size of each item.
     debug_log!("determine_flex_base_size");
     determine_flex_base_size(tree, &constants, available_space, &mut flex_items);
@@ -990,7 +1023,7 @@ fn compute_constants(
     } else if is_wrap {
         FlexSizingPhase::ColumnWrapIntrinsic(inline_available_space)
     } else {
-        FlexSizingPhase::Normal
+        FlexSizingPhase::ColumnIntrinsic(inline_available_space)
     };
 
     AlgoConstants {
@@ -1048,6 +1081,7 @@ fn generate_anonymous_flex_items(
         .filter_map(|(index, child)| {
             let aspect_ratio = tree.get_resolved_aspect_ratio(child);
             let child_writing_mode = tree.get_writing_mode(child);
+            let main_axis_is_inline = child_writing_mode.inline_axis() == constants.dir.main_axis();
             let child_style = tree.get_flexbox_child_style(child);
             if child_style.position() == Position::Absolute
                 || child_style.box_generation_mode() == BoxGenerationMode::None
@@ -1291,6 +1325,7 @@ fn generate_anonymous_flex_items(
                 min_size_with_transfer: constraints_with_transfer.min_size,
                 max_size_with_transfer: constraints_with_transfer.max_size,
                 aspect_ratio,
+                main_axis_is_inline,
                 box_sizing,
                 stretch: stretch_properties,
                 used_flex_basis,
@@ -1405,13 +1440,16 @@ fn resolve_flex_content_based_automatic_minimum(
     let content_maximum =
         transfer_flex_cross_size_to_main(item.max_size.cross(dir), dir, item.aspect_ratio, padding_border);
     let ratio_aware_content_size = min_content_main_size.maybe_clamp(content_minimum, content_maximum);
-    // Blink likewise keeps a second, ratio-independent intrinsic probe for
-    // non-replaced items. A transferred cross-axis maximum may constrain the
-    // ratio projection, but it must not make real min-content narrower.
-    let content_size_suggestion = if item.automatic_minimum.is_replaced {
-        ratio_aware_content_size
-    } else {
+    // Blink's two intrinsic SizeType probes differ only in preferred-ratio
+    // participation. For a non-replaced inline-axis main size, retain the
+    // ratio-independent intrinsic contribution as the larger candidate. A
+    // block-axis main size instead constrains its intrinsic block size by the
+    // transferred inline min/max pair before it becomes the content-size
+    // suggestion.
+    let content_size_suggestion = if !item.automatic_minimum.is_replaced && item.main_axis_is_inline {
         ratio_aware_content_size.max(min_content_main_size)
+    } else {
+        ratio_aware_content_size
     };
     item.automatic_minimum.resolve(content_size_suggestion, item.max_size.main(dir), padding_border.main(dir))
 }
@@ -1814,6 +1852,63 @@ fn collect_flex_lines<'a>(
             }
         }
     }
+}
+
+/// Compute the intrinsic inline contribution of a single-line column.
+///
+/// Flexing changes an item's used block size, but intrinsic inline sizing is a
+/// contribution query, not used layout. Measuring the content in the cross
+/// axis first and then applying the item's preferred/min/max sources prevents
+/// that later block size from feeding back through `aspect-ratio`.
+fn determine_single_line_column_intrinsic_cross_size(
+    tree: &mut impl LayoutFlexboxContainer,
+    items: &mut [FlexItem],
+    constraint: AvailableSpace,
+    available_space: Size<AvailableSpace>,
+    constants: &AlgoConstants,
+) -> (f32, bool) {
+    debug_assert!(constants.main_axis_is_block);
+    debug_assert!(!constants.is_wrap);
+
+    let dir = constants.dir;
+    let child_available_space = Size::MAX_CONTENT.with_main(dir, available_space.main(dir)).with_cross(dir, constraint);
+    let mut largest_contribution: f32 = 0.0;
+    let mut depends_on_block_constraints = false;
+
+    for item in items {
+        let measured = tree.measure_child_size_with_metadata(
+            item.node,
+            ChildLayoutInput::new(
+                Size::NONE,
+                constants.node_percentage_size,
+                constants.writing_mode,
+                child_available_space,
+                SizingMode::ContentSize,
+                Line::FALSE,
+            ),
+            dir.cross_axis().into(),
+        );
+        item.depends_on_block_constraints |= measured.depends_on_block_constraints;
+
+        let preferred_cross_is_auto = tree.get_flexbox_child_style(item.node).size().cross(dir).is_auto();
+        let ratio_supplied_cross = item.preferred_size_aspect_ratio_applied.cross(dir);
+        let preferred_cross =
+            if preferred_cross_is_auto && !ratio_supplied_cross { None } else { item.preferred_size.cross(dir) };
+        let minimum_cross = item.min_size_with_transfer.cross(dir);
+        let maximum_cross = item.max_size_with_transfer.cross(dir);
+        let padding_border_cross = (item.padding + item.border).cross_axis_sum(dir);
+        let contribution = measured
+            .size
+            .cross(dir)
+            .maybe_max(preferred_cross)
+            .maybe_clamp(minimum_cross, maximum_cross)
+            .max(padding_border_cross)
+            + item.margin.cross_axis_sum(dir);
+        largest_contribution = largest_contribution.max(contribution);
+        depends_on_block_constraints |= item.depends_on_block_constraints;
+    }
+
+    (largest_contribution + constants.content_box_inset.cross_axis_sum(dir), depends_on_block_constraints)
 }
 
 /// Measure one flex item's content size in the container's main axis without

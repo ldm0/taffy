@@ -22,6 +22,36 @@ use super::aspect_ratio::{
 use super::stretch::resolve_stretch_size_constraints;
 use super::used_size::{resolve_inline_auto_size_preference, resolve_used_size, InlineAutoSizeInput};
 
+/// Resolve the fit-content inline size selected by a containing formatting
+/// context for an automatically sized child.
+///
+/// CSS defines this as `min(max(min-content, available), max-content)`. The
+/// containing context owns the available space and fixes the resulting used
+/// inline size; the child formatting algorithm owns the two intrinsic
+/// contributions. Keeping that boundary shared gives floats and positioned
+/// boxes the same sizing protocol.
+#[inline]
+pub(crate) fn fit_content_inline_size(
+    tree: &mut impl LayoutPartialTree,
+    node: crate::NodeId,
+    mut inputs: ChildLayoutInput,
+    available_inline_size: f32,
+    inline_axis: AbsoluteAxis,
+) -> f32 {
+    match inline_axis {
+        AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MinContent,
+        AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MinContent,
+    }
+    let min_content = tree.measure_child_size(node, inputs, inline_axis);
+    match inline_axis {
+        AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MaxContent,
+        AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MaxContent,
+    }
+    let max_content = tree.measure_child_size(node, inputs, inline_axis);
+
+    available_inline_size.max(0.0).max(min_content).min(max_content)
+}
+
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
 /// keywords, then reapply the normal minimum-wins clamp.
 ///

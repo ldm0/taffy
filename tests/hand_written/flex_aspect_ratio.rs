@@ -1,4 +1,5 @@
 use taffy::prelude::*;
+use taffy::style::Float;
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
@@ -220,6 +221,84 @@ fn automatic_column_stretch_cross_size_sets_the_transferred_minimum() {
     tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+fn layout_column_ratio_item_with_block_content(item_style: Style, content_height: f32) -> (Size<f32>, Size<f32>) {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(content_height) },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                float: Float::Left,
+                size: Size { width: Dimension::auto(), height: Dimension::length(1.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    let parent = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(400.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[container],
+        )
+        .unwrap();
+
+    tree.compute_layout(parent, Size::MAX_CONTENT).unwrap();
+
+    (tree.layout(container).unwrap().size, tree.layout(item).unwrap().size)
+}
+
+/// Regression for the min-width subtest in WPT
+/// css/css-sizing/aspect-ratio/flex-aspect-ratio-026.html.
+#[test]
+fn column_intrinsic_cross_size_does_not_transfer_block_content_through_ratio() {
+    let (container_size, item_size) = layout_column_ratio_item_with_block_content(
+        Style {
+            display: Display::Block,
+            box_sizing: BoxSizing::BorderBox,
+            min_size: Size { width: Dimension::length(25.0), height: Dimension::auto() },
+            padding: Rect { left: LengthPercentage::length(15.0), top: LengthPercentage::length(10.0), ..Rect::zero() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        190.0,
+    );
+
+    assert_eq!(container_size.width, 25.0);
+    assert_eq!(item_size, Size { width: 25.0, height: 200.0 });
+}
+
+/// Regression for the max-width subtest in WPT
+/// css/css-sizing/aspect-ratio/flex-aspect-ratio-026.html.
+#[test]
+fn column_content_minimum_is_capped_by_the_transferred_cross_maximum() {
+    let (container_size, item_size) = layout_column_ratio_item_with_block_content(
+        Style {
+            display: Display::Block,
+            box_sizing: BoxSizing::BorderBox,
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            max_size: Size { width: Dimension::length(25.0), height: Dimension::auto() },
+            padding: Rect { left: LengthPercentage::length(15.0), top: LengthPercentage::length(10.0), ..Rect::zero() },
+            aspect_ratio: Some(1.0 / 8.0),
+            ..Style::default()
+        },
+        500.0,
+    );
+
+    assert_eq!(container_size.width, 25.0);
+    assert_eq!(item_size, Size { width: 25.0, height: 200.0 });
 }
 
 #[test]

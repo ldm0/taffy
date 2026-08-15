@@ -23,8 +23,9 @@ use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
 use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
-    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints, resolve_node_size_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, NodeSizeConstraintInput, ResolvedNodeSizing,
+    fit_content_inline_size, measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints,
+    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
+    NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1506,10 +1507,37 @@ fn perform_final_layout_on_in_flow_children(
                     inline_size: AvailableSpace::Definite(available_inline_size),
                     block_size: child_available_block_space,
                 });
+                let logical_item_size = writing_mode.to_logical(item.size);
+                let logical_min_size = writing_mode.to_logical(item.min_size);
+                let logical_max_size = writing_mode.to_logical(item.max_size);
+                let fitted_inline_size = if logical_item_size.inline_size.is_none() && !item.is_replaced {
+                    let intrinsic_known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
+                    let fitted = fit_content_inline_size(
+                        tree,
+                        item.node_id,
+                        ChildLayoutInput::new(
+                            intrinsic_known_dimensions,
+                            parent_size,
+                            writing_mode,
+                            child_available_space,
+                            SizingMode::ContentSize,
+                            Line::FALSE,
+                        ),
+                        available_inline_size,
+                        writing_mode.inline_axis(),
+                    )
+                    .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size)
+                    .max(writing_mode.to_logical(item.padding_border_sum).inline_size);
+                    Some(fitted)
+                } else {
+                    None
+                };
+                let known_dimensions =
+                    writing_mode.to_physical(LogicalSize { inline_size: fitted_inline_size, block_size: None });
                 let item_layout = tree.perform_child_layout(
                     item.node_id,
                     ChildLayoutInput::new(
-                        Size::NONE,
+                        known_dimensions,
                         parent_size,
                         writing_mode,
                         child_available_space,
@@ -1518,10 +1546,11 @@ fn perform_final_layout_on_in_flow_children(
                         // collapse with the margins of its children
                         Line::FALSE,
                     )
+                    .with_definite_dimensions(known_dimensions)
                     .with_inline_auto_behavior(item.inline_auto_behavior),
                 );
-                let logical_item_size = writing_mode.to_logical(item_layout.size);
-                let margin_box = logical_item_size + item_non_auto_margin.sum_axes();
+                let used_logical_item_size = writing_mode.to_logical(item_layout.size);
+                let margin_box = used_logical_item_size + item_non_auto_margin.sum_axes();
 
                 // Floats that occur between collapsing margins are positioned as if they had an otherwise
                 // empty anonymous block parent taking part in the flow, so the pending collapsible margins
@@ -1586,7 +1615,7 @@ fn perform_final_layout_on_in_flow_children(
                     let logical_content_size = writing_mode.to_logical(item_layout.content_size);
                     inflow_content_size = inflow_content_size.f32_max(compute_logical_content_size_contribution(
                         contribution_location,
-                        logical_item_size,
+                        used_logical_item_size,
                         logical_content_size,
                         logical_overflow(item.overflow, writing_mode),
                     ));

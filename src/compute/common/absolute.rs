@@ -16,8 +16,8 @@ use super::aspect_ratio::apply_preferred_aspect_ratio;
 #[cfg(feature = "content_size")]
 use super::content_size::compute_content_size_contribution;
 use super::intrinsic_size::{
-    resolve_content_based_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
-    ContentBasedBlockSize, NodeSizeConstraintInput,
+    fit_content_inline_size, resolve_content_based_block_size_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
 };
 
 /// One out-of-flow candidate after its original formatting context has chosen
@@ -386,34 +386,6 @@ pub(crate) fn logical_inset_modified_containing_block_size(
     let alignment = LogicalAlignment::new(None, None, writing_direction, writing_direction);
     let imcb = compute_inset_modified_containing_block(logical_size, logical_inset, static_position, alignment);
     writing_direction.mode.to_physical(imcb.size(logical_size))
-}
-
-/// Resolve the fit-content inline size used by an automatically sized
-/// absolutely positioned box.
-///
-/// CSS 2 defines this as `min(max(min-content, available), max-content)`. A single
-/// measurement with definite available space is insufficient: nested block and flex
-/// containers may return their max-content contribution while they are being measured.
-#[inline]
-pub(crate) fn fit_content_inline_size(
-    tree: &mut impl LayoutPartialTree,
-    node: NodeId,
-    mut inputs: ChildLayoutInput,
-    available_inline_size: f32,
-    inline_axis: AbsoluteAxis,
-) -> f32 {
-    match inline_axis {
-        AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MinContent,
-        AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MinContent,
-    }
-    let min_content = tree.measure_child_size(node, inputs, inline_axis);
-    match inline_axis {
-        AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MaxContent,
-        AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MaxContent,
-    }
-    let max_content = tree.measure_child_size(node, inputs, inline_axis);
-
-    available_inline_size.max(0.0).max(min_content).min(max_content)
 }
 
 /// Resolve auto margins in one axis of an absolutely positioned box.
