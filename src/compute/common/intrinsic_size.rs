@@ -292,6 +292,12 @@ struct IntrinsicValueInput {
     role: IntrinsicSizeRole,
     /// Resolution data shared by parameterized fit-content values.
     fit_content: FitContentContext,
+    /// Formatting-context override for the content-size callback.
+    ///
+    /// Blink uses the same callback boundary for min-content, max-content and
+    /// fit-content. A preferred ratio can provide that callback from initial
+    /// opposite-axis geometry without measuring descendants.
+    content_size_override: IntrinsicAxisValue,
 }
 
 /// Resolve one sizing value that may depend on the box's intrinsic content
@@ -305,9 +311,13 @@ fn resolve_intrinsic_axis_value(
     value: Dimension,
     value_input: IntrinsicValueInput,
 ) -> IntrinsicAxisValue {
-    let IntrinsicValueInput { layout, available_space, axis, role, fit_content } = value_input;
+    let IntrinsicValueInput { layout, available_space, axis, role, fit_content, content_size_override } = value_input;
     if !value.is_intrinsic() {
         return IntrinsicAxisValue::default();
+    }
+
+    if content_size_override.value.is_some() {
+        return content_size_override;
     }
 
     if value.is_min_content() {
@@ -387,8 +397,40 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
         tree,
         node_id,
         value,
-        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Preferred, fit_content },
+        IntrinsicValueInput {
+            layout: inputs,
+            available_space,
+            axis,
+            role: IntrinsicSizeRole::Preferred,
+            fit_content,
+            content_size_override: IntrinsicAxisValue::default(),
+        },
     )
+}
+
+/// Resolve a content-size callback from definite initial opposite-axis
+/// geometry through the preferred aspect ratio.
+///
+/// `initial_geometry` contains border-box dimensions available before content
+/// measurement. The requested axis is cleared before applying the ratio, so a
+/// size synthesized by that same ratio cannot feed back into the callback.
+/// This is the Taffy equivalent of Blink's `SizeType::kContent` shortcut in
+/// `BlockNode::ComputeMinMaxSizes`.
+#[inline(always)]
+pub(crate) fn intrinsic_content_size_from_initial_geometry(
+    axis: AbsoluteAxis,
+    initial_geometry: Size<Option<f32>>,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> IntrinsicAxisValue {
+    let ratio_basis = match axis {
+        AbsoluteAxis::Horizontal => Size { width: None, height: initial_geometry.height },
+        AbsoluteAxis::Vertical => Size { width: initial_geometry.width, height: None },
+    };
+    let resolved = ratio_basis
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border)
+        .get_abs(axis);
+    IntrinsicAxisValue { value: resolved, depends_on_block_constraints: false }
 }
 
 /// Content-derived components of preferred, minimum and maximum sizes in one
@@ -740,6 +782,8 @@ pub(crate) struct IntrinsicAxisInput {
     pub available_space: AvailableSpace,
     /// Physical axis corresponding to the formatting context's logical axis.
     pub axis: AbsoluteAxis,
+    /// Formatting-context override for the content-size callback.
+    pub content_size_override: IntrinsicAxisValue,
 }
 
 /// Resolve all three horizontal intrinsic sizing properties at one ownership
@@ -748,23 +792,6 @@ pub(crate) struct IntrinsicAxisInput {
 /// Keeping the triplet together prevents block, flex, and grid from drifting
 /// into subtly different preferred/min/max ordering. Repeated content probes
 /// remain pass-local and are deduplicated by Taffy's layout cache.
-pub(crate) fn resolve_intrinsic_width_constraints(
-    tree: &mut impl LayoutPartialTree,
-    node_id: crate::NodeId,
-    inputs: LayoutInput,
-    preferred: Dimension,
-    min: Dimension,
-    max: Dimension,
-    available_width: AvailableSpace,
-) -> ContentBasedSizeConstraints {
-    resolve_intrinsic_axis_constraints(
-        tree,
-        node_id,
-        inputs,
-        IntrinsicAxisInput { preferred, min, max, available_space: available_width, axis: AbsoluteAxis::Horizontal },
-    )
-}
-
 /// Resolve preferred/minimum/maximum intrinsic sizing values along one
 /// physical axis. Formatting contexts select the axis by projecting their
 /// logical inline axis through their writing mode.
@@ -774,7 +801,7 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     inputs: LayoutInput,
     axis_input: IntrinsicAxisInput,
 ) -> ContentBasedSizeConstraints {
-    let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
+    let IntrinsicAxisInput { preferred, min, max, available_space, axis, content_size_override } = axis_input;
     let has_fit_content_function =
         preferred.is_fit_content_function() || min.is_fit_content_function() || max.is_fit_content_function();
     let fit_content =
@@ -783,19 +810,40 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
         tree,
         node_id,
         preferred,
-        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Preferred, fit_content },
+        IntrinsicValueInput {
+            layout: inputs,
+            available_space,
+            axis,
+            role: IntrinsicSizeRole::Preferred,
+            fit_content,
+            content_size_override,
+        },
     );
     let min = resolve_intrinsic_axis_value(
         tree,
         node_id,
         min,
-        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Minimum, fit_content },
+        IntrinsicValueInput {
+            layout: inputs,
+            available_space,
+            axis,
+            role: IntrinsicSizeRole::Minimum,
+            fit_content,
+            content_size_override,
+        },
     );
     let max = resolve_intrinsic_axis_value(
         tree,
         node_id,
         max,
-        IntrinsicValueInput { layout: inputs, available_space, axis, role: IntrinsicSizeRole::Maximum, fit_content },
+        IntrinsicValueInput {
+            layout: inputs,
+            available_space,
+            axis,
+            role: IntrinsicSizeRole::Maximum,
+            fit_content,
+            content_size_override,
+        },
     );
     ContentBasedSizeConstraints {
         preferred: preferred.value,
@@ -1074,6 +1122,14 @@ pub(crate) fn resolve_node_size_constraints(
     let logical_raw_size = writing_mode.to_logical(raw_size);
     let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
     let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
+    let is_replaced = tree.get_core_container_style(node_id).is_compressible_replaced();
+    let direct = resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
+    let initial_geometry = inputs.known_dimensions.or(direct.constraints.initial_geometry());
+    let content_size_override = if is_replaced {
+        IntrinsicAxisValue::default()
+    } else {
+        intrinsic_content_size_from_initial_geometry(inline_axis, initial_geometry, aspect_ratio, padding_border_size)
+    };
     let intrinsic = resolve_intrinsic_axis_constraints(
         tree,
         node_id,
@@ -1084,10 +1140,10 @@ pub(crate) fn resolve_node_size_constraints(
             max: logical_raw_max_size.inline_size,
             available_space: available_inline_size,
             axis: inline_axis,
+            content_size_override,
         },
     );
 
-    let direct = resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
     let mut resolved = direct.constraints;
     let mut logical_resolved_size = writing_mode.to_logical(resolved.size);
     logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
@@ -1220,6 +1276,37 @@ pub fn resolve_leaf_node_sizing(
         }
     };
     resolve_node_size_constraints(tree, node_id, inputs, sizing)
+}
+
+#[cfg(test)]
+mod initial_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn preferred_ratio_content_override_uses_the_opposite_physical_axis() {
+        let ratio = ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox };
+
+        assert_eq!(
+            intrinsic_content_size_from_initial_geometry(
+                AbsoluteAxis::Horizontal,
+                Size { width: None, height: Some(50.0) },
+                ratio,
+                Size::ZERO,
+            )
+            .value,
+            Some(100.0)
+        );
+        assert_eq!(
+            intrinsic_content_size_from_initial_geometry(
+                AbsoluteAxis::Vertical,
+                Size { width: Some(100.0), height: None },
+                ratio,
+                Size::ZERO,
+            )
+            .value,
+            Some(50.0)
+        );
+    }
 }
 
 #[cfg(all(test, feature = "calc"))]

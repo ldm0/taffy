@@ -99,6 +99,117 @@ fn transferred_block_maximum_clamps_a_max_content_width() {
     assert_eq!(tree.layout(subject).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
 
+/// Regression for the inline-axis half of WPT
+/// `css/css-sizing/aspect-ratio/intrinsic-size-010.html`.
+#[test]
+fn initial_block_geometry_resolves_an_intrinsic_inline_minimum_through_ratio() {
+    let mut tree = new_test_tree();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(150.0), height: Dimension::length(0.0) },
+            ..Default::default()
+        })
+        .unwrap();
+    let subject = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::length(25.0) },
+                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                aspect_ratio: Some(4.0),
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size::from_lengths(800.0, 600.0), ..Default::default() },
+            &[subject],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) },
+        test_measure_function,
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(subject).unwrap().size, Size { width: 100.0, height: 25.0 });
+}
+
+/// Regression for WPT `css/css-sizing/aspect-ratio/intrinsic-size-014.html`
+/// and `intrinsic-size-015.html`.
+#[test]
+fn ratio_supplies_min_and_max_content_inline_contributions_from_block_geometry() {
+    for outer_width in [Dimension::min_content(), Dimension::max_content()] {
+        let mut tree = new_test_tree();
+        let subject = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            })
+            .unwrap();
+        let outer = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: outer_width, height: Dimension::auto() },
+                    ..Default::default()
+                },
+                &[subject],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style { display: Display::Block, size: Size::from_lengths(800.0, 600.0), ..Default::default() },
+                &[outer],
+            )
+            .unwrap();
+
+        tree.compute_layout_with_measure(
+            root,
+            Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) },
+            test_measure_function,
+        )
+        .unwrap();
+
+        assert_eq!(tree.layout(outer).unwrap().size.width, 100.0, "outer width {outer_width:?}");
+        assert_eq!(tree.layout(subject).unwrap().size, Size { width: 100.0, height: 100.0 });
+    }
+}
+
+#[test]
+fn flex_item_intrinsic_inline_size_uses_its_initial_block_geometry() {
+    let mut tree = new_test_tree();
+    let subject = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+            aspect_ratio: Some(1.0),
+            flex_shrink: 0.0,
+            ..Default::default()
+        })
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Flex, size: Size::from_lengths(800.0, 600.0), ..Default::default() },
+            &[subject],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) },
+        test_measure_function,
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(subject).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
 #[test]
 fn fit_content_clamps_to_available_width() {
     assert_eq!(

@@ -23,9 +23,9 @@ use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
 use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
-    fit_content_inline_size, measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints,
-    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
-    NodeSizeConstraintInput, ResolvedNodeSizing,
+    fit_content_inline_size, intrinsic_content_size_from_initial_geometry, measure_aspect_ratio_automatic_minimum,
+    resolve_intrinsic_axis_constraints, resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
+    IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1004,11 +1004,11 @@ fn generate_item_list(
                     .into_iter()
                     .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
-            let mut automatic_minimum_inputs = None;
+            let mut automatic_inline_minimum = None;
+            let mut intrinsic_context = None;
             let mut size = raw_size
                 .maybe_resolve(physical_node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
-            let preferred_size_is_indefinite = size.map(|size| size.is_none());
             let mut min_size = raw_min_size
                 .maybe_resolve(contribution_parent_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
@@ -1131,32 +1131,11 @@ fn generate_item_list(
                     available_space: child_available_space,
                     block_margins_are_collapsible: Line::TRUE,
                 };
-                automatic_minimum_inputs = Some(intrinsic_inputs);
                 let intrinsic_available_size = child_available_space.get_abs(intrinsic_axis);
-                let intrinsic = resolve_intrinsic_axis_constraints(
-                    tree,
-                    child_node_id,
-                    intrinsic_inputs,
-                    IntrinsicAxisInput {
-                        preferred: child_logical_size.inline_size,
-                        min: child_logical_min_size.inline_size,
-                        max: child_logical_max_size.inline_size,
-                        available_space: intrinsic_available_size,
-                        axis: intrinsic_axis,
-                    },
-                );
-                let mut logical_size = child_writing_mode.to_logical(size);
-                let mut logical_min_size = child_writing_mode.to_logical(min_size);
-                let mut logical_max_size = child_writing_mode.to_logical(max_size);
-                logical_size.inline_size = logical_size.inline_size.or(intrinsic.preferred);
-                logical_min_size.inline_size = logical_min_size.inline_size.or(intrinsic.min);
-                logical_max_size.inline_size = logical_max_size.inline_size.or(intrinsic.max);
-                size = child_writing_mode.to_physical(logical_size);
-                min_size = child_writing_mode.to_physical(logical_min_size);
-                max_size = child_writing_mode.to_physical(logical_max_size);
-                depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+                intrinsic_context = Some((intrinsic_axis, intrinsic_inputs, intrinsic_available_size));
             }
 
+            let preferred_size_is_indefinite = size.map(|size| size.is_none());
             let mut resolved = resolve_size_constraints(SizeConstraintInput {
                 size,
                 preferred_size_is_indefinite,
@@ -1170,12 +1149,47 @@ fn generate_item_list(
                 aspect_ratio,
                 padding_border: pb_sum,
             });
-            let mut automatic_inline_minimum = None;
-            if let Some(inputs) = automatic_minimum_inputs {
-                let axis = child_writing_mode.inline_axis();
-                let automatic_minimum =
-                    measure_aspect_ratio_automatic_minimum(tree, child_node_id, inputs, axis, pb_sum, resolved);
-                resolved.apply_automatic_minimum(axis, automatic_minimum.value);
+            if let Some((intrinsic_axis, intrinsic_inputs, intrinsic_available_size)) = intrinsic_context {
+                let content_size_override = if is_replaced {
+                    IntrinsicAxisValue::default()
+                } else {
+                    intrinsic_content_size_from_initial_geometry(
+                        intrinsic_axis,
+                        resolved.initial_geometry(),
+                        aspect_ratio,
+                        pb_sum,
+                    )
+                };
+                let intrinsic = resolve_intrinsic_axis_constraints(
+                    tree,
+                    child_node_id,
+                    intrinsic_inputs,
+                    IntrinsicAxisInput {
+                        preferred: child_logical_size.inline_size,
+                        min: child_logical_min_size.inline_size,
+                        max: child_logical_max_size.inline_size,
+                        available_space: intrinsic_available_size,
+                        axis: intrinsic_axis,
+                        content_size_override,
+                    },
+                );
+                let mut logical_resolved_size = child_writing_mode.to_logical(resolved.size);
+                logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
+                resolved.size = child_writing_mode.to_physical(logical_resolved_size);
+                resolved.apply_late_authored_constraints(
+                    child_writing_mode.to_physical(LogicalSize { inline_size: intrinsic.min, block_size: None }),
+                    child_writing_mode.to_physical(LogicalSize { inline_size: intrinsic.max, block_size: None }),
+                );
+                depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+                let automatic_minimum = measure_aspect_ratio_automatic_minimum(
+                    tree,
+                    child_node_id,
+                    intrinsic_inputs,
+                    intrinsic_axis,
+                    pb_sum,
+                    resolved,
+                );
+                resolved.apply_automatic_minimum(intrinsic_axis, automatic_minimum.value);
                 automatic_inline_minimum = automatic_minimum.value;
                 depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
             }

@@ -30,9 +30,10 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    fit_content_inline_size_with_metadata, measure_aspect_ratio_automatic_minimum,
-    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput, ResolvedNodeSizing,
+    fit_content_inline_size_with_metadata, intrinsic_content_size_from_initial_geometry,
+    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size,
+    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue,
+    NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1153,12 +1154,6 @@ fn generate_anonymous_flex_items(
                 untransferred_size
             }
             .maybe_add(box_sizing_adjustment);
-            let direct_size_with_transfer = (if used_flex_basis.is_unresolved() {
-                definite_preferred_size.with_main(constants.dir, None)
-            } else {
-                definite_preferred_size
-            })
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
             // Flexbox gives a stretched item in a definite single-line cross
             // axis an automatic preferred outer cross size and treats it as
             // definite. Retain the corresponding border-box size here so the
@@ -1185,6 +1180,29 @@ fn generate_anonymous_flex_items(
                 .maybe_add(box_sizing_adjustment)
                 .or(stretch.max);
             let size_is_auto = raw_size.map(|dimension| dimension.is_auto());
+            let initial_preferred_size = if used_flex_basis.is_unresolved() {
+                definite_preferred_size.with_main(constants.dir, None)
+            } else {
+                definite_preferred_size
+            };
+            let initial_preferred_size = initial_preferred_size.with_cross(
+                constants.dir,
+                initial_preferred_size.cross(constants.dir).or(automatic_preferred_cross_size),
+            );
+            let initial_constraints = resolve_size_constraints(SizeConstraintInput {
+                size: initial_preferred_size,
+                preferred_size_is_indefinite: initial_preferred_size.map(|size| size.is_none()),
+                min_size,
+                max_size,
+                size_is_auto,
+                writing_mode: child_writing_mode,
+                inline_auto_behavior: AutoSizeBehavior::FitContent,
+                block_auto_behavior: AutoSizeBehavior::FitContent,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio,
+                padding_border: pb_sum,
+            });
+            let direct_size_with_transfer = initial_constraints.size;
             let inset = child_style.inset().zip_size(constants.node_percentage_size, |p, s| {
                 p.maybe_resolve(s, |val, basis| tree.calc(val, basis))
             });
@@ -1232,14 +1250,28 @@ fn generate_anonymous_flex_items(
                 available_space: child_available_space,
                 block_margins_are_collapsible: Line::FALSE,
             };
-            let intrinsic = resolve_intrinsic_width_constraints(
+            let content_size_override = if is_replaced {
+                IntrinsicAxisValue::default()
+            } else {
+                intrinsic_content_size_from_initial_geometry(
+                    AbsoluteAxis::Horizontal,
+                    initial_constraints.initial_geometry(),
+                    aspect_ratio,
+                    pb_sum,
+                )
+            };
+            let intrinsic = resolve_intrinsic_axis_constraints(
                 tree,
                 child,
                 intrinsic_inputs,
-                raw_size.width,
-                raw_min_size.width,
-                raw_max_size.width,
-                available_width,
+                IntrinsicAxisInput {
+                    preferred: raw_size.width,
+                    min: raw_min_size.width,
+                    max: raw_max_size.width,
+                    available_space: available_width,
+                    axis: AbsoluteAxis::Horizontal,
+                    content_size_override,
+                },
             );
             if let Some(intrinsic_width) = intrinsic.preferred {
                 untransferred_size.width = Some(intrinsic_width - box_sizing_adjustment.width);

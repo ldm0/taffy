@@ -68,6 +68,17 @@ impl ResolvedAxisConstraints {
         self.authored_max = minimum_constraint(self.authored_max, max);
         self
     }
+
+    /// Resolve only constraints authored in this axis.
+    ///
+    /// Initial fragment geometry is computed before preferred-ratio transfers
+    /// and content callbacks. Keeping that operation source-aware prevents a
+    /// ratio-derived opposite axis from feeding back into the same intrinsic
+    /// contribution.
+    #[inline(always)]
+    fn resolve_authored(self) -> (Option<f32>, Option<f32>) {
+        Self { transferred_min: None, transferred_max: None, ..self }.resolve(None, None, None)
+    }
 }
 
 impl ResolvedSizeConstraints {
@@ -80,6 +91,32 @@ impl ResolvedSizeConstraints {
     #[inline(always)]
     pub(crate) fn used_preferred_size(self) -> Size<Option<f32>> {
         self.size.maybe_clamp(self.min_size, self.max_size)
+    }
+
+    /// Return initial geometry available without measuring content.
+    ///
+    /// A direct preferred size is constrained by authored min/max values. When
+    /// an otherwise missing axis has equal authored minimum and maximum
+    /// constraints, that pair also fixes its initial geometry. Preferred-ratio
+    /// and transferred-constraint results are deliberately excluded: using
+    /// either as the opposite-axis input would feed the ratio back into its own
+    /// intrinsic content callback.
+    #[inline(always)]
+    pub(crate) fn initial_geometry(self) -> Size<Option<f32>> {
+        let (min_width, max_width) = self.constraint_sources.width.resolve_authored();
+        let (min_height, max_height) = self.constraint_sources.height.resolve_authored();
+        let authored_min = Size { width: min_width, height: min_height };
+        let authored_max = Size { width: max_width, height: max_height };
+        let direct_size = Size {
+            width: if self.aspect_ratio_applied.width { None } else { self.size.width },
+            height: if self.aspect_ratio_applied.height { None } else { self.size.height },
+        }
+        .maybe_clamp(authored_min, authored_max);
+        let fixed_by_constraints = authored_min.zip_map(authored_max, |min, max| match (min, max) {
+            (Some(min), Some(max)) if max <= min => Some(min),
+            _ => None,
+        });
+        fixed_by_constraints.or(direct_size)
     }
 
     /// Return the source-preserving constraints for the logical block axis.
@@ -367,6 +404,26 @@ fn minimum_constraint(lhs: Option<f32>, rhs: Option<f32>) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_geometry_excludes_preferred_ratio_feedback() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(25.0) },
+            preferred_size_is_indefinite: Size { width: true, height: false },
+            min_size: Size { width: None, height: Some(25.0) },
+            max_size: Size { width: None, height: Some(25.0) },
+            size_is_auto: Size { width: false, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(4.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.size, Size { width: Some(100.0), height: Some(25.0) });
+        assert_eq!(resolved.initial_geometry(), Size { width: None, height: Some(25.0) });
+    }
 
     #[test]
     fn explicit_and_implicit_auto_stretch_preserve_ratio_order_per_logical_axis() {
