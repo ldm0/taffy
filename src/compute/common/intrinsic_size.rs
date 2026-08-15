@@ -840,6 +840,23 @@ struct DirectNodeSizeResolution {
     definite_preferred_size: Size<Option<f32>>,
 }
 
+/// Resolve authored minimum sizes using their property-specific percentage
+/// fallback.
+///
+/// An indefinite containing-block axis leaves preferred and maximum sizes
+/// unresolved, but CSS resolves a cyclic percentage in a minimum size against
+/// zero. Keeping that rule in the shared node-sizing resolver makes logical
+/// inline and block constraints follow the same protocol in every formatting
+/// context.
+fn resolve_minimum_size(
+    raw_min_size: Size<Dimension>,
+    parent_size: Size<Option<f32>>,
+    calc: impl Fn(*const (), f32) -> f32,
+) -> Size<Option<f32>> {
+    let percentage_basis = parent_size.map(|basis| Some(basis.unwrap_or(0.0)));
+    raw_min_size.maybe_resolve(percentage_basis, calc)
+}
+
 /// Resolve authored numeric, available-space and containment constraints
 /// before intrinsic keywords are merged by the caller.
 fn resolve_direct_node_size_constraints(
@@ -871,8 +888,7 @@ fn resolve_direct_node_size_constraints(
         .or(stretch.preferred);
     let resolved = resolve_size_constraints(SizeConstraintInput {
         size: direct_preferred_size,
-        min_size: raw_min_size
-            .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
+        min_size: resolve_minimum_size(raw_min_size, inputs.parent_size, |value, basis| tree.calc(value, basis))
             .maybe_add(box_sizing_adjustment)
             .or(stretch.min),
         max_size: raw_max_size
@@ -1147,4 +1163,26 @@ pub fn resolve_leaf_node_sizing(
         }
     };
     resolve_node_size_constraints(tree, node_id, inputs, sizing)
+}
+
+#[cfg(all(test, feature = "calc"))]
+mod tests {
+    use super::*;
+
+    #[repr(align(8))]
+    struct CalcToken;
+
+    static CALC_TOKEN: CalcToken = CalcToken;
+
+    #[test]
+    fn cyclic_minimum_calc_uses_zero_for_an_indefinite_axis() {
+        let calc = Dimension::calc((&CALC_TOKEN as *const CalcToken).cast());
+        let resolved = resolve_minimum_size(
+            Size { width: calc, height: calc },
+            Size { width: Some(200.0), height: None },
+            |_, basis| 100.0 + 0.5 * basis,
+        );
+
+        assert_eq!(resolved, Size { width: Some(200.0), height: Some(100.0) });
+    }
 }
