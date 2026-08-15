@@ -602,10 +602,6 @@ fn compute_inner(
         direction,
     ));
 
-    let raw_size = style.size();
-    let raw_min_size = style.min_size();
-    let raw_size_logical = writing_mode.to_logical(raw_size);
-    let raw_min_size_logical = writing_mode.to_logical(raw_min_size);
     let outer_logical_size = writing_mode.to_logical(node_sizing.outer_size);
     let definite_logical_size = writing_mode.to_logical(node_sizing.definite_size);
     let size_logical = writing_mode.to_logical(node_sizing.preferred_size);
@@ -630,21 +626,16 @@ fn compute_inner(
             && !is_scroll_container
             && style.position() == Position::Relative
             && logical_padding.block_end == 0.0
-            && logical_border.block_end == 0.0
-            && !raw_size_logical.block_size.is_intrinsic(),
+            && logical_border.block_end == 0.0,
     };
-    let has_styles_preventing_being_collapsed_through = !style.is_block()
+    let has_structural_styles_preventing_collapsing_through = !style.is_block()
         || block_ctx.is_bfc_root()
         || is_scroll_container
         || style.position() == Position::Absolute
         || logical_padding.block_start > 0.0
         || logical_padding.block_end > 0.0
         || logical_border.block_start > 0.0
-        || logical_border.block_end > 0.0
-        || matches!(size_logical.block_size, Some(size) if size > 0.0)
-        || matches!(min_size_logical.block_size, Some(size) if size > 0.0)
-        || raw_size_logical.block_size.is_intrinsic()
-        || raw_min_size_logical.block_size.is_intrinsic();
+        || logical_border.block_end > 0.0;
 
     let text_align = style.text_align();
     let align_content = style.align_content();
@@ -772,9 +763,10 @@ fn compute_inner(
 
     // Keep the trailing margin strut separate while measuring intrinsic block
     // size, then decide whether it may escape only after the used block size is
-    // known. A specified size, a preferred-ratio transfer, or a min/max clamp
-    // captures the strut instead of turning it into either intrinsic content
-    // or an external margin. This mirrors Blink's FinishLayout ordering:
+    // known. A definite initial size, a preferred-ratio transfer, or a min/max
+    // clamp that changes the measured size captures the strut instead of
+    // turning it into either intrinsic content or an external margin. This
+    // mirrors Blink's FinishLayout ordering:
     // compute intrinsic size, compute the final fragment size, then clear the
     // end margin strut when the initial size was definite or the final size
     // differs from the intrinsic size.
@@ -844,8 +836,14 @@ fn compute_inner(
         }
         item.position == Position::Absolute || item.can_be_collapsed_through
     });
-    let can_be_collapsed_through =
-        !has_styles_preventing_being_collapsed_through && all_in_flow_children_can_be_collapsed_through;
+    // CSS Sizing's intrinsic block-size keywords and cyclic percentages
+    // "behave as auto" for the legacy CSS2 margin-collapse conditions. Base
+    // collapse-through on the final used block size instead of the authored
+    // size syntax so zero fixed sizes, intrinsic sizes, ratios and min/max
+    // clamps all follow the same rule.
+    let can_be_collapsed_through = !has_structural_styles_preventing_collapsing_through
+        && container_outer_block_size == 0.0
+        && all_in_flow_children_can_be_collapsed_through;
 
     let mut output = LayoutOutput::from_sizes_and_baseline_sets(
         final_outer_size,

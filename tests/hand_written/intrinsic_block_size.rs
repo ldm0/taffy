@@ -253,6 +253,106 @@ fn ratio_resolved_block_size_keeps_collapsed_child_margins_out_of_its_intrinsic_
 }
 
 #[test]
+fn intrinsic_preferred_block_sizes_behave_as_auto_for_end_margin_collapse() {
+    for preferred in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content()] {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+
+        let content = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size::from_lengths(100.0, 100.0),
+                margin: Rect { bottom: length(100.0), ..Rect::zero() },
+                ..Default::default()
+            })
+            .unwrap();
+        let subject = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: length(100.0), height: preferred },
+                    ..Default::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: length(100.0), height: auto() },
+                    ..Default::default()
+                },
+                &[subject],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(subject).unwrap().size.height, 100.0, "preferred={preferred:?}");
+        assert_eq!(tree.layout(content).unwrap().size.height, 100.0, "preferred={preferred:?}");
+    }
+}
+
+#[test]
+fn zero_intrinsic_preferred_block_sizes_allow_margin_collapse_through() {
+    for preferred in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content()] {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+
+        let first = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size::from_lengths(50.0, 10.0),
+                margin: Rect { bottom: length(10.0), ..Rect::zero() },
+                ..Default::default()
+            })
+            .unwrap();
+        let subject = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: length(50.0), height: preferred },
+                    margin: Rect { top: length(10.0), bottom: length(10.0), ..Rect::zero() },
+                    ..Default::default()
+                },
+                &[],
+            )
+            .unwrap();
+        let last = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size::from_lengths(50.0, 10.0),
+                margin: Rect { top: length(10.0), ..Rect::zero() },
+                ..Default::default()
+            })
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: length(50.0), height: auto() },
+                    ..Default::default()
+                },
+                &[first, subject, last],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        let geometry = [root, first, subject, last].map(|node| {
+            let layout = tree.layout(node).unwrap();
+            [layout.location.x, layout.location.y, layout.size.width, layout.size.height]
+        });
+        assert_eq!(
+            geometry,
+            [[0.0, 0.0, 50.0, 30.0], [0.0, 0.0, 50.0, 10.0], [0.0, 20.0, 50.0, 0.0], [0.0, 20.0, 50.0, 10.0],],
+            "preferred={preferred:?}",
+        );
+    }
+}
+
+#[test]
 fn automatic_minimum_is_capped_by_the_authored_maximum() {
     for display in [Display::Block, Display::Flex, Display::Grid] {
         for preferred in [Dimension::auto(), Dimension::min_content()] {
