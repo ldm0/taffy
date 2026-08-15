@@ -301,6 +301,86 @@ fn column_content_minimum_is_capped_by_the_transferred_cross_maximum() {
     assert_eq!(item_size, Size { width: 25.0, height: 200.0 });
 }
 
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-037.html.
+///
+/// Flexbox part E obtains the block-axis flex base size from the item's
+/// fit-content inline size when a preferred aspect ratio is present.
+#[test]
+fn column_flex_base_size_transfers_the_fit_content_inline_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: Some(AlignItems::START),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for the transferred maximum in WPT
+/// css/css-sizing/aspect-ratio/flex-aspect-ratio-039.html.
+#[test]
+fn transferred_cross_maximum_clamps_the_hypothetical_main_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(50.0) },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(800.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 50.0 });
+}
+
 #[test]
 fn column_automatic_minimum_transfers_the_preferred_cross_size() {
     let mut tree = TaffyTree::<()>::new();

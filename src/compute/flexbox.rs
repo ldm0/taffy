@@ -30,9 +30,9 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
-    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints,
-    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
-    ResolvedNodeSizing,
+    fit_content_inline_size_with_metadata, measure_aspect_ratio_automatic_minimum,
+    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1446,11 +1446,12 @@ fn resolve_flex_content_based_automatic_minimum(
     // block-axis main size instead constrains its intrinsic block size by the
     // transferred inline min/max pair before it becomes the content-size
     // suggestion.
-    let content_size_suggestion = if !item.automatic_minimum.is_replaced && item.main_axis_is_inline {
-        ratio_aware_content_size.max(min_content_main_size)
-    } else {
-        ratio_aware_content_size
-    };
+    let content_size_suggestion =
+        if !item.automatic_minimum.is_replaced && item.main_axis_is_inline && item.preferred_cross_size_is_definite {
+            ratio_aware_content_size.max(min_content_main_size)
+        } else {
+            ratio_aware_content_size
+        };
     item.automatic_minimum.resolve(content_size_suggestion, item.max_size.main(dir), padding_border.main(dir))
 }
 
@@ -1557,9 +1558,65 @@ fn determine_flex_base_size(
             } else {
                 None
             };
+
+        // Blink's flex BlockSizeFunc(SizeType::kContent) first establishes the
+        // item's fit-content inline size, then transfers that size through the
+        // preferred ratio to obtain a block-axis flex basis. This is distinct
+        // from part B above: the inline size is content-derived rather than an
+        // independently definite preferred cross size.
+        let fit_content_ratio_size = if used_flex_basis.is_unresolved()
+            && content_ratio_size.is_none()
+            && !child.main_axis_is_inline
+            && !child.automatic_minimum.is_replaced
+            && aspect_ratio.ratio.is_some()
+        {
+            // Main-axis min/max constraints are ignored while resolving the
+            // flex base size, so do not let constraints transferred out of the
+            // main axis constrain this fit-content inline probe. Direct cross
+            // constraints still participate in the initial inline geometry.
+            let cross_margin_sum = child.margin.cross_axis_sum(dir);
+            let direct_cross_available_space = resolve_cross_axis_available_space(
+                available_space.cross(dir),
+                cross_axis_definite_size,
+                child.min_size.cross(dir).maybe_add(cross_margin_sum),
+                child.max_size.cross(dir).maybe_add(cross_margin_sum),
+            )
+            .maybe_sub(cross_margin_sum);
+            let fit_content_known_dimensions = child_known_dimensions.with_cross(dir, None);
+            let measurement_inputs = ChildLayoutInput::new(
+                fit_content_known_dimensions,
+                child_parent_size,
+                constants.writing_mode,
+                Size::MAX_CONTENT.with_cross(dir, direct_cross_available_space),
+                SizingMode::ContentSize,
+                Line::FALSE,
+            )
+            .with_definite_dimensions(flex_item_intrinsic_definite_dimensions(
+                child,
+                fit_content_known_dimensions,
+                constants,
+            ));
+            let fit_content_inline = fit_content_inline_size_with_metadata(
+                tree,
+                child.node,
+                measurement_inputs,
+                direct_cross_available_space.compute_free_space(0.0),
+                dir.cross_axis(),
+            );
+            child.depends_on_block_constraints |= fit_content_inline.depends_on_block_constraints;
+            Size::from_cross(
+                dir,
+                fit_content_inline.value.maybe_clamp(child.min_size.cross(dir), child.max_size.cross(dir)),
+            )
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border)
+            .main(dir)
+        } else {
+            None
+        };
         child.main_size_is_definite = constants.node_definite_inner_size.main(dir).is_some()
             || child.used_flex_basis_is_definite
-            || content_ratio_size.is_some();
+            || content_ratio_size.is_some()
+            || fit_content_ratio_size.is_some();
 
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
@@ -1580,6 +1637,15 @@ fn determine_flex_base_size(
                     }
                 }
                 UsedFlexBasis::Intrinsic(_) | UsedFlexBasis::Stretch => {}
+            }
+
+            // `content`, intrinsic sizing keywords, and an unresolved
+            // `stretch` all invoke Blink's content block-size callback. Once
+            // fit-content inline geometry supplied a ratio-derived block size,
+            // that callback is complete and descendant block layout is not
+            // consulted for the basis.
+            if let Some(fit_content_ratio_size) = fit_content_ratio_size {
+                break 'flex_basis fit_content_ratio_size;
             }
 
             // C. If the used flex basis is content or depends on its available space,

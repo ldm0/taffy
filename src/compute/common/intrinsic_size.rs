@@ -34,22 +34,48 @@ use super::used_size::{resolve_inline_auto_size_preference, resolve_used_size, I
 pub(crate) fn fit_content_inline_size(
     tree: &mut impl LayoutPartialTree,
     node: crate::NodeId,
-    mut inputs: ChildLayoutInput,
+    inputs: ChildLayoutInput,
     available_inline_size: f32,
     inline_axis: AbsoluteAxis,
 ) -> f32 {
+    fit_content_inline_size_with_metadata(tree, node, inputs, available_inline_size, inline_axis)
+        .value
+        .expect("fit-content inline sizing always produces a contribution")
+}
+
+/// Resolve a fit-content inline size while retaining whether either intrinsic
+/// contribution observed the containing block's block constraint.
+///
+/// Flex base-size calculation propagates that dependency into its cache state;
+/// ordinary containing blocks can use [`fit_content_inline_size`] when they do
+/// not expose contribution metadata separately.
+#[inline]
+pub(crate) fn fit_content_inline_size_with_metadata(
+    tree: &mut impl LayoutPartialTree,
+    node: crate::NodeId,
+    mut inputs: ChildLayoutInput,
+    available_inline_size: f32,
+    inline_axis: AbsoluteAxis,
+) -> IntrinsicAxisValue {
     match inline_axis {
         AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MinContent,
         AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MinContent,
     }
-    let min_content = tree.measure_child_size(node, inputs, inline_axis);
+    let min_content = tree.measure_child_size_with_metadata(node, inputs, RequestedAxis::from(inline_axis));
     match inline_axis {
         AbsoluteAxis::Horizontal => inputs.available_space.width = AvailableSpace::MaxContent,
         AbsoluteAxis::Vertical => inputs.available_space.height = AvailableSpace::MaxContent,
     }
-    let max_content = tree.measure_child_size(node, inputs, inline_axis);
+    let max_content = tree.measure_child_size_with_metadata(node, inputs, RequestedAxis::from(inline_axis));
 
-    available_inline_size.max(0.0).max(min_content).min(max_content)
+    let min_content_size = min_content.size.get_abs(inline_axis);
+    let max_content_size = max_content.size.get_abs(inline_axis);
+
+    IntrinsicAxisValue {
+        value: Some(available_inline_size.max(0.0).max(min_content_size).min(max_content_size)),
+        depends_on_block_constraints: min_content.depends_on_block_constraints
+            || max_content.depends_on_block_constraints,
+    }
 }
 
 /// Substitute a contained intrinsic border-box size for intrinsic sizing
