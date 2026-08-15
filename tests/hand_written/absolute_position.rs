@@ -173,6 +173,62 @@ mod absolute_position {
     }
 
     #[test]
+    fn inset_fixed_block_size_supplies_an_absolute_boxes_intrinsic_inline_ratio_basis() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            for inline_size in [auto(), Dimension::min_content()] {
+                let mut horizontal_tree = new_test_tree();
+                let horizontal_absolute = horizontal_tree
+                    .new_leaf(Style {
+                        display: Display::Block,
+                        position: Position::Absolute,
+                        size: Size { width: inline_size, height: auto() },
+                        aspect_ratio: Some(2.0),
+                        inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: length(0.0) },
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let horizontal_root = horizontal_tree
+                    .new_with_children(
+                        Style { display, size: Size::from_lengths(300.0, 50.0), ..Default::default() },
+                        &[horizontal_absolute],
+                    )
+                    .unwrap();
+                horizontal_tree.compute_layout(horizontal_root, Size::MAX_CONTENT).unwrap();
+                assert_eq!(
+                    horizontal_tree.layout(horizontal_absolute).unwrap().size,
+                    Size { width: 100.0, height: 50.0 },
+                    "{display:?} horizontal-tb {inline_size:?}"
+                );
+
+                let mut vertical_tree = new_test_tree();
+                let vertical_absolute = vertical_tree
+                    .new_leaf(Style {
+                        display: Display::Block,
+                        position: Position::Absolute,
+                        size: Size { width: auto(), height: inline_size },
+                        aspect_ratio: Some(2.0),
+                        inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: auto() },
+                        ..Default::default()
+                    })
+                    .unwrap();
+                vertical_tree.set_writing_mode(vertical_absolute, taffy::WritingMode::VerticalLr).unwrap();
+                let vertical_root = vertical_tree
+                    .new_with_children(
+                        Style { display, size: Size::from_lengths(100.0, 300.0), ..Default::default() },
+                        &[vertical_absolute],
+                    )
+                    .unwrap();
+                vertical_tree.compute_layout(vertical_root, Size::MAX_CONTENT).unwrap();
+                assert_eq!(
+                    vertical_tree.layout(vertical_absolute).unwrap().size,
+                    Size { width: 100.0, height: 50.0 },
+                    "{display:?} vertical-lr {inline_size:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn orthogonal_absolute_margins_follow_the_positioned_boxes_logical_axes() {
         for display in [Display::Block, Display::Flex, Display::Grid] {
             let mut tree = new_test_tree();

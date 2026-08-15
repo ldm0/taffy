@@ -3,8 +3,8 @@ use crate::geometry::{
     LogicalStaticPosition, Point, Rect, Size, StaticPositionEdge, WritingDirection,
 };
 use crate::style::{
-    AlignItemsKeyword, AlignSelf, AlignmentSafety, AvailableSpace, BoxGenerationMode, BoxSizing, CoreStyle, Overflow,
-    Position,
+    AlignItemsKeyword, AlignSelf, AlignmentSafety, AvailableSpace, BoxGenerationMode, BoxSizing, CoreStyle, Dimension,
+    Overflow, Position,
 };
 use crate::tree::{
     AutoSizeBehavior, ChildLayoutInput, Layout, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId,
@@ -484,6 +484,33 @@ fn resolve_aligned_axis_start(
     aligned.start + margin.start
 }
 
+/// Whether an inset-fixed automatic block size must be resolved before the
+/// positioned box's intrinsic inline contribution.
+///
+/// An implicit block stretch is normally weaker than a preferred aspect
+/// ratio: once the inline size is known, the ratio determines the block size.
+/// The dependency reverses when the inline axis itself is content-sized. In
+/// that case the inset-fixed block size is the ratio basis for the intrinsic
+/// inline contribution. Intrinsic block constraints prevent this shortcut
+/// because resolving them requires laying out the box.
+#[inline(always)]
+fn implicit_block_stretch_precedes_inline_sizing(
+    inline_auto_behavior: AutoSizeBehavior,
+    block_auto_behavior: AutoSizeBehavior,
+    raw_logical_size: LogicalSize<Dimension>,
+    raw_logical_min_size: LogicalSize<Dimension>,
+    raw_logical_max_size: LogicalSize<Dimension>,
+    has_preferred_aspect_ratio: bool,
+) -> bool {
+    inline_auto_behavior == AutoSizeBehavior::FitContent
+        && block_auto_behavior == AutoSizeBehavior::StretchImplicit
+        && has_preferred_aspect_ratio
+        && (raw_logical_size.inline_size.is_auto() || raw_logical_size.inline_size.is_intrinsic())
+        && raw_logical_size.block_size.is_auto()
+        && !raw_logical_min_size.block_size.is_intrinsic()
+        && !raw_logical_max_size.block_size.is_intrinsic()
+}
+
 /// Size and place one absolutely positioned box in its actual containing
 /// block.
 ///
@@ -575,7 +602,7 @@ pub(crate) fn layout_out_of_flow_item(
     let inline_auto_behavior =
         auto_behavior(AbstractAxis::Inline, inset_modified_containing_block.inline.has_auto_inset);
     let block_auto_behavior = auto_behavior(AbstractAxis::Block, inset_modified_containing_block.block.has_auto_inset);
-    let sizing_inputs = LayoutInput {
+    let mut sizing_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
@@ -592,26 +619,57 @@ pub(crate) fn layout_out_of_flow_item(
         },
         block_margins_are_collapsible: Line::FALSE,
     };
-    let node_sizing = resolve_node_size_constraints(
-        tree,
-        item.node,
-        sizing_inputs,
-        NodeSizeConstraintInput {
-            raw_size,
-            raw_min_size,
-            raw_max_size,
-            box_sizing_adjustment,
-            padding_border_size: padding_border_sum,
-            aspect_ratio,
-            // A missing containment override is formatting-context specific:
-            // ordinary boxes use zero while Grid derives a size from tracks
-            // without item contributions. The out-of-flow wrapper cannot
-            // choose that fallback before dispatching the child algorithm.
-            contained_outer_size: tree.get_size_containment(item.node).resolve_explicit_outer_size(
-                padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y },
-            ),
-        },
-    );
+    let sizing = NodeSizeConstraintInput {
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        box_sizing_adjustment,
+        padding_border_size: padding_border_sum,
+        aspect_ratio,
+        // A missing containment override is formatting-context specific:
+        // ordinary boxes use zero while Grid derives a size from tracks
+        // without item contributions. The out-of-flow wrapper cannot
+        // choose that fallback before dispatching the child algorithm.
+        contained_outer_size: tree.get_size_containment(item.node).resolve_explicit_outer_size(
+            padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y },
+        ),
+    };
+    let mut node_sizing = resolve_node_size_constraints(tree, item.node, sizing_inputs, sizing);
+
+    let raw_logical_size = child_writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+    if !is_compressible_replaced
+        && node_sizing.constraints.initial_geometry().get_abs(block_axis).is_none()
+        && implicit_block_stretch_precedes_inline_sizing(
+            inline_auto_behavior,
+            block_auto_behavior,
+            raw_logical_size,
+            raw_logical_min_size,
+            raw_logical_max_size,
+            aspect_ratio.ratio.is_some(),
+        )
+    {
+        // Match Blink's lazy OOF dependency ordering: when inline fit-content
+        // needs a block-independent size, resolve the inset-fixed block axis
+        // first and repeat initial sizing with that axis fixed. This lets the
+        // shared intrinsic callback obtain its inline contribution from the
+        // preferred ratio without measuring descendants against stale
+        // geometry.
+        let initial_min_size = node_sizing.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let stretched_block_size = inset_modified_size
+            .get_abs(block_axis)
+            .maybe_clamp(initial_min_size.get_abs(block_axis), node_sizing.max_size.get_abs(block_axis))
+            .max(padding_border_sum.get_abs(block_axis));
+        let fixed_block_size = match block_axis {
+            AbsoluteAxis::Horizontal => Size { width: Some(stretched_block_size), height: None },
+            AbsoluteAxis::Vertical => Size { width: None, height: Some(stretched_block_size) },
+        };
+        sizing_inputs.known_dimensions = fixed_block_size;
+        sizing_inputs.definite_dimensions = fixed_block_size;
+        node_sizing = resolve_node_size_constraints(tree, item.node, sizing_inputs, sizing);
+    }
+
     let block_axis_constraints = node_sizing.constraints.block_axis_constraints(child_writing_mode);
     let mut min_size = node_sizing.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
     let mut max_size = node_sizing.max_size;
@@ -679,9 +737,6 @@ pub(crate) fn layout_out_of_flow_item(
         .maybe_clamp(min_size, max_size);
     }
 
-    let raw_logical_size = child_writing_mode.to_logical(raw_size);
-    let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
-    let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
     let content_based_block_size = ContentBasedBlockSize::new(
         BlockSizeProperties::new(
             raw_logical_size.block_size,
