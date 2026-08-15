@@ -172,6 +172,103 @@ fn aspect_ratio_transfers_grid_track_definiteness() {
 }
 
 #[test]
+fn aspect_ratio_resolved_block_size_stretches_auto_row() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let stretched = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            },
+            &[stretched],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(stretched).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn aspect_ratio_resolved_block_size_centers_item_in_stretched_auto_row() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let item = tree.new_leaf(Style { size: Size::from_lengths(100.0, 50.0), ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                aspect_ratio: Some(1.0),
+                align_items: Some(AlignItems::CENTER),
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 50.0 });
+    assert_eq!(tree.layout(item).unwrap().location.y, 25.0);
+}
+
+#[test]
+fn aspect_ratio_resolved_vertical_block_size_stretches_auto_track() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let stretched = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            },
+            &[stretched],
+        )
+        .unwrap();
+    for node in [grid, stretched] {
+        tree.set_writing_mode(node, WritingMode::VerticalRl).unwrap();
+    }
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(stretched).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn minimum_clamped_block_size_stretches_auto_row() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let stretched = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                min_size: Size { width: auto(), height: length(100.0) },
+                ..Default::default()
+            },
+            &[stretched],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(stretched).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
 fn vertical_grid_projects_indefinite_block_size_to_physical_width() {
     let mut tree = TaffyTree::<()>::new();
     tree.disable_rounding();

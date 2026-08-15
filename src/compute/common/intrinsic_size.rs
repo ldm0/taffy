@@ -677,6 +677,21 @@ impl ContentBasedBlockSize {
             )
     }
 
+    /// Whether the automatic preferred block size is resolved from the
+    /// preferred aspect ratio after the formatting context establishes its
+    /// inline size.
+    ///
+    /// Grid uses this provenance to distinguish a content-sized block axis
+    /// from one that becomes definite only after its first track-sizing pass.
+    /// The latter needs another pass so flexible and automatic rows observe
+    /// the final available block size, matching Blink's
+    /// `IsInitialBlockSizeIndefinite()` additional-pass decision.
+    #[inline(always)]
+    pub(crate) fn resolves_auto_size_from_ratio(self) -> bool {
+        self.properties
+            .resolves_auto_size_from_ratio(self.aspect_ratio.ratio.is_some(), self.auto_size_is_content_based)
+    }
+
     /// Whether this pass needs the formatting context's real intrinsic block
     /// size.
     ///

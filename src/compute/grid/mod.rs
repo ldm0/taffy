@@ -163,6 +163,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         is_scroll_container,
         explicit_contained_outer_block_size,
     );
+    let resolves_auto_block_size_from_ratio = content_based_block_size.resolves_auto_size_from_ratio();
     let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
@@ -706,6 +707,63 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         }
     }
 
+    // A content-based automatic block size is initially indefinite so rows
+    // can establish the intrinsic automatic minimum. Once the final inline
+    // size transfers through the preferred ratio, however, the block axis has
+    // a definite available size. Re-run the complete columns -> rows pipeline
+    // in that resolved constraint space: columns may contain items whose
+    // contributions depend on block geometry, while automatic/flexible rows
+    // need the definite space for their expansion steps.
+    //
+    // Blink makes the same transition through `needs_additional_pass` when
+    // `IsInitialBlockSizeIndefinite()` and block-size resolution nevertheless
+    // produces a definite result. This belongs in track sizing, before final
+    // track/item alignment, rather than as a stretch correction in
+    // `align_tracks`.
+    let ratio_resolved_block_size_after_track_sizing = needs_content_based_block_resolution
+        && resolves_auto_block_size_from_ratio
+        && initial_percentage_resolution_size.block_size.is_none()
+        && content_based_block_constraints.preferred.is_some();
+    if ratio_resolved_block_size_after_track_sizing {
+        let mut resolved_available_grid_space = available_grid_space;
+        resolved_available_grid_space.block_size = AvailableSpace::Definite(container_content_box.block_size);
+
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Inline);
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Block);
+        track_sizing_algorithm(
+            tree,
+            AbstractAxis::Inline,
+            inner_min_size.get(AbstractAxis::Inline),
+            inner_max_size.get(AbstractAxis::Inline),
+            justify_content,
+            align_content,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
+            &mut columns,
+            &mut rows,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            has_inline_baseline_aligned_item,
+        );
+
+        items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
+        track_sizing_algorithm(
+            tree,
+            AbstractAxis::Block,
+            inner_min_size.get(AbstractAxis::Block),
+            inner_max_size.get(AbstractAxis::Block),
+            align_content,
+            justify_content,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
+            &mut rows,
+            &mut columns,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            has_block_baseline_aligned_item,
+        );
+    }
+
     // Column sizing must be re-run (once) if:
     //   - The grid container's width was initially indefinite and there are any columns with percentage track sizing functions
     //   - Any grid item crossing an intrinsically sized track's min content contribution width has changed
@@ -716,9 +774,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let has_percentage_column = columns.iter().any(|track| track.uses_percentage());
     let has_percentage_row = rows.iter().any(|track| track.uses_percentage());
     let initial_inline_size_indefinite = initial_percentage_resolution_size.inline_size.is_none();
-    rerun_column_sizing = initial_inline_size_indefinite && has_percentage_column;
+    rerun_column_sizing =
+        !ratio_resolved_block_size_after_track_sizing && initial_inline_size_indefinite && has_percentage_column;
 
-    if !rerun_column_sizing {
+    if !rerun_column_sizing && !ratio_resolved_block_size_after_track_sizing {
         intrinsic_column_contribution_changed = refresh_intrinsic_min_content_contributions(
             tree,
             &mut items,
@@ -758,10 +817,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // percentage rows that were indefinite in the initial constraint space
     // are resolved against the resulting content-box size.
     let initial_block_size_indefinite = initial_percentage_resolution_size.block_size.is_none();
-    let mut rerun_row_sizing = initial_block_size_indefinite && has_percentage_row;
+    let mut rerun_row_sizing =
+        !ratio_resolved_block_size_after_track_sizing && initial_block_size_indefinite && has_percentage_row;
     let mut intrinsic_row_contribution_changed = false;
 
-    if !rerun_row_sizing {
+    if !rerun_row_sizing && !ratio_resolved_block_size_after_track_sizing {
         intrinsic_row_contribution_changed = refresh_intrinsic_min_content_contributions(
             tree,
             &mut items,
