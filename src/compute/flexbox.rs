@@ -1072,6 +1072,17 @@ fn generate_anonymous_flex_items(
             let flex_basis = child_style.flex_basis();
             let raw_margin = child_style.margin();
             let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+            let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
+            let align_self = FlexboxItemStyle::align_self(&child_style)
+                .unwrap_or(constants.align_items)
+                .resolve_normal(AlignItems::STRETCH)
+                .resolve_axis_relative(
+                    child_writing_mode,
+                    child_style.direction(),
+                    constants.writing_mode,
+                    constants.inline_direction,
+                    constants.dir.cross_axis(),
+                );
             let stretch_properties = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size);
             let stretch_available_size = constants.node_definite_inner_size.maybe_sub(margin.sum_axes());
             let stretch = stretch_properties.resolve(stretch_available_size, pb_sum);
@@ -1113,6 +1124,23 @@ fn generate_anonymous_flex_items(
                 definite_preferred_size
             })
             .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
+            // Flexbox gives a stretched item in a definite single-line cross
+            // axis an automatic preferred outer cross size and treats it as
+            // definite. Retain the corresponding border-box size here so the
+            // flex basis and automatic minimum consume the same geometry.
+            let automatic_preferred_cross_size = if !constants.is_wrap
+                && align_self == AlignSelf::STRETCH
+                && raw_size.cross(constants.dir).is_auto()
+                && !margin_is_auto.cross_start(constants.dir)
+                && !margin_is_auto.cross_end(constants.dir)
+            {
+                constants
+                    .node_definite_inner_size
+                    .cross(constants.dir)
+                    .map(|cross_size| f32_max(cross_size - margin.cross_axis_sum(constants.dir), 0.0))
+            } else {
+                None
+            };
             let mut min_size = raw_min_size
                 .maybe_resolve(constants.node_percentage_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment)
@@ -1125,24 +1153,8 @@ fn generate_anonymous_flex_items(
             let inset = child_style.inset().zip_size(constants.node_percentage_size, |p, s| {
                 p.maybe_resolve(s, |val, basis| tree.calc(val, basis))
             });
-            let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = FlexboxItemStyle::align_self(&child_style)
-                .unwrap_or(constants.align_items)
-                .resolve_normal(AlignItems::STRETCH)
-                .resolve_axis_relative(
-                    child_writing_mode,
-                    child_style.direction(),
-                    constants.writing_mode,
-                    constants.inline_direction,
-                    constants.dir.cross_axis(),
-                );
-            let preferred_cross_size_is_definite = direct_size_with_transfer.cross(constants.dir).is_some()
-                || (!constants.is_wrap
-                    && align_self == AlignSelf::STRETCH
-                    && raw_size.cross(constants.dir).is_auto()
-                    && !margin_is_auto.cross_start(constants.dir)
-                    && !margin_is_auto.cross_end(constants.dir)
-                    && constants.node_definite_inner_size.cross(constants.dir).is_some());
+            let preferred_cross_size_is_definite =
+                direct_size_with_transfer.cross(constants.dir).is_some() || automatic_preferred_cross_size.is_some();
             let baseline_writing_mode = determine_baseline_writing_mode(
                 constants.writing_direction(),
                 child_writing_mode,
@@ -1253,8 +1265,11 @@ fn generate_anonymous_flex_items(
             size = constraints_with_transfer.size;
             let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
             let specified_size_suggestion = definite_preferred_size.main(constants.dir);
-            let transferred_size_suggestion = definite_preferred_size
-                .with_main(constants.dir, None)
+            let transferred_size_suggestion = Size::NONE
+                .with_cross(
+                    constants.dir,
+                    definite_preferred_size.cross(constants.dir).or(automatic_preferred_cross_size),
+                )
                 .maybe_clamp(constraints_without_transfer.min_size, constraints_without_transfer.max_size)
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
                 .main(constants.dir);

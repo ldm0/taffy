@@ -179,6 +179,49 @@ fn transferred_suggestion_sets_the_automatic_minimum_when_the_main_size_is_auto(
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
 
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-045.html.
+#[test]
+fn automatic_row_stretch_cross_size_sets_the_transferred_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree.new_leaf(Style { aspect_ratio: Some(1.0), ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-046.html.
+#[test]
+fn automatic_column_stretch_cross_size_sets_the_transferred_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree.new_leaf(Style { aspect_ratio: Some(1.0), ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size { width: Dimension::length(100.0), height: Dimension::length(0.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
 #[test]
 fn column_automatic_minimum_transfers_the_preferred_cross_size() {
     let mut tree = TaffyTree::<()>::new();
