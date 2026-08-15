@@ -1,4 +1,5 @@
 use taffy::prelude::*;
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
 ///
@@ -53,4 +54,70 @@ fn auto_flex_basis_uses_a_definite_stretched_cross_size_through_aspect_ratio() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
     assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-023.html.
+#[test]
+fn flexed_replaced_main_size_transfers_through_the_preferred_ratio() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+                aspect_ratio: Some(1.0),
+                item_is_replaced: true,
+                flex_basis: Dimension::length(0.0),
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(20.0, 50.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn direct_cross_size_wins_after_main_axis_flexing() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(50.0), height: Dimension::length(30.0) },
+            aspect_ratio: Some(1.0),
+            flex_basis: Dimension::length(0.0),
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 30.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 30.0 });
 }

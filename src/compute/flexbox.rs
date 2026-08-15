@@ -179,6 +179,13 @@ struct FlexItem {
 
     /// The base size of this item
     size: Size<Option<f32>>,
+    /// Axes in `size` synthesized from the pre-flex preferred aspect ratio.
+    ///
+    /// Flexible-length resolution can replace the main size after this value
+    /// is computed. The corresponding cross size must then be transferred
+    /// again from the flexed main size instead of being mistaken for a direct
+    /// authored cross size.
+    preferred_size_aspect_ratio_applied: Size<bool>,
     /// The authored preferred size after aspect-ratio resolution.
     ///
     /// A content-based flex basis ignores this in the flex base-size and
@@ -1201,11 +1208,13 @@ fn generate_anonymous_flex_items(
                 depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
             }
             size = constraints_with_transfer.size;
+            let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
 
             Some(FlexItem {
                 node: child,
                 order: index as u32,
                 size,
+                preferred_size_aspect_ratio_applied,
                 authored_size,
                 untransferred_size,
                 min_size: constraints_without_transfer.min_size,
@@ -2326,7 +2335,12 @@ fn determine_hypothetical_cross_size(
             .cross(constants.dir);
         child.cross_size_is_definite =
             child.preferred_cross_size_is_definite || (child.main_size_is_definite && ratio_cross.is_some());
-        let preferred_cross = child.size.cross(constants.dir).or(ratio_cross).maybe_max(padding_border_sum);
+        let preferred_cross = if child.preferred_size_aspect_ratio_applied.cross(constants.dir) {
+            ratio_cross
+        } else {
+            child.size.cross(constants.dir).or(ratio_cross)
+        }
+        .maybe_max(padding_border_sum);
 
         let child_available_cross = available_space
             .cross(constants.dir)
