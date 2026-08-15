@@ -944,6 +944,7 @@ fn resolve_direct_node_size_constraints(
         .or(stretch.preferred);
     let resolved = resolve_size_constraints(SizeConstraintInput {
         size: direct_preferred_size,
+        preferred_size_is_indefinite: direct_preferred_size.map(|size| size.is_none()),
         min_size: resolve_minimum_size(raw_min_size, inputs.parent_size, |value, basis| tree.calc(value, basis))
             .maybe_add(box_sizing_adjustment)
             .or(stretch.min),

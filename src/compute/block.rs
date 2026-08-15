@@ -1008,6 +1008,7 @@ fn generate_item_list(
             let mut size = raw_size
                 .maybe_resolve(physical_node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
+            let preferred_size_is_indefinite = size.map(|size| size.is_none());
             let mut min_size = raw_min_size
                 .maybe_resolve(contribution_parent_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
@@ -1158,6 +1159,7 @@ fn generate_item_list(
 
             let mut resolved = resolve_size_constraints(SizeConstraintInput {
                 size,
+                preferred_size_is_indefinite,
                 min_size,
                 max_size,
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
@@ -1317,10 +1319,11 @@ fn resolve_block_item_final_style(
         let box_sizing = style.box_sizing();
         let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
         let raw_size = style.size();
+        let preferred_size =
+            raw_size.maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
         let mut resolved = resolve_size_constraints(SizeConstraintInput {
-            size: raw_size
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+            size: preferred_size,
+            preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
             min_size: style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))

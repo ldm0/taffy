@@ -55,6 +55,50 @@ fn intrinsic_width_keywords_apply_in_block_flex_and_grid() {
     }
 }
 
+/// Regression for WPT
+/// `css/css-sizing/aspect-ratio/block-aspect-ratio-021.html`.
+///
+/// The max-content width remains indefinite until its content contribution is
+/// measured, so the maximum block-size must first transfer through the
+/// preferred ratio and then clamp that contribution.
+#[test]
+fn transferred_block_maximum_clamps_a_max_content_width() {
+    let mut tree = new_test_tree();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(200.0), height: Dimension::length(0.0) },
+            ..Default::default()
+        })
+        .unwrap();
+    let subject = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size::from_lengths(800.0, 600.0), ..Default::default() },
+            &[subject],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) },
+        test_measure_function,
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(subject).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
 #[test]
 fn fit_content_clamps_to_available_width() {
     assert_eq!(

@@ -155,6 +155,14 @@ pub(crate) enum TransferredSizesMode {
 pub(crate) struct SizeConstraintInput {
     /// Resolved preferred border-box sizes before ratio transfer.
     pub size: Size<Option<f32>>,
+    /// Axes whose preferred size was still indefinite before an intrinsic
+    /// contribution was materialized.
+    ///
+    /// This is intentionally distinct from [`Self::size_is_auto`]. An
+    /// intrinsic keyword such as `max-content` can already have a numeric
+    /// value in `size`, while opposite-axis min/max constraints must still be
+    /// transferred through the preferred ratio to bound that contribution.
+    pub preferred_size_is_indefinite: Size<bool>,
     /// Resolved authored minimum border-box sizes.
     pub min_size: Size<Option<f32>>,
     /// Resolved authored maximum border-box sizes.
@@ -187,6 +195,7 @@ pub(crate) struct SizeConstraintInput {
 pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSizeConstraints {
     let SizeConstraintInput {
         size,
+        preferred_size_is_indefinite,
         min_size,
         max_size,
         size_is_auto,
@@ -199,8 +208,8 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     } = input;
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
         TransferredSizesMode::Normal => (
-            transferred_constraints(min_size, size_is_auto, aspect_ratio, padding_border),
-            transferred_constraints(max_size, size_is_auto, aspect_ratio, padding_border),
+            transferred_constraints(min_size, preferred_size_is_indefinite, aspect_ratio, padding_border),
+            transferred_constraints(max_size, preferred_size_is_indefinite, aspect_ratio, padding_border),
         ),
         TransferredSizesMode::Ignore => (Size::NONE, Size::NONE),
     };
@@ -287,12 +296,12 @@ pub(crate) fn apply_preferred_aspect_ratio(
 /// Transfer one pair of axis constraints through the preferred ratio.
 fn transferred_constraints(
     constraints: Size<Option<f32>>,
-    target_is_auto: Size<bool>,
+    target_was_indefinite: Size<bool>,
     aspect_ratio: ResolvedAspectRatio,
     padding_border: Size<f32>,
 ) -> Size<Option<f32>> {
     Size {
-        width: target_is_auto
+        width: target_was_indefinite
             .width
             .then(|| {
                 Size { width: None, height: constraints.height }
@@ -300,7 +309,7 @@ fn transferred_constraints(
                     .width
             })
             .flatten(),
-        height: target_is_auto
+        height: target_was_indefinite
             .height
             .then(|| {
                 Size { width: constraints.width, height: None }
@@ -414,6 +423,7 @@ mod tests {
     fn explicit_constraints_win_over_conflicting_transferred_constraints() {
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: Size { width: Some(50.0), height: None },
+            preferred_size_is_indefinite: Size { width: false, height: true },
             min_size: Size { width: Some(100.0), height: None },
             max_size: Size { width: None, height: Some(100.0) },
             size_is_auto: Size { width: false, height: true },
@@ -436,6 +446,7 @@ mod tests {
     fn minimum_wins_when_the_transferred_pair_conflicts() {
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: Size::NONE,
+            preferred_size_is_indefinite: Size { width: true, height: true },
             min_size: Size { width: None, height: Some(150.0) },
             max_size: Size { width: None, height: Some(100.0) },
             size_is_auto: Size { width: true, height: true },
@@ -452,9 +463,32 @@ mod tests {
     }
 
     #[test]
+    fn transferred_constraints_bound_a_materialized_intrinsic_preferred_size() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            // The max-content contribution has already been measured, but it
+            // was indefinite when the initial constraint space was built.
+            size: Size { width: Some(200.0), height: None },
+            preferred_size_is_indefinite: Size { width: true, height: true },
+            min_size: Size::NONE,
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: false, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.max_size, Size { width: Some(100.0), height: Some(100.0) });
+        assert_eq!(resolved.used_preferred_size(), Size { width: Some(100.0), height: Some(100.0) });
+    }
+
+    #[test]
     fn ignore_mode_retains_only_explicit_constraints() {
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: Size::NONE,
+            preferred_size_is_indefinite: Size { width: true, height: true },
             min_size: Size { width: Some(10.0), height: Some(150.0) },
             max_size: Size { width: Some(20.0), height: Some(100.0) },
             size_is_auto: Size { width: true, height: true },
@@ -498,6 +532,7 @@ mod tests {
     fn late_authored_constraints_retain_the_automatic_minimum() {
         let mut resolved = resolve_size_constraints(SizeConstraintInput {
             size: Size { width: None, height: Some(200.0) },
+            preferred_size_is_indefinite: Size { width: true, height: false },
             min_size: Size::NONE,
             max_size: Size { width: None, height: Some(100.0) },
             size_is_auto: Size { width: true, height: false },

@@ -248,12 +248,14 @@ where
                 available_space.into_options(),
                 pb_sum,
             );
+            let preferred_size = raw_size
+                .maybe_resolve(parent_size, &resolve_calc_value)
+                .maybe_add(box_sizing_adjustment)
+                .or(stretch.preferred);
             let resolved = apply_contained_intrinsic_size_constraints(
                 resolve_size_constraints(SizeConstraintInput {
-                    size: raw_size
-                        .maybe_resolve(parent_size, &resolve_calc_value)
-                        .maybe_add(box_sizing_adjustment)
-                        .or(stretch.preferred),
+                    size: preferred_size,
+                    preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
                     min_size: raw_min_size
                         .maybe_resolve(parent_size, &resolve_calc_value)
                         .maybe_add(box_sizing_adjustment)

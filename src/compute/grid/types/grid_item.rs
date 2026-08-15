@@ -506,12 +506,14 @@ impl GridItem {
         } else {
             (vertical_auto_size, horizontal_auto_size)
         };
+        let preferred_size = self
+            .size
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_add(box_sizing_adjustment)
+            .or(stretch.preferred);
         let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: self
-                .size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.preferred),
+            size: preferred_size,
+            preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
             min_size: self
                 .min_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
@@ -796,11 +798,13 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        let preferred_size = self
+            .size
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_add(box_sizing_adjustment);
         let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: self
-                .size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+            size: preferred_size,
+            preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
             min_size: self
                 .min_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))

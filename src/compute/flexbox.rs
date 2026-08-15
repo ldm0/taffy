@@ -1133,6 +1133,7 @@ fn generate_anonymous_flex_items(
             let mut untransferred_size = raw_size
                 .maybe_resolve(constants.node_percentage_size, |val, basis| tree.calc(val, basis))
                 .or(stretch_preferred_in_sizing_box);
+            let preferred_size_is_indefinite = untransferred_size.map(|size| size.is_none());
             let unresolved_flex_basis = if flex_basis.is_auto() { raw_size.main(constants.dir) } else { flex_basis };
             let resolved_flex_basis = if flex_basis.is_auto() {
                 definite_untransferred_size.main(constants.dir)
@@ -1261,6 +1262,7 @@ fn generate_anonymous_flex_items(
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
             let constraint_input = SizeConstraintInput {
                 size,
+                preferred_size_is_indefinite,
                 min_size,
                 max_size,
                 size_is_auto,
