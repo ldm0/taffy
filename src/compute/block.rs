@@ -631,7 +631,6 @@ fn compute_inner(
             && style.position() == Position::Relative
             && logical_padding.block_end == 0.0
             && logical_border.block_end == 0.0
-            && size_logical.block_size.is_none()
             && !raw_size_logical.block_size.is_intrinsic(),
     };
     let has_styles_preventing_being_collapsed_through = !style.is_block()
@@ -771,13 +770,17 @@ fn compute_inner(
         LogicalSize { inline_size: container_outer_inline_size, block_size: container_outer_block_size };
     let final_outer_size = writing_mode.to_physical(final_logical_size);
 
-    // CSS2 §8.3.1: a block-end margin collapses with the last in-flow
-    // child's block-end margin only while the automatic block size is not
-    // being held open by its minimum.
-    let block_size_constrained_by_minimum =
-        matches!(block_size_constraints.min, Some(size) if size > 0.0 && size >= container_outer_block_size);
-    let own_block_end_margin_collapses_with_children =
-        own_margins_collapse_with_children.end && !block_size_constrained_by_minimum;
+    // Keep the trailing margin strut separate while measuring intrinsic block
+    // size, then decide whether it may escape only after the used block size is
+    // known. A specified size, a preferred-ratio transfer, or a min/max clamp
+    // captures the strut instead of turning it into either intrinsic content
+    // or an external margin. This mirrors Blink's FinishLayout ordering:
+    // compute intrinsic size, compute the final fragment size, then clear the
+    // end margin strut when the initial size was definite or the final size
+    // differs from the intrinsic size.
+    let own_block_end_margin_collapses_with_children = own_margins_collapse_with_children.end
+        && definite_logical_size.block_size.is_none()
+        && container_outer_block_size == intrinsic_outer_block_size;
 
     // Apply `align-content` to in-flow items if requested. Pending fragments
     // remain logical until this group offset and the final outer size are known.

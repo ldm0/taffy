@@ -192,6 +192,67 @@ fn automatic_minimum_floors_an_intrinsic_ratio_block_size_by_content() {
 }
 
 #[test]
+fn ratio_resolved_block_size_keeps_collapsed_child_margins_out_of_its_intrinsic_size() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+
+    let first = tree
+        .new_leaf(Style {
+            size: Size::from_lengths(100.0, 25.0),
+            margin: Rect { bottom: length(-200.0), ..Rect::zero() },
+            ..Default::default()
+        })
+        .unwrap();
+    let empty = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: length(100.0), height: auto() },
+            margin: Rect { top: length(50.0), bottom: length(200.0), ..Rect::zero() },
+            ..Default::default()
+        })
+        .unwrap();
+    let ratio = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: length(100.0), height: auto() },
+                aspect_ratio: Some(2.0),
+                ..Default::default()
+            },
+            &[empty],
+        )
+        .unwrap();
+    let last = tree.new_leaf(Style { size: Size::from_lengths(100.0, 25.0), ..Default::default() }).unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: length(100.0), height: auto() },
+                ..Default::default()
+            },
+            &[first, ratio, last],
+        )
+        .unwrap();
+
+    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    let geometry = [root, first, ratio, empty, last].map(|node| {
+        let layout = tree.layout(node).unwrap();
+        [layout.location.x, layout.location.y, layout.size.width, layout.size.height]
+    });
+    assert_eq!(
+        geometry,
+        [
+            [0.0, 0.0, 100.0, 100.0],
+            [0.0, 0.0, 100.0, 25.0],
+            [0.0, 25.0, 100.0, 50.0],
+            [0.0, 0.0, 100.0, 0.0],
+            [0.0, 75.0, 100.0, 25.0],
+        ]
+    );
+}
+
+#[test]
 fn automatic_minimum_is_capped_by_the_authored_maximum() {
     for display in [Display::Block, Display::Flex, Display::Grid] {
         for preferred in [Dimension::auto(), Dimension::min_content()] {
