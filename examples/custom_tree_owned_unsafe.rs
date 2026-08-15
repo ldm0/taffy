@@ -193,6 +193,14 @@ impl CacheTree for StatelessLayoutTree {
         unsafe { node_from_id_mut(node_id) }.cache.store(inputs, layout_output)
     }
 
+    fn cache_get_size(&self, node_id: NodeId, inputs: &taffy::LayoutInput) -> Option<taffy::IntrinsicSizeResult> {
+        unsafe { node_from_id(node_id) }.cache.get_size(inputs)
+    }
+
+    fn cache_store_size(&mut self, node_id: NodeId, inputs: &taffy::LayoutInput, result: taffy::IntrinsicSizeResult) {
+        unsafe { node_from_id_mut(node_id) }.cache.store_size(inputs, result)
+    }
+
     fn cache_clear(&mut self, node_id: NodeId) {
         unsafe { node_from_id_mut(node_id) }.cache.clear();
     }

@@ -703,3 +703,33 @@ fn absolute_intrinsic_block_size_uses_ratio_and_automatic_minimum_semantics() {
         assert_eq!(automatic_size.size.height, 90.0, "{display:?} automatic size");
     }
 }
+
+#[test]
+fn grid_item_intrinsic_block_size_collapses_internal_empty_block_margins() {
+    let mut tree = new_test_tree();
+    let margin = Rect { top: length(50.0), bottom: length(50.0), ..Rect::zero() };
+    let inner = tree.new_leaf(Style { display: Display::Block, margin, ..Default::default() }).unwrap();
+    let outer = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: length(100.0), height: auto() },
+                margin,
+                ..Default::default()
+            },
+            &[inner],
+        )
+        .unwrap();
+    let cell = tree.new_with_children(Style { display: Display::Block, ..Default::default() }, &[outer]).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size { width: length(100.0), height: auto() }, ..Default::default() },
+            &[cell],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size.height, 50.0);
+    assert_eq!(tree.layout(cell).unwrap().size.height, 50.0);
+}

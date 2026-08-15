@@ -718,13 +718,14 @@ impl IntrinsicSizeResult {
 pub struct LayoutOutput {
     /// The size of the node
     pub size: Size<f32>,
-    /// Transitional transport for the combined low-level dispatcher. Public
-    /// layout consumers exchange this state through [`IntrinsicSizeResult`],
-    /// not through `LayoutOutput`.
+    /// Intrinsic-measurement dependency state produced when a formatting
+    /// algorithm runs in `ComputeSize` mode. It is projected through
+    /// [`IntrinsicSizeResult`] at the operation boundary and is not part of a
+    /// final layout result.
     depends_on_block_constraints: bool,
-    /// Transitional transport for operation-local aspect-ratio provenance.
-    /// This flag is projected through [`IntrinsicSizeResult`] and is never
-    /// exposed as part of the public layout result protocol.
+    /// Operation-local aspect-ratio provenance produced in `ComputeSize`
+    /// mode. It follows the same projection boundary as
+    /// `depends_on_block_constraints`.
     applied_aspect_ratio: bool,
     #[cfg(feature = "content_size")]
     /// The size of the content within the node
@@ -826,15 +827,6 @@ impl LayoutOutput {
     pub(crate) fn with_applied_aspect_ratio(mut self, applied: bool) -> Self {
         self.applied_aspect_ratio |= applied;
         self
-    }
-
-    /// Construct an algorithm result from a dedicated intrinsic sizing result.
-    #[inline(always)]
-    pub(crate) fn from_intrinsic_size_result(result: IntrinsicSizeResult) -> Self {
-        let mut output = Self::from_outer_size(result.size);
-        output.depends_on_block_constraints = result.depends_on_block_constraints;
-        output.applied_aspect_ratio = result.applied_aspect_ratio;
-        output
     }
 
     /// Project the measurement portion of this algorithm result.

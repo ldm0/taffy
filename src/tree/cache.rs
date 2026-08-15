@@ -161,10 +161,10 @@ pub(crate) struct CacheEntry<T> {
     content: T,
 }
 
-/// The subset of a measurement result retained by the size cache.
+/// The intrinsic-sizing state retained by the size cache.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-struct CachedMeasurement {
+struct CachedIntrinsicSize {
     /// Measured outer size.
     size: Size<f32>,
     /// Whether the result must be keyed by parent block-size.
@@ -174,18 +174,28 @@ struct CachedMeasurement {
     applied_aspect_ratio: bool,
 }
 
-/// A cache for caching the results of a sizing a Grid Item or Flexbox Item
+/// Per-node caches for final layout, rich measurement summaries, and
+/// intrinsic-sizing results.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Cache {
     /// The cache entry for the node's final layout
     final_layout_entry: Option<CacheEntry<LayoutOutput>>,
+    /// Full algorithm summaries produced while an ancestor is measuring.
+    ///
+    /// Block layout consumes collapsible-margin and baseline state from these
+    /// summaries even when the outer operation only requests a size. Keep a
+    /// small exact-key cache beside, rather than projected into, the intrinsic
+    /// size cache so a size-only hit can never erase that state.
+    layout_measure_entries: [Option<CacheEntry<LayoutOutput>>; CACHE_WAYS],
+    /// Next full measurement summary replaced when both ways are occupied.
+    next_layout_measure_entry: u8,
     /// The cache entries for the node's preliminary size measurements
-    measure_entries: [[Option<CacheEntry<CachedMeasurement>>; CACHE_WAYS]; CACHE_SIZE],
+    measure_entries: [[Option<CacheEntry<CachedIntrinsicSize>>; CACHE_WAYS]; CACHE_SIZE],
     /// Next way replaced in each measurement-cache set.
     next_measure_entry: [u8; CACHE_SIZE],
     /// Bounded cache for measurements that must be keyed by parent block-size.
-    block_constraint_entries: [Option<CacheEntry<CachedMeasurement>>; BLOCK_CONSTRAINT_CACHE_SIZE],
+    block_constraint_entries: [Option<CacheEntry<CachedIntrinsicSize>>; BLOCK_CONSTRAINT_CACHE_SIZE],
     /// Next entry replaced when the block-constraint cache is full.
     next_block_constraint_entry: u8,
     /// Tracks if all cache entries are empty
@@ -203,6 +213,8 @@ impl Cache {
     pub const fn new() -> Self {
         Self {
             final_layout_entry: None,
+            layout_measure_entries: [None; CACHE_WAYS],
+            next_layout_measure_entry: 0,
             measure_entries: [[None; CACHE_WAYS]; CACHE_SIZE],
             next_measure_entry: [0; CACHE_SIZE],
             block_constraint_entries: [None; BLOCK_CONSTRAINT_CACHE_SIZE],
@@ -292,7 +304,7 @@ impl Cache {
         match input.run_mode {
             RunMode::PerformLayout => self.final_layout_entry.filter(|entry| entry.key == key).map(|e| e.content),
             RunMode::ComputeSize => {
-                self.get_size_with_environment(input, environment).map(LayoutOutput::from_intrinsic_size_result)
+                self.layout_measure_entries.iter().flatten().find(|entry| entry.key == key).map(|entry| entry.content)
             }
             RunMode::PerformHiddenLayout => None,
         }
@@ -335,6 +347,13 @@ impl Cache {
             }
         }
 
+        // A rich measurement summary is also a valid intrinsic result for the
+        // exact same constraint space. The inverse is deliberately false:
+        // size-only entries do not contain margin-collapse or baseline state.
+        if let Some(entry) = self.layout_measure_entries.iter().flatten().find(|entry| entry.key == key) {
+            return Some(entry.content.into_intrinsic_size_result());
+        }
+
         None
     }
 
@@ -357,7 +376,23 @@ impl Cache {
                 self.final_layout_entry = Some(CacheEntry { key, content: layout_output })
             }
             RunMode::ComputeSize => {
-                self.store_size_with_environment(input, layout_output.into_intrinsic_size_result(), environment);
+                self.is_empty = false;
+                let entry = CacheEntry { key, content: layout_output };
+                if let Some(existing_index) = self
+                    .layout_measure_entries
+                    .iter()
+                    .position(|existing| existing.is_some_and(|existing| existing.key == key))
+                {
+                    self.layout_measure_entries[existing_index] = Some(entry);
+                    return;
+                }
+                let cache_slot = self
+                    .layout_measure_entries
+                    .iter()
+                    .position(Option::is_none)
+                    .unwrap_or(self.next_layout_measure_entry as usize);
+                self.layout_measure_entries[cache_slot] = Some(entry);
+                self.next_layout_measure_entry = ((cache_slot + 1) % CACHE_WAYS) as u8;
             }
             RunMode::PerformHiddenLayout => {}
         }
@@ -381,7 +416,7 @@ impl Cache {
         let key = CacheKey::new(input, environment);
         let entry = CacheEntry {
             key,
-            content: CachedMeasurement {
+            content: CachedIntrinsicSize {
                 size: result.size,
                 depends_on_block_constraints: result.depends_on_block_constraints,
                 applied_aspect_ratio: result.applied_aspect_ratio,
@@ -426,6 +461,8 @@ impl Cache {
         }
         self.is_empty = true;
         self.final_layout_entry = None;
+        self.layout_measure_entries = [None; CACHE_WAYS];
+        self.next_layout_measure_entry = 0;
         self.measure_entries = [[None; CACHE_WAYS]; CACHE_SIZE];
         self.next_measure_entry = [0; CACHE_SIZE];
         self.block_constraint_entries = [None; BLOCK_CONSTRAINT_CACHE_SIZE];
@@ -436,6 +473,7 @@ impl Cache {
     /// Returns true if all cache entries are None, else false
     pub fn is_empty(&self) -> bool {
         self.final_layout_entry.is_none()
+            && !self.layout_measure_entries.iter().any(Option::is_some)
             && !self.measure_entries.iter().flatten().any(Option::is_some)
             && !self.block_constraint_entries.iter().any(|entry| entry.is_some())
     }
@@ -452,11 +490,11 @@ pub enum ClearState {
 #[cfg(test)]
 mod tests {
     use super::Cache;
-    use crate::geometry::{Line, Size, WritingMode};
+    use crate::geometry::{Line, Point, Size, WritingMode};
     use crate::style::AvailableSpace;
     use crate::tree::{
-        AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RequestedAxis, RunMode,
-        SizingMode, SizingPurpose,
+        AutoSizeBehavior, CollapsibleMarginSet, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput,
+        RequestedAxis, RunMode, SizingMode, SizingPurpose,
     };
 
     fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
@@ -500,6 +538,36 @@ mod tests {
         cache.store_size(&input, expected);
 
         assert_eq!(cache.get_size(&input), Some(expected));
+    }
+
+    #[test]
+    fn size_only_entries_cannot_satisfy_rich_layout_measurements() {
+        let mut cache = Cache::new();
+        let input = input(SizingPurpose::IntrinsicContribution);
+        let expected = IntrinsicSizeResult::from_size(Size { width: 60.0, height: 30.0 });
+
+        cache.store_size(&input, expected);
+
+        assert_eq!(cache.get_size(&input), Some(expected));
+        assert!(cache.get(&input).is_none());
+    }
+
+    #[test]
+    fn rich_measurements_preserve_margin_collapse_state_beside_size_entries() {
+        let mut cache = Cache::new();
+        let input = input(SizingPurpose::Layout);
+        let mut expected = LayoutOutput::from_outer_size(Size { width: 60.0, height: 30.0 });
+        expected.first_baselines = Point { x: Some(7.0), y: Some(11.0) };
+        expected.last_baselines = Point { x: Some(17.0), y: Some(23.0) };
+        expected.top_margin = CollapsibleMarginSet::from_margin(12.0);
+        expected.bottom_margin = CollapsibleMarginSet::from_margin(18.0);
+        expected.margins_can_collapse_through = true;
+
+        cache.store(&input, expected);
+        cache.store_size(&input, expected.into_intrinsic_size_result());
+
+        assert_eq!(cache.get(&input), Some(expected));
+        assert_eq!(cache.get_size(&input), Some(expected.into_intrinsic_size_result()));
     }
 
     #[test]
@@ -606,16 +674,16 @@ mod tests {
     }
 
     #[test]
-    fn independent_measurements_ignore_parent_block_constraints() {
+    fn independent_intrinsic_sizes_ignore_parent_block_constraints() {
         let mut cache = Cache::new();
         let mut initial = input(SizingPurpose::IntrinsicContribution);
         initial.parent_size = Size { width: Some(200.0), height: Some(100.0) };
-        cache.store(&initial, LayoutOutput::from_outer_size(Size { width: 80.0, height: 20.0 }));
+        cache.store_size(&initial, IntrinsicSizeResult::from_size(Size { width: 80.0, height: 20.0 }));
 
         let mut changed_block_constraint = initial;
         changed_block_constraint.parent_size.height = Some(50.0);
 
-        assert_eq!(cache.get(&changed_block_constraint).unwrap().size.width, 80.0);
+        assert_eq!(cache.get_size(&changed_block_constraint).unwrap().size.width, 80.0);
     }
 
     #[test]
@@ -626,16 +694,20 @@ mod tests {
 
         for height in [100.0, 50.0] {
             input.parent_size.height = Some(height);
-            cache.store(
+            cache.store_size(
                 &input,
-                LayoutOutput::from_outer_size(Size { width: height, height }).with_block_constraint_dependency(true),
+                IntrinsicSizeResult {
+                    size: Size { width: height, height },
+                    depends_on_block_constraints: true,
+                    applied_aspect_ratio: false,
+                },
             );
         }
 
         input.parent_size.height = Some(100.0);
-        assert_eq!(cache.get(&input).unwrap().size.width, 100.0);
+        assert_eq!(cache.get_size(&input).unwrap().size.width, 100.0);
         input.parent_size.height = Some(50.0);
-        assert_eq!(cache.get(&input).unwrap().size.width, 50.0);
+        assert_eq!(cache.get_size(&input).unwrap().size.width, 50.0);
     }
 
     #[test]
@@ -644,15 +716,15 @@ mod tests {
         let mut initial = input(SizingPurpose::IntrinsicContribution);
         initial.parent_writing_mode = WritingMode::VerticalRl;
         initial.parent_size = Size { width: Some(100.0), height: Some(200.0) };
-        cache.store(&initial, LayoutOutput::from_outer_size(Size { width: 80.0, height: 20.0 }));
+        cache.store_size(&initial, IntrinsicSizeResult::from_size(Size { width: 80.0, height: 20.0 }));
 
         let mut changed_block_constraint = initial;
         changed_block_constraint.parent_size.width = Some(50.0);
-        assert_eq!(cache.get(&changed_block_constraint).unwrap().size.width, 80.0);
+        assert_eq!(cache.get_size(&changed_block_constraint).unwrap().size.width, 80.0);
 
         let mut changed_inline_constraint = initial;
         changed_inline_constraint.parent_size.height = Some(150.0);
-        assert!(cache.get(&changed_inline_constraint).is_none());
+        assert!(cache.get_size(&changed_inline_constraint).is_none());
     }
 
     #[test]

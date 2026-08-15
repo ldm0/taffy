@@ -362,9 +362,14 @@ pub trait CacheTree {
     }
 
     /// Store an intrinsic size result in the node's measurement cache.
-    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.cache_store(node_id, input, LayoutOutput::from_intrinsic_size_result(result));
-    }
+    ///
+    /// The default deliberately does not store the result. An intrinsic size
+    /// cannot be expanded into a valid [`LayoutOutput`]: margin-collapse and
+    /// baseline state would be missing, and a later layout-summary lookup
+    /// could observe the lossy entry. Implementations that cache intrinsic
+    /// sizes should keep an operation-specific cache and override both size
+    /// methods.
+    fn cache_store_size(&mut self, _node_id: NodeId, _input: &LayoutInput, _result: IntrinsicSizeResult) {}
 
     /// Clear all cache entries for the node
     fn cache_clear(&mut self, node_id: NodeId);
