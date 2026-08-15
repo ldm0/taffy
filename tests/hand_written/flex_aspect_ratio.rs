@@ -121,3 +121,206 @@ fn direct_cross_size_wins_after_main_axis_flexing() {
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 30.0 });
     assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 30.0 });
 }
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-054.html.
+///
+/// A preferred cross size transferred through `aspect-ratio` participates in
+/// the content-based automatic minimum of a non-replaced flex item. It must
+/// therefore keep the item from shrinking into a zero-width container.
+#[test]
+fn non_replaced_automatic_minimum_includes_the_transferred_size_suggestion() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::length(100.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn transferred_suggestion_sets_the_automatic_minimum_when_the_main_size_is_auto() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn column_automatic_minimum_transfers_the_preferred_cross_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::length(100.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size { width: Dimension::length(100.0), height: Dimension::length(0.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn explicit_zero_minimum_disables_the_flex_content_based_automatic_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::length(100.0) },
+            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 0.0, height: 100.0 });
+}
+
+#[test]
+fn non_replaced_automatic_minimum_uses_the_larger_content_and_transferred_suggestion() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(150.0), height: Dimension::length(10.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 150.0, height: 100.0 });
+}
+
+#[test]
+fn replaced_automatic_minimum_uses_the_smaller_content_and_transferred_suggestion() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                item_is_replaced: true,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(150.0, 150.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn definite_main_maximum_caps_the_flex_content_based_automatic_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::length(100.0) },
+            max_size: Size { width: Dimension::length(80.0), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 80.0, height: 100.0 });
+}
