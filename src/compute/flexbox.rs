@@ -26,14 +26,17 @@ use crate::{BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
 use super::common::absolute::{layout_out_of_flow_item, OutOfFlowItem};
 use super::common::alignment::apply_alignment_fallback;
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::aspect_ratio::{
+    resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
+};
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
     fit_content_inline_size_with_metadata, intrinsic_content_size_from_initial_geometry,
-    measure_aspect_ratio_automatic_minimum, resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size,
-    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue,
-    NodeSizeConstraintInput, ResolvedNodeSizing,
+    measure_aspect_ratio_automatic_minimum, resolve_content_based_block_size_constraints,
+    resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput,
+    ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -252,6 +255,14 @@ struct FlexItem {
     min_size_with_transfer: Size<Option<f32>>,
     /// The maximum allowable size when aspect-ratio transfers participate.
     max_size_with_transfer: Size<Option<f32>>,
+    /// Shared logical block-size resolver used once flex sizing establishes
+    /// the item's final inline-axis geometry.
+    content_based_block_size: ContentBasedBlockSize,
+    /// Logical block-axis sources with preferred-ratio transfers disabled.
+    ///
+    /// Flex uses these constraints while stretching the final cross size,
+    /// whereas the hypothetical cross size also consumes transferred limits.
+    block_axis_constraints_without_transfer: ResolvedAxisConstraints,
     /// The used aspect ratio and the CSS sizing box that it constrains.
     aspect_ratio: ResolvedAspectRatio,
     /// Whether this item's inline axis is the container's flex main axis.
@@ -1383,6 +1394,21 @@ fn generate_anonymous_flex_items(
                 constraints_without_transfer.apply_automatic_minimum(axis, automatic_minimum.value);
                 depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
             }
+            let content_based_block_size = ContentBasedBlockSize::new(
+                BlockSizeProperties::new(
+                    raw_logical_size.block_size,
+                    raw_logical_min_size.block_size,
+                    raw_logical_max_size.block_size,
+                ),
+                aspect_ratio,
+                pb_sum,
+                AutoSizeBehavior::FitContent.is_content_based(aspect_ratio.ratio.is_some()),
+                overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+                None,
+            )
+            .with_resolved_constraints(constraints_with_transfer.block_axis_constraints(child_writing_mode));
+            let block_axis_constraints_without_transfer =
+                constraints_without_transfer.block_axis_constraints(child_writing_mode);
             size = constraints_with_transfer.size;
             let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
             let specified_size_suggestion = definite_preferred_size.main(constants.dir);
@@ -1411,6 +1437,8 @@ fn generate_anonymous_flex_items(
                 max_size: constraints_without_transfer.max_size,
                 min_size_with_transfer: constraints_with_transfer.min_size,
                 max_size_with_transfer: constraints_with_transfer.max_size,
+                content_based_block_size,
+                block_axis_constraints_without_transfer,
                 aspect_ratio,
                 main_axis_is_inline,
                 box_sizing,
@@ -2678,11 +2706,6 @@ fn determine_hypothetical_cross_size(
 
         let child_known_main = constants.container_size.main(constants.dir).into();
 
-        // Sizes transferred through the aspect ratio clamp the hypothetical cross size
-        // https://github.com/w3c/csswg-drafts/issues/10997
-        let transferred_min_cross = child.min_size_with_transfer.cross(constants.dir);
-        let transferred_max_cross = child.max_size_with_transfer.cross(constants.dir);
-
         // The flexed main size is a fixed input to hypothetical cross-size
         // layout. Content-size measurement intentionally ignores authored size
         // properties, so transfer that fixed input through the preferred ratio
@@ -2693,13 +2716,83 @@ fn determine_hypothetical_cross_size(
             .cross(constants.dir);
         child.cross_size_is_definite =
             child.preferred_cross_size_is_definite || (child.main_size_is_definite && ratio_cross.is_some());
-        let preferred_cross = if child.preferred_size_aspect_ratio_applied.cross(constants.dir) {
+        let initial_preferred_cross = if child.preferred_size_aspect_ratio_applied.cross(constants.dir) {
             ratio_cross
         } else {
             child.size.cross(constants.dir).or(ratio_cross)
         }
         .maybe_max(padding_border_sum);
 
+        let initial_available_cross = available_space
+            .cross(constants.dir)
+            .maybe_clamp(
+                child.min_size_with_transfer.cross(constants.dir),
+                child.max_size_with_transfer.cross(constants.dir),
+            )
+            .maybe_max(padding_border_sum);
+        let mut preferred_size = Size::NONE
+            .with_main(constants.dir, Some(child.target_size.main(constants.dir)))
+            .with_cross(constants.dir, initial_preferred_cross);
+
+        // The flexed main size may establish the item's logical inline size
+        // only after flexible lengths have been resolved. Complete logical
+        // block sizing at that boundary so preferred-ratio transfer and its
+        // content-based automatic minimum follow the same source ordering as
+        // block, grid and out-of-flow layout.
+        let child_writing_mode = tree.get_writing_mode(child.node);
+        if child_writing_mode.block_axis() == constants.dir.cross_axis()
+            && child.content_based_block_size.requires_resolution()
+        {
+            let child_available_space = Size::MAX_CONTENT
+                .with_main(constants.dir, child_known_main)
+                .with_cross(constants.dir, initial_available_cross);
+            let measurement_input = ChildLayoutInput::new(
+                preferred_size,
+                constants.node_percentage_size,
+                constants.writing_mode,
+                child_available_space,
+                SizingMode::ContentSize,
+                Line::FALSE,
+            )
+            .with_definite_dimensions(flex_item_definite_dimensions(child, preferred_size, constants))
+            .with_block_auto_behavior(AutoSizeBehavior::FitContent);
+            let content_constraints = resolve_content_based_block_size_constraints(
+                tree,
+                child.node,
+                measurement_input,
+                child.content_based_block_size,
+            );
+
+            let mut min_size_with_transfer = child.min_size_with_transfer;
+            let mut max_size_with_transfer = child.max_size_with_transfer;
+            content_constraints.apply_to_block_axis(
+                child_writing_mode,
+                child.content_based_block_size.resolved_constraints(),
+                padding_border,
+                &mut preferred_size,
+                &mut min_size_with_transfer,
+                &mut max_size_with_transfer,
+            );
+            child.min_size_with_transfer = min_size_with_transfer;
+            child.max_size_with_transfer = max_size_with_transfer;
+
+            let mut size_without_transfer = preferred_size;
+            content_constraints.apply_to_block_axis(
+                child_writing_mode,
+                child.block_axis_constraints_without_transfer,
+                padding_border,
+                &mut size_without_transfer,
+                &mut child.min_size,
+                &mut child.max_size,
+            );
+            child.depends_on_block_constraints |= content_constraints.depends_on_block_constraints;
+        }
+
+        // Sizes transferred through the aspect ratio clamp the hypothetical cross size
+        // https://github.com/w3c/csswg-drafts/issues/10997
+        let transferred_min_cross = child.min_size_with_transfer.cross(constants.dir);
+        let transferred_max_cross = child.max_size_with_transfer.cross(constants.dir);
+        let preferred_cross = preferred_size.cross(constants.dir);
         let child_available_cross = available_space
             .cross(constants.dir)
             .maybe_clamp(transferred_min_cross, transferred_max_cross)

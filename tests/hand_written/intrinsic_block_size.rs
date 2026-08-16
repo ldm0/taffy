@@ -245,6 +245,79 @@ fn automatic_minimum_floors_an_intrinsic_ratio_block_size_by_content() {
 }
 
 #[test]
+fn measured_leaf_uses_content_for_the_ratio_automatic_block_minimum() {
+    for parent_display in [Display::Block, Display::Flex, Display::Grid] {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let leaf = tree
+            .new_leaf_with_context(
+                Style {
+                    display: Display::Block,
+                    max_size: Size { width: Dimension::length(40.0), height: Dimension::auto() },
+                    aspect_ratio: Some(2.0),
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                TestNodeContext::fixed(40.0, 60.0),
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: parent_display,
+                    size: Size::from_lengths(100.0, 100.0),
+                    align_items: Some(AlignItems::START),
+                    justify_items: Some(AlignItems::START),
+                    ..Default::default()
+                },
+                &[leaf],
+            )
+            .unwrap();
+
+        tree.compute_layout_with_measure(
+            root,
+            Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(100.0) },
+            test_measure_function,
+        )
+        .unwrap();
+
+        assert_eq!(tree.layout(leaf).unwrap().size, Size { width: 40.0, height: 60.0 }, "parent={parent_display:?}",);
+    }
+}
+
+#[test]
+fn vertical_grid_item_resolves_fit_content_inline_size_before_ratio_and_implicit_stretch() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let leaf = tree
+        .new_leaf_with_context(
+            Style {
+                max_size: Size { width: Dimension::length(40.0), height: Dimension::auto() },
+                aspect_ratio: Some(2.0),
+                ..Default::default()
+            },
+            TestNodeContext::fixed(60.0, 20.0),
+        )
+        .unwrap();
+    tree.set_writing_mode(leaf, WritingMode::VerticalLr).unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size::from_lengths(100.0, 100.0), ..Default::default() },
+            &[leaf],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(100.0) },
+        test_measure_function,
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(leaf).unwrap().size, Size { width: 40.0, height: 20.0 });
+}
+
+#[test]
 fn ratio_resolved_block_size_keeps_collapsed_child_margins_out_of_its_intrinsic_size() {
     let mut tree = new_test_tree();
     tree.disable_rounding();

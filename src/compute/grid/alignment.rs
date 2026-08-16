@@ -6,8 +6,8 @@ use crate::compute::common::alignment::{
 use crate::compute::common::aspect_ratio::apply_preferred_aspect_ratio;
 use crate::compute::common::baseline::{logical_block_baseline, BaselineGroup};
 use crate::compute::common::intrinsic_size::{
-    resolve_content_based_block_size_constraints, resolve_node_size_constraints, BlockSizeProperties,
-    ContentBasedBlockSize, NodeSizeConstraintInput,
+    fit_content_inline_size, resolve_content_based_block_size_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
 };
 use crate::geometry::{
     AbsoluteAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point,
@@ -294,14 +294,42 @@ pub(super) fn align_and_position_item(
     );
     let resolved = node_sizing.constraints;
     let block_axis_constraints = resolved.block_axis_constraints(item_writing_mode);
-    let inherent_size = resolved.size;
-    let mut min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
-    let mut max_size = resolved.max_size;
-    let mut definite_axes = node_sizing.definite_size.map(|size| size.is_some());
-
     let raw_logical_size = item_writing_mode.to_logical(raw_size);
     let raw_logical_min_size = item_writing_mode.to_logical(raw_min_size);
     let raw_logical_max_size = item_writing_mode.to_logical(raw_max_size);
+    let mut inherent_size = resolved.size;
+    let item_inline_axis = item_writing_mode.inline_axis();
+    if inherent_size.get_abs(item_inline_axis).is_none()
+        && raw_logical_size.inline_size.is_auto()
+        && inline_auto_behavior.is_content_based(aspect_ratio.ratio.is_some())
+    {
+        let fitted_inline_size = fit_content_inline_size(
+            tree,
+            node,
+            ChildLayoutInput::new(
+                inherent_size,
+                grid_area_size.map(Some),
+                parent_writing_mode,
+                item_available_size.map(AvailableSpace::Definite),
+                SizingMode::ContentSize,
+                Line::FALSE,
+            )
+            .with_definite_dimensions(node_sizing.definite_size)
+            .with_inline_auto_behavior(inline_auto_behavior)
+            .with_block_auto_behavior(block_auto_behavior),
+            item_available_size.get_abs(item_inline_axis),
+            item_inline_axis,
+        )
+        .maybe_clamp(resolved.min_size.get_abs(item_inline_axis), resolved.max_size.get_abs(item_inline_axis))
+        .max(padding_border_size.get_abs(item_inline_axis));
+        match item_inline_axis {
+            AbsoluteAxis::Horizontal => inherent_size.width = Some(fitted_inline_size),
+            AbsoluteAxis::Vertical => inherent_size.height = Some(fitted_inline_size),
+        }
+    }
+    let mut min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
+    let mut max_size = resolved.max_size;
+    let mut definite_axes = node_sizing.definite_size.map(|size| size.is_some());
 
     let mut size_before_ratio = inherent_size;
     if size_before_ratio.width.is_none()

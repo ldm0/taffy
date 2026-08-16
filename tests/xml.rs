@@ -3,8 +3,9 @@ use std::{fmt::Debug, io::Write, path::PathBuf, str::FromStr};
 use taffy::{
     prelude::TaffyZero as _, AvailableSpace, CheapCloneStr, Dimension, GridAutoTracks, GridTemplateComponent,
     GridTemplateTracks, LengthPercentage, LengthPercentageAuto, Line, NodeId, Point, PrintTree, Rect, Size, TaffyTree,
+    WritingMode as LayoutWritingMode,
 };
-use taffy_test_helpers::{test_measure_function, TestNodeContext};
+use taffy_test_helpers::{test_measure_function, TestNodeContext, WritingMode as TextWritingMode};
 
 #[path = "./xml/mod.rs"]
 mod xml;
@@ -153,8 +154,12 @@ fn construct_tree(
     tree: &mut TaffyTree<TestNodeContext>,
     parent: Option<taffy::NodeId>,
 ) -> OutputNode {
+    let inherited_writing_mode =
+        parent.map(|parent| tree.writing_mode(parent).expect("parent writing mode should exist")).unwrap_or_default();
+    let writing_mode = parse_layout_writing_mode(input.attribute("writing-mode"), inherited_writing_mode);
     if input.first_element_child().is_some() {
         let tnode = tree.new_with_children(build_style(input), &[]).unwrap();
+        tree.set_writing_mode(tnode, writing_mode).unwrap();
         let mut expected = build_expectations(expected_x, tnode);
 
         if let Some(parent) = parent {
@@ -171,13 +176,19 @@ fn construct_tree(
         expected
     } else {
         let text_content = input.text().map(|text| text.trim());
-        // let aspect_ratio = input.attribute("aspect-ratio");
-        let writing_mode = parse_or_default(input.attribute("writing-mode"));
 
         let tnode = tree.new_leaf(build_style(input)).unwrap();
+        tree.set_writing_mode(tnode, writing_mode).unwrap();
         tree.set_node_context(
             tnode,
-            text_content.map(|text_content| TestNodeContext::ahem_text(text_content.to_string(), writing_mode)),
+            text_content.map(|text_content| {
+                let text_writing_mode = if writing_mode.inline_axis() == taffy::AbsoluteAxis::Horizontal {
+                    TextWritingMode::Horizontal
+                } else {
+                    TextWritingMode::Vertical
+                };
+                TestNodeContext::ahem_text(text_content.to_string(), text_writing_mode)
+            }),
         )
         .unwrap();
 
@@ -186,6 +197,18 @@ fn construct_tree(
         }
 
         build_expectations(expected_x, tnode)
+    }
+}
+
+fn parse_layout_writing_mode(value: Option<&str>, inherited: LayoutWritingMode) -> LayoutWritingMode {
+    match value {
+        None => inherited,
+        Some("horizontal-tb") => LayoutWritingMode::HorizontalTb,
+        Some("vertical-lr") => LayoutWritingMode::VerticalLr,
+        Some("vertical-rl") => LayoutWritingMode::VerticalRl,
+        Some("sideways-lr") => LayoutWritingMode::SidewaysLr,
+        Some("sideways-rl") => LayoutWritingMode::SidewaysRl,
+        Some(value) => panic!("unsupported writing-mode value: {value}"),
     }
 }
 
