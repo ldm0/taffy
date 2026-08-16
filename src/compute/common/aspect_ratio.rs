@@ -2,6 +2,8 @@
 
 use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, MaybeMath, ResolvedAspectRatio, Size, WritingMode};
 
+use super::box_sizing::floor_border_box_size;
+
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ResolvedSizeConstraints {
@@ -268,10 +270,10 @@ pub(crate) struct SizeConstraintInput {
 /// `max_size` and then using the generic "minimum wins" clamp.
 pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSizeConstraints {
     let SizeConstraintInput {
-        size,
+        mut size,
         preferred_size_is_indefinite,
-        min_size,
-        max_size,
+        mut min_size,
+        mut max_size,
         size_is_auto,
         writing_mode,
         inline_auto_behavior,
@@ -280,6 +282,15 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         aspect_ratio,
         padding_border,
     } = input;
+
+    // This constraint space stores border-box dimensions. Establish their
+    // minimum physical box before ratio transfer so an authored preferred or
+    // limiting size smaller than padding+border cannot become a negative
+    // ratio basis. Blink performs this normalization while resolving each CSS
+    // length, before its aspect-ratio sizing helpers consume the value.
+    size = floor_border_box_size(size, padding_border);
+    min_size = floor_border_box_size(min_size, padding_border);
+    max_size = floor_border_box_size(max_size, padding_border);
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
         TransferredSizesMode::Normal => (
             transferred_constraints(min_size, preferred_size_is_indefinite, aspect_ratio, padding_border),
@@ -511,6 +522,25 @@ mod tests {
 
         assert_eq!(implicit_block, Size { width: Some(100.0), height: Some(50.0) });
         assert_eq!(explicit_block, Size { width: Some(100.0), height: None });
+    }
+
+    #[test]
+    fn ratio_transfer_uses_the_minimum_border_box_as_its_source() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(20.0) },
+            preferred_size_is_indefinite: Size { width: true, height: false },
+            min_size: Size::NONE,
+            max_size: Size::NONE,
+            size_is_auto: Size { width: true, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size { width: 40.0, height: 40.0 },
+        });
+
+        assert_eq!(resolved.size, Size { width: Some(80.0), height: Some(40.0) });
     }
 
     #[test]

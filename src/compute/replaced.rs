@@ -13,6 +13,8 @@ use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::WritingMode;
 
+use super::common::box_sizing::{authored_size_to_content_box, border_box_to_content_box};
+
 /// Natural content metrics supplied by the embedding engine.
 ///
 /// Natural dimensions remain optional even after the resource has a concrete
@@ -52,10 +54,6 @@ pub struct ReplacedSizingContext {
     pub size_containment: SizeContainment,
     /// Natural dimensions and the embedding category's default object size.
     pub natural_sizing: ReplacedNaturalSizing,
-    /// Host-provided preferred-size hint used only when CSS leaves both
-    /// physical preferred axes automatic. HTML dimension attributes are one
-    /// source of such a hint.
-    pub preferred_size_hint: Size<Option<f32>>,
 }
 
 impl ReplacedSizingContext {
@@ -65,9 +63,8 @@ impl ReplacedSizingContext {
         aspect_ratio: ResolvedAspectRatio,
         size_containment: SizeContainment,
         natural_sizing: ReplacedNaturalSizing,
-        preferred_size_hint: Size<Option<f32>>,
     ) -> Self {
-        Self { writing_mode, aspect_ratio, size_containment, natural_sizing, preferred_size_hint }
+        Self { writing_mode, aspect_ratio, size_containment, natural_sizing }
     }
 }
 
@@ -108,8 +105,6 @@ pub fn compute_replaced_layout(
     let border = style.border().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let padding_border = padding + border;
     let padding_border_sum = padding_border.sum_axes();
-    let box_sizing_adjustment =
-        if style.box_sizing() == BoxSizing::BorderBox { padding_border_sum } else { Size::ZERO };
 
     let contained_content_size = Size {
         width: context
@@ -138,11 +133,7 @@ pub fn compute_replaced_layout(
         context.writing_mode,
         padding_border_sum,
     );
-    let preferred_size_hint = Size {
-        width: if context.size_containment.axes.width { None } else { context.preferred_size_hint.width },
-        height: if context.size_containment.axes.height { None } else { context.preferred_size_hint.height },
-    };
-    let content_known = known_dimensions.maybe_sub(padding_border_sum);
+    let content_known = border_box_to_content_box(known_dimensions, padding_border_sum);
 
     // During a min-content contribution, percentage preferred and maximum
     // sizes are cyclic and resolve against zero. Minimum sizes retain the
@@ -155,11 +146,22 @@ pub fn compute_replaced_layout(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
-    let mut preferred_size =
-        raw_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
-    let mut min_size = raw_min_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
-    let mut max_size =
-        raw_max_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value).maybe_sub(box_sizing_adjustment);
+    let box_sizing = style.box_sizing();
+    let mut preferred_size = authored_size_to_content_box(
+        raw_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value),
+        box_sizing,
+        padding_border_sum,
+    );
+    let mut min_size = authored_size_to_content_box(
+        raw_min_size.maybe_resolve(parent_size, &resolve_calc_value),
+        box_sizing,
+        padding_border_sum,
+    );
+    let mut max_size = authored_size_to_content_box(
+        raw_max_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value),
+        box_sizing,
+        padding_border_sum,
+    );
 
     for (raw, resolved, contained) in [
         (raw_size, &mut preferred_size, contained_content_size),
@@ -179,11 +181,7 @@ pub fn compute_replaced_layout(
     // fixed/preferred axis can determine the result through the used ratio;
     // otherwise the normalized natural size supplies the intrinsic value.
     // This is the same boundary as Blink's ReplacedSizeMode axis modes.
-    let hinted_size = Size {
-        width: if raw_size.width.is_auto() { preferred_size_hint.width } else { None },
-        height: if raw_size.height.is_auto() { preferred_size_hint.height } else { None },
-    };
-    let intrinsic_basis = content_known.or(preferred_size).or(hinted_size);
+    let intrinsic_basis = content_known.or(preferred_size);
     let intrinsic_fallback = natural_size.or_else(|| {
         context.aspect_ratio.ratio.map(|_| {
             ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
@@ -238,10 +236,12 @@ pub fn compute_replaced_layout(
     }
 
     if known_dimensions.width.is_some() || known_dimensions.height.is_some() {
-        let style_max_size = raw_max_size
-            .maybe_resolve(preferred_percentage_basis, &resolve_calc_value)
-            .maybe_sub(box_sizing_adjustment)
-            .maybe_max(min_size);
+        let style_max_size = authored_size_to_content_box(
+            raw_max_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value),
+            box_sizing,
+            padding_border_sum,
+        )
+        .maybe_max(min_size);
         let transferred = complete_replaced_size(
             apply_aspect_ratio_to_content_size(
                 content_known.maybe_clamp(min_size, style_max_size),
@@ -261,12 +261,6 @@ pub fn compute_replaced_layout(
             natural_size,
         )
         .expect("preferred replaced dimensions or natural sizing determine both axes")
-    } else if preferred_size_hint.width.is_some() || preferred_size_hint.height.is_some() {
-        complete_replaced_size(
-            apply_aspect_ratio_to_content_size(preferred_size_hint, context.aspect_ratio, padding_border_sum),
-            natural_size,
-        )
-        .expect("preferred replaced hints or natural sizing determine both axes")
     } else {
         natural_size.unwrap_or_else(|| {
             ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
@@ -528,7 +522,6 @@ mod tests {
             aspect_ratio,
             size_containment,
             ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
-            Size::NONE,
         )
     }
 
@@ -651,6 +644,97 @@ mod tests {
     }
 
     /// Regression for
+    /// <https://wpt.live/css/css-sizing/aspect-ratio/box-sizing-squashed.html>.
+    #[test]
+    fn border_box_floor_precedes_replaced_aspect_ratio_transfer() {
+        let border = Rect {
+            left: crate::LengthPercentage::length(20.0),
+            right: crate::LengthPercentage::length(20.0),
+            top: crate::LengthPercentage::length(20.0),
+            bottom: crate::LengthPercentage::length(20.0),
+        };
+        let auto = Dimension::auto;
+        let px = Dimension::length;
+        let cases = [
+            (
+                "horizontal explicit inline size",
+                2.0,
+                Size { width: px(50.0), height: auto() },
+                Size { width: auto(), height: auto() },
+                Size { width: 50.0, height: 40.0 },
+            ),
+            (
+                "horizontal explicit block size",
+                2.0,
+                Size { width: auto(), height: px(20.0) },
+                Size { width: auto(), height: auto() },
+                Size { width: 80.0, height: 40.0 },
+            ),
+            (
+                "horizontal mapped inline size with maximum",
+                2.0,
+                Size { width: px(20.0), height: auto() },
+                Size { width: px(50.0), height: auto() },
+                Size { width: 40.0, height: 40.0 },
+            ),
+            (
+                "horizontal mapped block size with maximum",
+                2.0,
+                Size { width: auto(), height: px(50.0) },
+                Size { width: auto(), height: px(20.0) },
+                Size { width: 80.0, height: 40.0 },
+            ),
+            (
+                "vertical explicit block size",
+                0.5,
+                Size { width: auto(), height: px(50.0) },
+                Size { width: auto(), height: auto() },
+                Size { width: 40.0, height: 50.0 },
+            ),
+            (
+                "vertical explicit inline size",
+                0.5,
+                Size { width: px(20.0), height: auto() },
+                Size { width: auto(), height: auto() },
+                Size { width: 40.0, height: 80.0 },
+            ),
+            (
+                "vertical mapped block size with maximum",
+                0.5,
+                Size { width: auto(), height: px(50.0) },
+                Size { width: auto(), height: px(50.0) },
+                Size { width: 40.0, height: 50.0 },
+            ),
+            (
+                "vertical mapped inline size with maximum",
+                0.5,
+                Size { width: px(20.0), height: auto() },
+                Size { width: px(20.0), height: auto() },
+                Size { width: 40.0, height: 80.0 },
+            ),
+        ];
+
+        for (label, ratio, size, max_size, expected) in cases {
+            let style: TestStyle = Style {
+                box_sizing: BoxSizing::BorderBox,
+                size,
+                max_size,
+                border,
+                aspect_ratio: Some(ratio),
+                ..Style::default()
+            };
+            let context = ReplacedSizingContext::new(
+                WritingMode::HorizontalTb,
+                ResolvedAspectRatio { ratio: Some(ratio), box_sizing: BoxSizing::BorderBox },
+                SizeContainment::NONE,
+                ReplacedNaturalSizing::fixed(Size { width: 20.0, height: 50.0 }),
+            );
+            let actual = compute_replaced_layout(inputs(Size::NONE), &style, context, |_, _| 0.0).size;
+            assert_eq!(actual, expected, "{label}");
+        }
+    }
+
+    /// Regression for
     /// <https://wpt.live/css/css-sizing/aspect-ratio/replaced-element-034.html>.
     ///
     /// The resource has a natural width but no natural height or ratio. Its
@@ -678,7 +762,6 @@ mod tests {
                     Size { width: Some(50.0), height: None },
                     Size { width: 300.0, height: 150.0 },
                 ),
-                Size::NONE,
             ),
             |_, _| 0.0,
         )
@@ -701,7 +784,6 @@ mod tests {
                     Size { width: Some(50.0), height: None },
                     Size { width: 300.0, height: 150.0 },
                 ),
-                Size::NONE,
             ),
             |_, _| 0.0,
         )
@@ -725,7 +807,6 @@ mod tests {
                         Size { width: Some(50.0), height: Some(80.0) },
                         Size { width: 300.0, height: 150.0 },
                     ),
-                    Size::NONE,
                 ),
                 |_, _| 0.0,
             )
@@ -750,7 +831,6 @@ mod tests {
                     ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
-                    Size::NONE,
                 ),
                 |_, _| 0.0,
             )
@@ -797,7 +877,6 @@ mod tests {
                 ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::ContentBox },
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
-                Size::NONE,
             ),
             |_, _| 0.0,
         )
@@ -863,7 +942,6 @@ mod tests {
                     ResolvedAspectRatio { ratio, box_sizing: BoxSizing::ContentBox },
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::fixed(Size { width: 50.0, height: 50.0 }),
-                    Size::NONE,
                 ),
                 |_, _| 0.0,
             )
@@ -914,7 +992,6 @@ mod tests {
                 ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
-                Size::NONE,
             ),
             |_, _| 0.0,
         )
