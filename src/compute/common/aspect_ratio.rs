@@ -158,6 +158,7 @@ impl ResolvedSizeConstraints {
         &mut self,
         axis: AbsoluteAxis,
         preferred: Option<f32>,
+        preferred_aspect_ratio_applied: bool,
         minimum: Option<f32>,
         maximum: Option<f32>,
     ) {
@@ -165,11 +166,11 @@ impl ResolvedSizeConstraints {
             match axis {
                 AbsoluteAxis::Horizontal if self.size.width.is_none() || self.aspect_ratio_applied.width => {
                     self.size.width = Some(preferred);
-                    self.aspect_ratio_applied.width = false;
+                    self.aspect_ratio_applied.width = preferred_aspect_ratio_applied;
                 }
                 AbsoluteAxis::Vertical if self.size.height.is_none() || self.aspect_ratio_applied.height => {
                     self.size.height = Some(preferred);
-                    self.aspect_ratio_applied.height = false;
+                    self.aspect_ratio_applied.height = preferred_aspect_ratio_applied;
                 }
                 AbsoluteAxis::Horizontal | AbsoluteAxis::Vertical => {}
             }
@@ -594,9 +595,30 @@ mod tests {
         });
 
         assert_eq!(resolved.size, Size { width: Some(100.0), height: Some(100.0) });
-        resolved.apply_late_intrinsic_axis(AbsoluteAxis::Horizontal, Some(50.0), None, None);
+        resolved.apply_late_intrinsic_axis(AbsoluteAxis::Horizontal, Some(50.0), false, None, None);
         assert_eq!(resolved.size, Size { width: Some(50.0), height: Some(100.0) });
         assert_eq!(resolved.aspect_ratio_applied, Size { width: false, height: false });
+    }
+
+    #[test]
+    fn ratio_backed_intrinsic_preferred_retains_ratio_provenance() {
+        let mut resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(100.0) },
+            preferred_size_is_indefinite: Size { width: true, height: false },
+            min_size: Size::NONE,
+            max_size: Size::NONE,
+            size_is_auto: Size { width: false, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        resolved.apply_late_intrinsic_axis(AbsoluteAxis::Horizontal, Some(100.0), true, None, None);
+        assert_eq!(resolved.size, Size { width: Some(100.0), height: Some(100.0) });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: true, height: false });
     }
 
     #[test]

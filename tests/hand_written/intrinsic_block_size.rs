@@ -245,6 +245,26 @@ fn automatic_minimum_floors_an_intrinsic_ratio_block_size_by_content() {
 }
 
 #[test]
+fn automatic_minimum_floors_an_intrinsic_ratio_inline_size_by_content() {
+    for parent_display in [Display::Block, Display::Flex, Display::Grid] {
+        let size = layout_subject_in_formatting_context(
+            parent_display,
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(25.0) },
+                min_size: Size::AUTO,
+                aspect_ratio: Some(1.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            WritingMode::HorizontalTb,
+            Size { width: 100.0, height: 0.0 },
+        );
+        assert_eq!(size, Size { width: 100.0, height: 25.0 }, "{parent_display:?}");
+    }
+}
+
+#[test]
 fn measured_leaf_uses_content_for_the_ratio_automatic_block_minimum() {
     for parent_display in [Display::Block, Display::Flex, Display::Grid] {
         let mut tree = new_test_tree();

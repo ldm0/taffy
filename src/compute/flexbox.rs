@@ -1364,12 +1364,14 @@ fn generate_anonymous_flex_items(
             constraints_with_transfer.apply_late_intrinsic_axis(
                 block_axis,
                 block_intrinsic.preferred,
+                block_intrinsic.preferred_aspect_ratio_applied,
                 block_intrinsic.min,
                 block_intrinsic.max,
             );
             constraints_without_transfer.apply_late_intrinsic_axis(
                 block_axis,
                 block_intrinsic.preferred,
+                block_intrinsic.preferred_aspect_ratio_applied,
                 block_intrinsic.min,
                 block_intrinsic.max,
             );

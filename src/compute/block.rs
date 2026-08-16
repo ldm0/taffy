@@ -1174,7 +1174,13 @@ fn generate_item_list(
                         content_size_override,
                     },
                 );
-                resolved.apply_late_intrinsic_axis(intrinsic_axis, intrinsic.preferred, intrinsic.min, intrinsic.max);
+                resolved.apply_late_intrinsic_axis(
+                    intrinsic_axis,
+                    intrinsic.preferred,
+                    intrinsic.preferred_aspect_ratio_applied,
+                    intrinsic.min,
+                    intrinsic.max,
+                );
                 depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
                 let automatic_minimum = measure_aspect_ratio_automatic_minimum(
                     tree,
