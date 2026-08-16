@@ -1174,13 +1174,7 @@ fn generate_item_list(
                         content_size_override,
                     },
                 );
-                let mut logical_resolved_size = child_writing_mode.to_logical(resolved.size);
-                logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
-                resolved.size = child_writing_mode.to_physical(logical_resolved_size);
-                resolved.apply_late_authored_constraints(
-                    child_writing_mode.to_physical(LogicalSize { inline_size: intrinsic.min, block_size: None }),
-                    child_writing_mode.to_physical(LogicalSize { inline_size: intrinsic.max, block_size: None }),
-                );
+                resolved.apply_late_intrinsic_axis(intrinsic_axis, intrinsic.preferred, intrinsic.min, intrinsic.max);
                 depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
                 let automatic_minimum = measure_aspect_ratio_automatic_minimum(
                     tree,

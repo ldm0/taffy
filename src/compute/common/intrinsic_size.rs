@@ -1160,13 +1160,7 @@ pub(crate) fn resolve_node_size_constraints(
     );
 
     let mut resolved = direct.constraints;
-    let mut logical_resolved_size = writing_mode.to_logical(resolved.size);
-    logical_resolved_size.inline_size = logical_resolved_size.inline_size.or(intrinsic.preferred);
-    resolved.size = writing_mode.to_physical(logical_resolved_size);
-    resolved.apply_late_authored_constraints(
-        writing_mode.to_physical(LogicalSize { inline_size: intrinsic.min, block_size: None }),
-        writing_mode.to_physical(LogicalSize { inline_size: intrinsic.max, block_size: None }),
-    );
+    resolved.apply_late_intrinsic_axis(inline_axis, intrinsic.preferred, intrinsic.min, intrinsic.max);
 
     let inline_auto_size = resolve_inline_auto_size_preference(InlineAutoSizeInput {
         preferred_size: resolved.size,

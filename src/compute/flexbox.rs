@@ -1100,9 +1100,13 @@ fn generate_anonymous_flex_items(
             let raw_size = child_style.size();
             let raw_min_size = child_style.min_size();
             let raw_max_size = child_style.max_size();
-            let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
-                .into_iter()
-                .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+            let raw_logical_size = child_writing_mode.to_logical(raw_size);
+            let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+            let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+            let child_block_size_depends_on_parent =
+                [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
+                    .into_iter()
+                    .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
             let flex_basis = child_style.flex_basis();
             let raw_margin = child_style.margin();
@@ -1310,6 +1314,55 @@ fn generate_anonymous_flex_items(
                 transferred_sizes_mode: TransferredSizesMode::Ignore,
                 ..constraint_input
             });
+            let block_axis = child_writing_mode.block_axis();
+            let block_known_dimensions = match block_axis {
+                AbsoluteAxis::Horizontal => Size { width: None, height: constraints_with_transfer.size.height },
+                AbsoluteAxis::Vertical => Size { width: constraints_with_transfer.size.width, height: None },
+            };
+            let block_definite_dimensions = match block_axis {
+                AbsoluteAxis::Horizontal => Size { width: None, height: definite_preferred_size.height },
+                AbsoluteAxis::Vertical => Size { width: definite_preferred_size.width, height: None },
+            };
+            let block_intrinsic = resolve_intrinsic_axis_constraints(
+                tree,
+                child,
+                LayoutInput {
+                    axis: block_axis.into(),
+                    known_dimensions: block_known_dimensions,
+                    definite_dimensions: block_definite_dimensions,
+                    ..intrinsic_inputs
+                },
+                IntrinsicAxisInput {
+                    preferred: raw_logical_size.block_size,
+                    min: raw_logical_min_size.block_size,
+                    max: raw_logical_max_size.block_size,
+                    available_space: child_available_space.get_abs(block_axis),
+                    axis: block_axis,
+                    content_size_override: if is_replaced {
+                        IntrinsicAxisValue::default()
+                    } else {
+                        intrinsic_content_size_from_initial_geometry(
+                            block_axis,
+                            constraints_with_transfer.initial_geometry(),
+                            aspect_ratio,
+                            pb_sum,
+                        )
+                    },
+                },
+            );
+            constraints_with_transfer.apply_late_intrinsic_axis(
+                block_axis,
+                block_intrinsic.preferred,
+                block_intrinsic.min,
+                block_intrinsic.max,
+            );
+            constraints_without_transfer.apply_late_intrinsic_axis(
+                block_axis,
+                block_intrinsic.preferred,
+                block_intrinsic.min,
+                block_intrinsic.max,
+            );
+            depends_on_block_constraints |= block_intrinsic.depends_on_block_constraints;
             for axis in [AbsoluteAxis::Horizontal, AbsoluteAxis::Vertical] {
                 // Flexbox defines the automatic minimum in its main axis from
                 // the content/transferred/specified suggestions below. The

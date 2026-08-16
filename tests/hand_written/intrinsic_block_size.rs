@@ -1,6 +1,6 @@
 use taffy::prelude::*;
 use taffy::{Overflow, Point, WritingMode};
-use taffy_test_helpers::{new_test_tree, test_measure_function};
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 fn layout_subject_with_content_size(
     subject_style: Style,
@@ -175,6 +175,59 @@ fn aspect_ratio_resolves_explicit_intrinsic_block_constraints() {
             25.0,
             "{display:?} maximum block size",
         );
+    }
+}
+
+#[test]
+fn replaced_intrinsic_block_constraints_determine_inline_parent_contributions() {
+    for parent_display in [Display::Block, Display::Flex, Display::Grid] {
+        for (preferred_block_size, min_block_size, max_block_size) in [
+            (Dimension::length(0.0), Dimension::max_content(), Dimension::auto()),
+            (Dimension::length(100.0), Dimension::auto(), Dimension::max_content()),
+        ] {
+            let mut tree = new_test_tree();
+            tree.disable_rounding();
+            let replaced = tree
+                .new_leaf_with_context(
+                    Style {
+                        display: Display::Block,
+                        item_is_replaced: true,
+                        size: Size { width: Dimension::max_content(), height: preferred_block_size },
+                        min_size: Size { width: Dimension::auto(), height: min_block_size },
+                        max_size: Size { width: Dimension::auto(), height: max_block_size },
+                        aspect_ratio: Some(1.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                    TestNodeContext::fixed(50.0, 50.0),
+                )
+                .unwrap();
+            let parent = tree
+                .new_with_children(
+                    Style {
+                        display: parent_display,
+                        size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                        align_items: Some(AlignItems::START),
+                        justify_items: Some(AlignItems::START),
+                        ..Default::default()
+                    },
+                    &[replaced],
+                )
+                .unwrap();
+
+            tree.compute_layout_with_measure(parent, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+            assert_eq!(
+                tree.layout(parent).unwrap().size.width,
+                50.0,
+                "parent={parent_display:?}, preferred-block={preferred_block_size:?}",
+            );
+            assert_eq!(
+                tree.layout(replaced).unwrap().size.width,
+                50.0,
+                "child of {parent_display:?}, preferred-block={preferred_block_size:?}",
+            );
+        }
     }
 }
 

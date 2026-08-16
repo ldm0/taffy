@@ -146,6 +146,42 @@ impl ResolvedSizeConstraints {
         self.max_size = Size { width: max_width, height: max_height };
     }
 
+    /// Merge an intrinsic preferred/minimum/maximum triplet after its content
+    /// callback has completed.
+    ///
+    /// Direct constraint resolution may provisionally synthesize the queried
+    /// preferred axis through `aspect-ratio` while an authored intrinsic
+    /// keyword is still unresolved. The authored keyword owns that axis once
+    /// measured, so it replaces only that provisional ratio result. A direct
+    /// authored length, percentage, or parent-fixed size retains precedence.
+    pub(crate) fn apply_late_intrinsic_axis(
+        &mut self,
+        axis: AbsoluteAxis,
+        preferred: Option<f32>,
+        minimum: Option<f32>,
+        maximum: Option<f32>,
+    ) {
+        if let Some(preferred) = preferred {
+            match axis {
+                AbsoluteAxis::Horizontal if self.size.width.is_none() || self.aspect_ratio_applied.width => {
+                    self.size.width = Some(preferred);
+                    self.aspect_ratio_applied.width = false;
+                }
+                AbsoluteAxis::Vertical if self.size.height.is_none() || self.aspect_ratio_applied.height => {
+                    self.size.height = Some(preferred);
+                    self.aspect_ratio_applied.height = false;
+                }
+                AbsoluteAxis::Horizontal | AbsoluteAxis::Vertical => {}
+            }
+        }
+
+        let (minimum, maximum) = match axis {
+            AbsoluteAxis::Horizontal => (Size { width: minimum, height: None }, Size { width: maximum, height: None }),
+            AbsoluteAxis::Vertical => (Size { width: None, height: minimum }, Size { width: None, height: maximum }),
+        };
+        self.apply_late_authored_constraints(minimum, maximum);
+    }
+
     /// Apply CSS Sizing's aspect-ratio automatic minimum in one physical
     /// axis while preserving the authored/transferred ordering.
     pub(crate) fn apply_automatic_minimum(&mut self, axis: AbsoluteAxis, automatic_minimum: Option<f32>) {
@@ -539,6 +575,28 @@ mod tests {
 
         assert_eq!(resolved.max_size, Size { width: Some(100.0), height: Some(100.0) });
         assert_eq!(resolved.used_preferred_size(), Size { width: Some(100.0), height: Some(100.0) });
+    }
+
+    #[test]
+    fn authored_intrinsic_preferred_replaces_a_provisional_ratio_axis() {
+        let mut resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(100.0) },
+            preferred_size_is_indefinite: Size { width: true, height: false },
+            min_size: Size::NONE,
+            max_size: Size::NONE,
+            size_is_auto: Size { width: false, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.size, Size { width: Some(100.0), height: Some(100.0) });
+        resolved.apply_late_intrinsic_axis(AbsoluteAxis::Horizontal, Some(50.0), None, None);
+        assert_eq!(resolved.size, Size { width: Some(50.0), height: Some(100.0) });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: false, height: false });
     }
 
     #[test]

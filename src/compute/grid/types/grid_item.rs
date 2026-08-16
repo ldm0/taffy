@@ -3,7 +3,6 @@ use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
-use crate::compute::common::stretch::resolve_stretch_size_constraints;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbstractAxis, Line, LogicalSize, Rect, Size};
@@ -444,36 +443,14 @@ impl GridItem {
         }
     }
 
-    /// Compute the known_dimensions to be passed to the child sizing functions
-    /// The key thing that is being done here is applying stretch alignment, which is necessary to
-    /// allow percentage sizes further down the tree to resolve properly in some cases
-    fn known_dimensions(
-        &self,
-        tree: &mut impl LayoutPartialTree,
-        grid_area_size: Size<Option<f32>>,
-    ) -> Size<Option<f32>> {
-        let percentage_basis = self.parent_writing_direction.mode.to_logical(grid_area_size).inline_size;
-        let margins = self.margins_axis_sums_with_baseline_shims(percentage_basis, tree);
-
-        let aspect_ratio = self.aspect_ratio;
-        // CSS resolves percentage padding and border against the inline size
-        // of the containing block.
-        // Spec:
-        // https://www.w3.org/TR/css-grid-1/#item-margins
-        // https://www.w3.org/TR/CSS22/box.html#padding-properties
-        let padding = self.padding.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-        let border = self.border.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-        let padding_border_size = (padding + border).sum_axes();
-        let box_sizing_adjustment =
-            if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let grid_area_minus_item_margins_size = grid_area_size.maybe_sub(margins);
-        let stretch = resolve_stretch_size_constraints(
-            self.size,
-            self.min_size,
-            self.max_size,
-            grid_area_minus_item_margins_size,
-            padding_border_size,
-        );
+    /// Resolve the grid-owned auto-size policy for an intrinsic item probe.
+    ///
+    /// Authored preferred/min/max sizes remain child-owned. In particular, they
+    /// must not be materialized into `known_dimensions`, whose axes mean that
+    /// the parent formatting context has fixed the exact used size. The child
+    /// combines this policy with the grid area and its own sizing properties at
+    /// the normal constraint-space boundary.
+    fn intrinsic_auto_size_behaviors(&self, tree: &impl LayoutPartialTree) -> (AutoSizeBehavior, AutoSizeBehavior) {
         let child_writing_mode = tree.get_writing_mode(self.node);
         let normal_auto_size = if self.is_compressible_replaced {
             AutoSizeBehavior::FitContent
@@ -501,69 +478,29 @@ impl GridItem {
         if self.margin.top.is_auto() || self.margin.bottom.is_auto() {
             vertical_auto_size = AutoSizeBehavior::FitContent;
         }
-        let (inline_auto_behavior, block_auto_behavior) = if child_writing_mode.is_horizontal() {
+        if child_writing_mode.is_horizontal() {
             (horizontal_auto_size, vertical_auto_size)
         } else {
             (vertical_auto_size, horizontal_auto_size)
-        };
-        let preferred_size = self
-            .size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment)
-            .or(stretch.preferred);
-        let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: preferred_size,
-            preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
-            min_size: self
-                .min_size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.min),
-            max_size: self
-                .max_size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.max),
-            size_is_auto: self.size.map(|dimension| dimension.is_auto()),
-            writing_mode: child_writing_mode,
-            inline_auto_behavior,
-            block_auto_behavior,
-            transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio,
-            padding_border: padding_border_size,
-        });
-        let inherent_size = resolved.size;
-        let min_size = resolved.min_size;
-        let max_size = resolved.max_size;
-        let width = inherent_size.width.or_else(|| {
-            if !horizontal_auto_size.is_content_based(aspect_ratio.ratio.is_some()) {
-                return grid_area_minus_item_margins_size.width;
-            }
+        }
+    }
 
-            None
-        });
-        // Reapply aspect ratio after stretch and absolute position width adjustments
-        let Size { width, height } = Size { width, height: inherent_size.height }
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size);
-
-        let height = height.or_else(|| {
-            if !vertical_auto_size.is_content_based(aspect_ratio.ratio.is_some()) {
-                return grid_area_minus_item_margins_size.height;
-            }
-
-            None
-        });
-        // Reapply aspect ratio after stretch and absolute position height adjustments
-        let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio_with_box_sizing(
-            aspect_ratio,
-            BoxSizing::BorderBox,
-            padding_border_size,
-        );
-
-        // Clamp size by min and max width/height
-        let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
-
-        Size { width, height }
+    /// Remove this item's margins from the space offered for alignment
+    /// stretch, while leaving the grid area itself available as the child's
+    /// percentage containing block.
+    ///
+    /// These are distinct constraint-space inputs. Passing the full grid area
+    /// as available space makes a stretched item measure descendants at a
+    /// width that still includes its own margins, which feeds an inflated
+    /// block contribution back into intrinsic track sizing.
+    fn intrinsic_child_available_space(
+        &self,
+        tree: &mut impl LayoutPartialTree,
+        available_space: Size<Option<f32>>,
+    ) -> Size<Option<f32>> {
+        let percentage_basis = self.parent_writing_direction.mode.to_logical(available_space).inline_size;
+        let margins = self.margins_axis_sums_with_baseline_shims(percentage_basis, tree);
+        available_space.maybe_sub(margins)
     }
 
     /// Returns the grid area's size in the specified axis when every spanned track has a definite fixed size.
@@ -688,7 +625,8 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
     ) -> f32 {
-        let known_dimensions = self.known_dimensions(tree, grid_area_size);
+        let (inline_auto_behavior, block_auto_behavior) = self.intrinsic_auto_size_behaviors(tree);
+        let child_available_space = self.intrinsic_child_available_space(tree, available_space);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
         // Spec:
@@ -697,16 +635,18 @@ impl GridItem {
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
-                known_dimensions,
+                Size::NONE,
                 grid_area_size,
                 self.parent_writing_direction.mode,
-                available_space.map(|opt| match opt {
+                child_available_space.map(|opt| match opt {
                     Some(size) => AvailableSpace::Definite(size),
                     None => AvailableSpace::MinContent,
                 }),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_inline_auto_behavior(inline_auto_behavior)
+            .with_block_auto_behavior(block_auto_behavior),
             axis.to_absolute(self.parent_writing_direction.mode).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
@@ -737,23 +677,26 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
     ) -> f32 {
-        let known_dimensions = self.known_dimensions(tree, grid_area_size);
+        let (inline_auto_behavior, block_auto_behavior) = self.intrinsic_auto_size_behaviors(tree);
+        let child_available_space = self.intrinsic_child_available_space(tree, available_space);
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
-                known_dimensions,
+                Size::NONE,
                 grid_area_size,
                 self.parent_writing_direction.mode,
-                available_space.map(|opt| match opt {
+                child_available_space.map(|opt| match opt {
                     Some(size) => AvailableSpace::Definite(size),
                     None => AvailableSpace::MaxContent,
                 }),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_inline_auto_behavior(inline_auto_behavior)
+            .with_block_auto_behavior(block_auto_behavior),
             axis.to_absolute(self.parent_writing_direction.mode).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;

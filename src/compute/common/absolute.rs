@@ -699,7 +699,23 @@ pub(crate) fn layout_out_of_flow_item(
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
         );
-        known_dimensions = known_dimensions.or(measured_size.map(Some)).maybe_clamp(min_size, max_size);
+        // A child measurement owns only content-sized automatic axes. Strong
+        // stretch axes remain unresolved here so the positioned formatting
+        // context can fix them from the inset-modified containing block below.
+        // This mirrors Blink's replaced-size constraint space: explicit
+        // stretch is parent-owned state, not a natural-size measurement.
+        let mut logical_known_dimensions = child_writing_mode.to_logical(known_dimensions);
+        let logical_measured_size = child_writing_mode.to_logical(measured_size);
+        let has_preferred_aspect_ratio = aspect_ratio.ratio.is_some();
+        if inline_auto_behavior.is_content_based(has_preferred_aspect_ratio) {
+            logical_known_dimensions.inline_size =
+                logical_known_dimensions.inline_size.or(Some(logical_measured_size.inline_size));
+        }
+        if block_auto_behavior.is_content_based(has_preferred_aspect_ratio) {
+            logical_known_dimensions.block_size =
+                logical_known_dimensions.block_size.or(Some(logical_measured_size.block_size));
+        }
+        known_dimensions = child_writing_mode.to_physical(logical_known_dimensions).maybe_clamp(min_size, max_size);
     }
 
     if known_dimensions.get_abs(inline_axis).is_none() {

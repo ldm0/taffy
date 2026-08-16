@@ -7,7 +7,7 @@
 //! embedding engines provide content metrics rather than reimplementing the
 //! CSS box model in a measurement callback.
 
-use crate::geometry::Size;
+use crate::geometry::{AbsoluteAxis, Size};
 use crate::style::{AvailableSpace, BoxSizing, CoreStyle, ResolvedAspectRatio, SizeContainment};
 use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
@@ -142,6 +142,7 @@ pub fn compute_replaced_layout(
         width: if context.size_containment.axes.width { None } else { context.preferred_size_hint.width },
         height: if context.size_containment.axes.height { None } else { context.preferred_size_hint.height },
     };
+    let content_known = known_dimensions.maybe_sub(padding_border_sum);
 
     // During a min-content contribution, percentage preferred and maximum
     // sizes are cyclic and resolve against zero. Minimum sizes retain the
@@ -173,27 +174,43 @@ pub fn compute_replaced_layout(
         }
     }
 
-    // Intrinsic min/max constraints on replaced content use the size
-    // transferred from a definite preferred opposite axis, rather than
-    // falling back to the resource's natural dimension.
-    if context.aspect_ratio.ratio.is_some() {
-        let transferred_width = preferred_size
-            .height
-            .and_then(|height| content_width_from_height(height, context.aspect_ratio, padding_border_sum));
-        let transferred_height = preferred_size
-            .width
-            .and_then(|width| content_height_from_width(width, context.aspect_ratio, padding_border_sum));
-        if is_min_or_max_content(raw_min_size.width) {
-            min_size.width = transferred_width;
+    // Resolve intrinsic min/max constraints by sizing the replaced content
+    // while ignoring preferred lengths in the queried axis. The opposite
+    // fixed/preferred axis can determine the result through the used ratio;
+    // otherwise the normalized natural size supplies the intrinsic value.
+    // This is the same boundary as Blink's ReplacedSizeMode axis modes.
+    let hinted_size = Size {
+        width: if raw_size.width.is_auto() { preferred_size_hint.width } else { None },
+        height: if raw_size.height.is_auto() { preferred_size_hint.height } else { None },
+    };
+    let intrinsic_basis = content_known.or(preferred_size).or(hinted_size);
+    let intrinsic_fallback = natural_size.or_else(|| {
+        context.aspect_ratio.ratio.map(|_| {
+            ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
+        })
+    });
+    let intrinsic_size = Size {
+        width: intrinsic_constraint_size(
+            AbsoluteAxis::Horizontal,
+            intrinsic_basis,
+            intrinsic_fallback,
+            context.aspect_ratio,
+            padding_border_sum,
+        ),
+        height: intrinsic_constraint_size(
+            AbsoluteAxis::Vertical,
+            intrinsic_basis,
+            intrinsic_fallback,
+            context.aspect_ratio,
+            padding_border_sum,
+        ),
+    };
+    for (raw, resolved) in [(raw_min_size, &mut min_size), (raw_max_size, &mut max_size)] {
+        if raw.width.is_intrinsic() {
+            resolved.width = intrinsic_size.width;
         }
-        if is_min_or_max_content(raw_min_size.height) {
-            min_size.height = transferred_height;
-        }
-        if is_min_or_max_content(raw_max_size.width) {
-            max_size.width = transferred_width;
-        }
-        if is_min_or_max_content(raw_max_size.height) {
-            max_size.height = transferred_height;
+        if raw.height.is_intrinsic() {
+            resolved.height = intrinsic_size.height;
         }
     }
 
@@ -225,7 +242,6 @@ pub fn compute_replaced_layout(
             .maybe_resolve(preferred_percentage_basis, &resolve_calc_value)
             .maybe_sub(box_sizing_adjustment)
             .maybe_max(min_size);
-        let content_known = known_dimensions.maybe_sub(padding_border_sum);
         let transferred = complete_replaced_size(
             apply_aspect_ratio_to_content_size(
                 content_known.maybe_clamp(min_size, style_max_size),
@@ -418,6 +434,28 @@ fn complete_replaced_size(size: Size<Option<f32>>, fallback: Option<Size<f32>>) 
     }
 }
 
+/// Resolve one intrinsic constraint as if preferred lengths in that physical
+/// axis were ignored.
+///
+/// Replaced content has a single intrinsic size rather than independently
+/// measured min/max-content extrema. A fixed or preferred opposite axis may
+/// replace that natural value through the used aspect ratio, which is why the
+/// queried axis is removed before the candidate is completed.
+fn intrinsic_constraint_size(
+    axis: AbsoluteAxis,
+    sizing_basis: Size<Option<f32>>,
+    fallback: Option<Size<f32>>,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> Option<f32> {
+    let axis_ignored = match axis {
+        AbsoluteAxis::Horizontal => Size { width: None, height: sizing_basis.height },
+        AbsoluteAxis::Vertical => Size { width: sizing_basis.width, height: None },
+    };
+    complete_replaced_size(apply_aspect_ratio_to_content_size(axis_ignored, aspect_ratio, padding_border), fallback)
+        .map(|size| size.get_abs(axis))
+}
+
 /// Construct an output whose content extent is the atomic replaced box.
 fn replaced_output(size: Size<f32>) -> LayoutOutput {
     LayoutOutput::from_sizes(size, size)
@@ -463,11 +501,6 @@ fn ratio_basis_scale(constrained: f32, original: f32, inset: f32, box_sizing: Bo
         BoxSizing::ContentBox => constrained / original,
         BoxSizing::BorderBox => (constrained + inset) / (original + inset),
     }
-}
-
-/// Whether a dimension names either intrinsic content-size extremum.
-fn is_min_or_max_content(dimension: crate::Dimension) -> bool {
-    dimension.is_min_content() || dimension.is_max_content()
 }
 
 #[cfg(test)]
@@ -810,6 +843,49 @@ mod tests {
         assert_eq!(measure(&max_height), Size { width: 70.0, height: 70.0 });
         max_height.max_size.height = Dimension::max_content();
         assert_eq!(measure(&max_height), Size { width: 70.0, height: 70.0 });
+    }
+
+    /// Regression for
+    /// <https://wpt.live/css/css-sizing/keyword-sizes-for-intrinsic-contributions-002.html>.
+    ///
+    /// Intrinsic block-size constraints are resolved with the replaced
+    /// element's intrinsic size before its intrinsic inline contribution is
+    /// computed. Clamping the preferred block size must therefore feed back
+    /// through the preferred ratio into an intrinsic inline-size keyword.
+    #[test]
+    fn intrinsic_block_constraints_bound_the_intrinsic_inline_contribution() {
+        let measure = |style: &TestStyle, ratio| {
+            compute_replaced_layout(
+                inputs(Size::NONE),
+                style,
+                ReplacedSizingContext::new(
+                    WritingMode::HorizontalTb,
+                    ResolvedAspectRatio { ratio, box_sizing: BoxSizing::ContentBox },
+                    SizeContainment::NONE,
+                    ReplacedNaturalSizing::fixed(Size { width: 50.0, height: 50.0 }),
+                    Size::NONE,
+                ),
+                |_, _| 0.0,
+            )
+            .size
+        };
+        let minimum: TestStyle = Style {
+            size: Size { width: Dimension::max_content(), height: Dimension::length(0.0) },
+            min_size: Size { width: Dimension::auto(), height: Dimension::max_content() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        let maximum: TestStyle = Style {
+            size: Size { width: Dimension::max_content(), height: Dimension::length(100.0) },
+            max_size: Size { width: Dimension::auto(), height: Dimension::max_content() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+
+        for ratio in [Some(1.0), None] {
+            assert_eq!(measure(&minimum, ratio), Size { width: 50.0, height: 50.0 });
+            assert_eq!(measure(&maximum, ratio), Size { width: 50.0, height: 50.0 });
+        }
     }
 
     /// Regression for
