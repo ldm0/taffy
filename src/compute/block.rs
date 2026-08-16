@@ -1036,6 +1036,7 @@ fn generate_item_list(
             let uses_block_layout = child_style.uses_block_layout();
             let is_table = child_style.is_table();
             let is_replaced = child_style.is_compressible_replaced();
+            let establishes_new_formatting_context = tree.establishes_new_formatting_context(child_node_id);
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
             let inline_auto_behavior = if position != Position::Absolute
                 && is_not_floated
@@ -1054,6 +1055,7 @@ fn generate_item_list(
             // orthogonal axes.
             let is_in_same_bfc: bool = is_block
                 && !is_table
+                && !establishes_new_formatting_context
                 && position != Position::Absolute
                 && is_not_floated
                 && !is_scroll_container

@@ -227,6 +227,18 @@ pub trait LayoutPartialTree: TraversePartialTree {
         LayoutEnvironment::NONE
     }
 
+    /// Whether this node establishes a formatting context independently of
+    /// its authored display value.
+    ///
+    /// Most standalone trees encode this distinction through display (for
+    /// example `flow-root`). Browser integrations also have node-semantic
+    /// roots such as the document element, whose computed display remains
+    /// `block` while layout must isolate its block formatting context.
+    #[inline(always)]
+    fn establishes_new_formatting_context(&self, _node_id: NodeId) -> bool {
+        false
+    }
+
     /// Resolve tree-owned layout environment at a parent-to-child dispatch
     /// boundary.
     ///
