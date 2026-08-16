@@ -4,7 +4,8 @@
 //! `percentage-heights-001.html` / `percentage-heights-018.html`.
 
 use taffy::prelude::*;
-use taffy::WritingMode;
+use taffy::{Overflow, Point, WritingMode};
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 fn fixed_block(tree: &mut TaffyTree<()>, height: f32) -> NodeId {
     tree.new_leaf(Style {
@@ -297,6 +298,51 @@ fn auto_cross_stretch_makes_the_line_cross_size_definite() {
 
     assert_eq!(tree.layout(item).unwrap().size.height, 50.0);
     assert_eq!(tree.layout(percentage).unwrap().size.height, 25.0);
+}
+
+/// Regression for WPT `css/css-flexbox/flex-minimum-size-002.html`.
+///
+/// A percentage minimum whose containing-block block size is indefinite has a
+/// zero cyclic fallback. It remains an authored minimum and must not silently
+/// turn into Flexbox's content-based `min-size:auto`.
+#[test]
+fn indefinite_percentage_minimum_does_not_become_a_flex_automatic_minimum() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+
+    let percentage_minimum = tree
+        .new_leaf_with_context(
+            Style {
+                display: Display::Block,
+                min_size: Size { width: auto(), height: percent(1.0) },
+                ..Default::default()
+            },
+            TestNodeContext::fixed(100.0, 13.0),
+        )
+        .unwrap();
+    let inflexible = tree
+        .new_leaf_with_context(
+            Style { display: Display::Block, flex_grow: 0.0, flex_shrink: 0.0, ..Default::default() },
+            TestNodeContext::fixed(50.0, 13.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                max_size: Size { width: auto(), height: length(0.0) },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                ..Default::default()
+            },
+            &[percentage_minimum, inflexible],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(container).unwrap().size.height, 0.0);
+    assert_eq!(tree.layout(percentage_minimum).unwrap().size.height, 0.0);
+    assert_eq!(tree.layout(inflexible).unwrap().size.height, 13.0);
 }
 
 #[test]
