@@ -358,7 +358,7 @@ pub(crate) fn apply_preferred_aspect_ratio(
     let source = writing_mode.to_logical(size);
     let authored_auto = writing_mode.to_logical(size_is_auto);
     let mut resolved = writing_mode.to_logical(ratio_resolved_size);
-    if inline_auto_behavior == AutoSizeBehavior::StretchExplicit
+    if matches!(inline_auto_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
         && authored_auto.inline_size
         && source.inline_size.is_none()
         && resolved.inline_size.is_some()
@@ -368,7 +368,7 @@ pub(crate) fn apply_preferred_aspect_ratio(
         // but leave the preferred inline size for the formatting context.
         resolved.inline_size = None;
     }
-    if block_auto_behavior == AutoSizeBehavior::StretchExplicit
+    if matches!(block_auto_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
         && authored_auto.block_size
         && source.block_size.is_none()
         && resolved.block_size.is_some()

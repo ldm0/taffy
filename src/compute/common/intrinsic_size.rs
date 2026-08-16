@@ -20,7 +20,7 @@ use super::aspect_ratio::{
     SizeConstraintInput, TransferredSizesMode,
 };
 use super::stretch::resolve_stretch_size_constraints;
-use super::used_size::{resolve_inline_auto_size_preference, resolve_used_size, InlineAutoSizeInput};
+use super::used_size::{resolve_auto_size_preference, resolve_used_size, AutoSizeInput};
 
 /// Resolve the fit-content inline size selected by a containing formatting
 /// context for an automatically sized child.
@@ -1185,7 +1185,7 @@ pub(crate) fn resolve_node_size_constraints(
         intrinsic.max,
     );
 
-    let inline_auto_size = resolve_inline_auto_size_preference(InlineAutoSizeInput {
+    let auto_size = resolve_auto_size_preference(AutoSizeInput {
         preferred_size: resolved.size,
         fixed_size: inputs.known_dimensions,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
@@ -1198,14 +1198,14 @@ pub(crate) fn resolve_node_size_constraints(
         minimum_border_box_size: padding_border_size,
         aspect_ratio,
     });
-    resolved.size = inline_auto_size.size;
-    resolved.aspect_ratio_applied.width |= inline_auto_size.aspect_ratio_applied.width;
-    resolved.aspect_ratio_applied.height |= inline_auto_size.aspect_ratio_applied.height;
+    resolved.size = auto_size.size;
+    resolved.aspect_ratio_applied.width |= auto_size.aspect_ratio_applied.width;
+    resolved.aspect_ratio_applied.height |= auto_size.aspect_ratio_applied.height;
 
     let automatic_minimum =
         measure_aspect_ratio_automatic_minimum(tree, node_id, inputs, inline_axis, padding_border_size, resolved);
     resolved.apply_automatic_minimum(inline_axis, automatic_minimum.value);
-    let own_definite_size = resolve_inline_auto_size_preference(InlineAutoSizeInput {
+    let own_definite_size = resolve_auto_size_preference(AutoSizeInput {
         preferred_size: direct.definite_preferred_size,
         fixed_size: inputs.definite_dimensions,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),

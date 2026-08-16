@@ -88,6 +88,13 @@ pub enum AutoSizeBehavior {
     StretchExplicit,
     /// Stretch only if a preferred aspect ratio did not supply a size.
     StretchImplicit,
+    /// Resolve `auto` from definite available space inside the child's normal
+    /// min/max pipeline, before considering a preferred aspect ratio.
+    ///
+    /// Unlike [`Self::StretchExplicit`], the containing formatting context has
+    /// not already supplied a fixed dimension. The child therefore owns the
+    /// resulting preferred size and its authored constraints still apply.
+    FillAvailable,
 }
 
 impl AutoSizeBehavior {
@@ -96,7 +103,7 @@ impl AutoSizeBehavior {
     pub const fn is_content_based(self, has_preferred_aspect_ratio: bool) -> bool {
         match self {
             Self::FitContent => true,
-            Self::StretchExplicit => false,
+            Self::StretchExplicit | Self::FillAvailable => false,
             Self::StretchImplicit => has_preferred_aspect_ratio,
         }
     }
@@ -597,6 +604,8 @@ mod constraint_space_tests {
         assert!(!AutoSizeBehavior::StretchExplicit.is_content_based(true));
         assert!(!AutoSizeBehavior::StretchImplicit.is_content_based(false));
         assert!(AutoSizeBehavior::StretchImplicit.is_content_based(true));
+        assert!(!AutoSizeBehavior::FillAvailable.is_content_based(false));
+        assert!(!AutoSizeBehavior::FillAvailable.is_content_based(true));
     }
 
     #[test]

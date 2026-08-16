@@ -2,19 +2,18 @@
 
 use crate::{AutoSizeBehavior, AvailableSpace, BoxSizing, MaybeMath, ResolvedAspectRatio, Size, WritingMode};
 
-/// Child-owned inline-size preference resolved from a constraint space.
+/// Child-owned auto-size preferences resolved from a constraint space.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct InlineAutoSizeResolution {
-    /// Preferred sizes after resolving the logical inline axis.
+pub(crate) struct AutoSizeResolution {
+    /// Preferred sizes after resolving constraint-space auto-size policies.
     pub size: Size<Option<f32>>,
-    /// Whether the logical inline axis was synthesized through the preferred
-    /// aspect ratio.
+    /// Whether an axis was synthesized through the preferred aspect ratio.
     pub aspect_ratio_applied: Size<bool>,
 }
 
-/// Constraint-space state used to resolve an automatic inline-size.
+/// Constraint-space state used to resolve automatic sizes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct InlineAutoSizeInput {
+pub(crate) struct AutoSizeInput {
     /// Child-owned preferred border-box size before auto-size resolution.
     pub preferred_size: Size<Option<f32>>,
     /// Parent-owned fixed border-box size, used only as a ratio basis.
@@ -39,20 +38,20 @@ pub(crate) struct InlineAutoSizeInput {
     pub aspect_ratio: ResolvedAspectRatio,
 }
 
-/// Resolve the automatic inline-size preference from the constraint space.
+/// Resolve automatic size preferences from the constraint space.
 ///
-/// A fixed block size or explicit block stretch is available as a preferred
-/// ratio basis before weak inline stretch. The block basis itself remains
-/// owned by the parent formatting context; only a ratio-derived inline size is
-/// copied into the child preference. Block-size resolution remains a later
-/// operation so it can observe the final clamped inline size.
+/// A fixed block size, parent-owned explicit stretch, or child-owned
+/// `FillAvailable` size is available as a preferred-ratio basis before weak
+/// inline stretch. Only `FillAvailable` copies the block basis into the
+/// child's preferred size; fixed and ordinary explicit-stretch dimensions
+/// remain parent-owned.
 ///
 /// This mirrors Blink's `ComputeInlineSizeForFragmentInternal`: a strong block
 /// stretch makes the ratio applicable before weak inline stretch, while two
 /// weak stretches prefer the inline axis.
 #[inline(always)]
-pub(crate) fn resolve_inline_auto_size_preference(input: InlineAutoSizeInput) -> InlineAutoSizeResolution {
-    let InlineAutoSizeInput {
+pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeResolution {
+    let AutoSizeInput {
         preferred_size,
         fixed_size,
         size_is_auto,
@@ -75,7 +74,9 @@ pub(crate) fn resolve_inline_auto_size_preference(input: InlineAutoSizeInput) ->
     let mut logical_ratio_applied = writing_mode.to_logical(Size { width: false, height: false });
 
     let explicit_block_stretch =
-        if block_behavior == AutoSizeBehavior::StretchExplicit && logical_size_is_auto.block_size {
+        if matches!(block_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
+            && logical_size_is_auto.block_size
+        {
             match logical_available.block_size {
                 AvailableSpace::Definite(size) => Some(
                     size.maybe_clamp(logical_min.block_size, logical_max.block_size)
@@ -97,7 +98,7 @@ pub(crate) fn resolve_inline_auto_size_preference(input: InlineAutoSizeInput) ->
         BoxSizing::BorderBox,
         minimum_border_box_size,
     ));
-    if inline_behavior != AutoSizeBehavior::StretchExplicit
+    if !matches!(inline_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
         && ratio_basis.inline_size.is_none()
         && ratio_resolved.inline_size.is_some()
     {
@@ -119,7 +120,14 @@ pub(crate) fn resolve_inline_auto_size_preference(input: InlineAutoSizeInput) ->
         };
     }
 
-    InlineAutoSizeResolution {
+    if block_behavior == AutoSizeBehavior::FillAvailable
+        && logical_fixed.block_size.is_none()
+        && logical_preferred.block_size.is_none()
+    {
+        logical_preferred.block_size = explicit_block_stretch;
+    }
+
+    AutoSizeResolution {
         size: writing_mode.to_physical(logical_preferred),
         aspect_ratio_applied: writing_mode.to_physical(logical_ratio_applied),
     }
@@ -186,8 +194,8 @@ mod tests {
         available_space: Size<AvailableSpace>,
         max_size: Size<Option<f32>>,
         ratio: Option<f32>,
-    ) -> InlineAutoSizeResolution {
-        resolve_inline_auto_size_preference(InlineAutoSizeInput {
+    ) -> AutoSizeResolution {
+        resolve_auto_size_preference(AutoSizeInput {
             preferred_size,
             fixed_size,
             size_is_auto: Size { width: true, height: true },
@@ -272,7 +280,33 @@ mod tests {
             Size { width: None, height: Some(100.0) },
             Some(1.0),
         );
-        assert_eq!(clamped.size.width, Some(100.0));
+        assert_eq!(clamped.size, Size { width: Some(100.0), height: None });
+    }
+
+    #[test]
+    fn fill_available_consumes_block_space_without_overriding_fixed_size() {
+        let available = Size { width: AvailableSpace::MaxContent, height: AvailableSpace::Definite(180.0) };
+        let stretched = resolve_auto_size(
+            Size::NONE,
+            Size::NONE,
+            AutoSizeBehavior::FitContent,
+            AutoSizeBehavior::FillAvailable,
+            available,
+            Size { width: None, height: Some(120.0) },
+            None,
+        );
+        assert_eq!(stretched.size, Size { width: None, height: Some(120.0) });
+
+        let fixed = resolve_auto_size(
+            Size::NONE,
+            Size { width: None, height: Some(75.0) },
+            AutoSizeBehavior::FitContent,
+            AutoSizeBehavior::FillAvailable,
+            available,
+            Size::NONE,
+            None,
+        );
+        assert_eq!(fixed.size, Size::NONE);
     }
 
     #[test]
