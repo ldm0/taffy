@@ -67,8 +67,11 @@ enum UsedFlexBasis {
 /// cross-size aggregation from silently defining both values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum FlexSizingPhase {
-    /// Ordinary used-size layout or intrinsic sizing for another flex flow.
-    Normal,
+    /// Resolve the flex container's used size and lay out its items.
+    Layout,
+    /// Measure an intrinsic axis that does not use one of the specialized
+    /// flex inline-contribution algorithms below.
+    IntrinsicMeasurement,
     /// Intrinsic main sizing for a row flex container under the given
     /// min-/max-content constraint.
     RowIntrinsic(AvailableSpace),
@@ -1036,8 +1039,10 @@ fn compute_constants(
         && inputs.sizing_purpose == SizingPurpose::IntrinsicContribution
         && inputs.axis.contains(writing_mode.inline_axis())
         && matches!(inline_available_space, AvailableSpace::MinContent | AvailableSpace::MaxContent);
-    let sizing_phase = if !is_intrinsic_inline_probe {
-        FlexSizingPhase::Normal
+    let sizing_phase = if inputs.sizing_purpose == SizingPurpose::Layout {
+        FlexSizingPhase::Layout
+    } else if !is_intrinsic_inline_probe {
+        FlexSizingPhase::IntrinsicMeasurement
     } else if main_axis_is_inline {
         FlexSizingPhase::RowIntrinsic(inline_available_space)
     } else if is_wrap {
@@ -2223,6 +2228,24 @@ fn determine_row_intrinsic_main_size(
     }
 }
 
+/// Compute the intrinsic block size used by a real column-flex layout.
+///
+/// This is deliberately based on outer hypothetical main sizes before flexing.
+/// The min/max-content contribution algorithm is a different sizing operation:
+/// applying its flex fractions here would let an item's ability to grow change
+/// the container's automatic block size even when a definite flex basis fixes
+/// the item's hypothetical size.
+fn largest_line_hypothetical_outer_main_size(lines: &[FlexLine<'_>], constants: &AlgoConstants) -> f32 {
+    lines
+        .iter()
+        .map(|line| {
+            line.items.iter().map(|item| item.hypothetical_outer_size.main(constants.dir)).sum::<f32>()
+                + sum_axis_gaps(constants.gap.main(constants.dir), line.items.len())
+        })
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(0.0)
+}
+
 /// Determine the container's main size (if not already known)
 fn determine_container_main_size(
     tree: &mut impl LayoutFlexboxContainer,
@@ -2236,9 +2259,18 @@ fn determine_container_main_size(
     let specified_outer_main_size = constants.node_outer_size.main(constants.dir);
     let needs_content_based_block_resolution =
         constants.main_axis_is_block && constants.resolve_content_based_block_size;
+    let uses_layout_intrinsic_block_size =
+        constants.main_axis_is_block && constants.sizing_phase == FlexSizingPhase::Layout;
     let needs_intrinsic_main_size = specified_outer_main_size.is_none() || needs_content_based_block_resolution;
     let intrinsic_outer_main_size = if !needs_intrinsic_main_size {
         None
+    } else if uses_layout_intrinsic_block_size {
+        // Blink's layout pass records a column container's intrinsic block
+        // size from the largest sum of line hypothetical main sizes. An
+        // incoming MaxContent available-space value is only a parent
+        // constraint here; it does not turn used layout into an intrinsic
+        // contribution query.
+        Some(largest_line_hypothetical_outer_main_size(lines, constants) + main_content_box_inset)
     } else if let FlexSizingPhase::RowIntrinsic(constraint) = constants.sizing_phase {
         Some(
             determine_row_intrinsic_main_size(tree, constraint, available_space, lines, constants)

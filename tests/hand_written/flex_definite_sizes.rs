@@ -135,6 +135,75 @@ fn definite_flex_basis_makes_the_post_flex_size_definite() {
     assert_eq!(tree.layout(percentage).unwrap().size.height, 50.0);
 }
 
+/// Regression for WPT
+/// `css/css-flexbox/flex-one-sets-flex-basis-to-zero-px.html`.
+///
+/// A definite zero basis produces a zero hypothetical main size even when the
+/// item can grow. A zero percentage stays content-based while the container's
+/// block size is indefinite. The container's real auto block size comes from
+/// those hypothetical sizes, not from an intrinsic-contribution flex fraction.
+#[test]
+fn content_sized_column_uses_hypothetical_main_sizes_before_flexing() {
+    let layout = |writing_mode: WritingMode, flex_basis: Dimension, flex_grow: f32| {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let item = tree
+            .new_leaf_with_context(
+                Style {
+                    min_size: Size::from_lengths(0.0, 0.0),
+                    flex_basis,
+                    flex_grow,
+                    flex_shrink: 1.0,
+                    ..Default::default()
+                },
+                TestNodeContext::fixed(14.0, 14.0),
+            )
+            .unwrap();
+        tree.set_writing_mode(item, writing_mode).unwrap();
+        let size = match writing_mode {
+            WritingMode::HorizontalTb => Size { width: length(100.0), height: auto() },
+            WritingMode::VerticalLr | WritingMode::VerticalRl | WritingMode::SidewaysLr | WritingMode::SidewaysRl => {
+                Size { width: auto(), height: length(100.0) }
+            }
+        };
+        let container = tree
+            .new_with_children(
+                Style { display: Display::Flex, flex_direction: FlexDirection::Column, size, ..Default::default() },
+                &[item],
+            )
+            .unwrap();
+        tree.set_writing_mode(container, writing_mode).unwrap();
+        let root = tree
+            .new_with_children(Style { display: Display::Block, size, ..Default::default() }, &[container])
+            .unwrap();
+        tree.set_writing_mode(root, writing_mode).unwrap();
+
+        tree.compute_layout_with_measure(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        let block_size = |size: Size<f32>| match writing_mode {
+            WritingMode::HorizontalTb => size.height,
+            WritingMode::VerticalLr | WritingMode::VerticalRl | WritingMode::SidewaysLr | WritingMode::SidewaysRl => {
+                size.width
+            }
+        };
+        (block_size(tree.layout(container).unwrap().size), block_size(tree.layout(item).unwrap().size))
+    };
+
+    for writing_mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl] {
+        for flex_grow in [0.5, 1.0] {
+            assert_eq!(
+                layout(writing_mode, length(0.0), flex_grow),
+                (0.0, 0.0),
+                "{writing_mode:?} definite basis with grow {flex_grow}"
+            );
+            assert_eq!(
+                layout(writing_mode, percent(0.0), flex_grow),
+                (14.0, 14.0),
+                "{writing_mode:?} percentage basis with grow {flex_grow}"
+            );
+        }
+    }
+}
+
 #[test]
 fn auto_basis_retrieves_a_definite_authored_main_size() {
     let mut tree = TaffyTree::new();
