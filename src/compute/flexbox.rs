@@ -34,9 +34,9 @@ use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
     fit_content_inline_size_with_metadata, intrinsic_content_size_from_initial_geometry,
     measure_aspect_ratio_automatic_minimum, resolve_content_based_block_size_constraints,
-    resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size, resolve_node_size_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput,
-    ResolvedNodeSizing,
+    resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size, resolve_minimum_size,
+    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue,
+    NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1195,10 +1195,10 @@ fn generate_anonymous_flex_items(
             } else {
                 None
             };
-            let mut min_size = raw_min_size
-                .maybe_resolve(constants.node_percentage_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .or(stretch.min);
+            let mut min_size =
+                resolve_minimum_size(raw_min_size, constants.node_percentage_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment)
+                    .or(stretch.min);
             let mut max_size = raw_max_size
                 .maybe_resolve(constants.node_percentage_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment)

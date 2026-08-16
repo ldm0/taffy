@@ -984,7 +984,7 @@ struct DirectNodeSizeResolution {
 /// zero. Keeping that rule in the shared node-sizing resolver makes logical
 /// inline and block constraints follow the same protocol in every formatting
 /// context.
-fn resolve_minimum_size(
+pub(crate) fn resolve_minimum_size(
     raw_min_size: Size<Dimension>,
     parent_size: Size<Option<f32>>,
     calc: impl Fn(*const (), f32) -> f32,
