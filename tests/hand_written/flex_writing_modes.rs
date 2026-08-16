@@ -567,3 +567,49 @@ fn flex_auto_position_uses_the_physical_padding_box_across_writing_directions() 
         }
     }
 }
+
+#[test]
+fn vertical_rtl_absolute_static_position_reverses_only_for_authored_flex_reverse() {
+    for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for (flex_direction, justify_content, expected_y) in [
+            (FlexDirection::Row, JustifyContent::FLEX_START, 40.0),
+            (FlexDirection::Row, JustifyContent::FLEX_END, 0.0),
+            (FlexDirection::Row, JustifyContent::SPACE_BETWEEN, 40.0),
+            (FlexDirection::RowReverse, JustifyContent::FLEX_START, 0.0),
+            (FlexDirection::RowReverse, JustifyContent::FLEX_END, 40.0),
+            (FlexDirection::RowReverse, JustifyContent::SPACE_BETWEEN, 0.0),
+        ] {
+            let mut tree = TaffyTree::<()>::new();
+            let child = new_leaf(
+                &mut tree,
+                Style {
+                    position: Position::Absolute,
+                    size: Size { width: length(10.0), height: length(40.0) },
+                    ..Style::default()
+                },
+                writing_mode,
+            );
+            let container = new_container(
+                &mut tree,
+                Style {
+                    display: Display::Flex,
+                    direction: Direction::Rtl,
+                    flex_direction,
+                    justify_content: Some(justify_content),
+                    size: Size { width: length(20.0), height: length(80.0) },
+                    ..Style::default()
+                },
+                &[child],
+                writing_mode,
+            );
+
+            tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+            assert_eq!(
+                tree.layout(child).unwrap().location.y,
+                expected_y,
+                "{writing_mode:?} {flex_direction:?} {justify_content:?}"
+            );
+        }
+    }
+}

@@ -114,6 +114,11 @@ impl UsedFlexBasis {
 struct FlexFlow {
     /// Main-axis orientation and reversal in physical coordinates.
     direction: FlexDirection,
+    /// Whether the authored `flex-direction` reverses flex-start and flex-end.
+    ///
+    /// This remains logical: writing-mode and `direction` reversal is applied
+    /// only when a logical position is projected into physical coordinates.
+    authored_main_reversed: bool,
     /// Direction of the physical horizontal axis, wherever it appears in the
     /// main/cross pair.
     horizontal_direction: Direction,
@@ -171,6 +176,7 @@ impl FlexFlow {
 
         Self {
             direction,
+            authored_main_reversed,
             horizontal_direction,
             main_axis_is_inline,
             cross_axis_start_reversed: base_cross_reversed,
@@ -450,6 +456,8 @@ fn flex_container_baselines(flex_lines: &[FlexLine<'_>], constants: &AlgoConstan
 struct AlgoConstants {
     /// The direction of the current segment being laid out
     dir: FlexDirection,
+    /// Whether the authored flex main direction is reversed.
+    authored_main_reversed: bool,
     /// The CSS inline direction inherited by the container.
     inline_direction: Direction,
     /// The direction of the physical horizontal axis.
@@ -1040,6 +1048,7 @@ fn compute_constants(
 
     AlgoConstants {
         dir,
+        authored_main_reversed: flow.authored_main_reversed,
         inline_direction,
         horizontal_direction,
         is_row,
@@ -3761,7 +3770,7 @@ fn flex_static_position(constants: &AlgoConstants, align_self: AlignSelf) -> Log
     };
     let main_edge = flex_main_static_position_edge(
         constants.justify_content.unwrap_or(JustifyContent::FLEX_START),
-        constants.dir.is_reverse(),
+        constants.authored_main_reversed,
     );
     let cross_edge = flex_cross_static_position_edge(align_self, constants.wrap_reverse);
     let (inline_edge, block_edge, align_self_axis) = if constants.main_axis_is_inline {
