@@ -1,6 +1,6 @@
 use taffy::prelude::*;
 use taffy::{Overflow, Point, WritingMode};
-use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode as TextWritingMode};
 
 fn layout_subject_with_content_size(
     subject_style: Style,
@@ -729,6 +729,53 @@ fn intrinsic_block_constraints_follow_a_column_flex_main_axis() {
             WritingMode::HorizontalTb,
         );
         assert_eq!(size.height, 100.0, "preferred={preferred:?} min={min:?} max={max:?}");
+    }
+}
+
+/// Regression for WPT
+/// `css/css-sizing/keyword-sizes-on-flex-item-001.html`.
+///
+/// A row flex item establishes its final inline size only after flexible
+/// lengths have been resolved. Its content-based block-size properties must
+/// therefore measure against that used inline size rather than the earlier
+/// space offered by the flex container.
+#[test]
+fn flex_fit_content_cross_size_uses_the_flexed_main_size() {
+    for (preferred, minimum) in
+        [(Dimension::fit_content(), Dimension::auto()), (Dimension::length(0.0), Dimension::fit_content())]
+    {
+        let mut tree = new_test_tree();
+        let item = tree
+            .new_leaf_with_context(
+                Style {
+                    size: Size { width: Dimension::auto(), height: preferred },
+                    min_size: Size { width: Dimension::auto(), height: minimum },
+                    flex_grow: 0.0,
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                TestNodeContext::ahem_text("aaaaaaaaaaaa\u{200b}bbbbbbbbbbbb".to_owned(), TextWritingMode::Horizontal),
+            )
+            .unwrap();
+        let container = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                    align_items: Some(AlignItems::START),
+                    ..Default::default()
+                },
+                &[item],
+            )
+            .unwrap();
+
+        tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+        assert_eq!(
+            tree.layout(item).unwrap().size,
+            Size { width: 240.0, height: 10.0 },
+            "preferred={preferred:?}, minimum={minimum:?}",
+        );
     }
 }
 

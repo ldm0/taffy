@@ -603,6 +603,18 @@ impl BlockSizeProperties {
         self.preferred.is_auto() && has_preferred_aspect_ratio && auto_size_is_content_based
     }
 
+    /// Whether the preferred size belongs to the content callback rather than
+    /// direct length resolution.
+    ///
+    /// Such a value is provisional until the formatting context establishes
+    /// the final inline-size constraint. A later content probe must replace
+    /// the earlier result instead of treating that result as a direct
+    /// preferred size with higher precedence.
+    #[inline(always)]
+    fn preferred_is_content_based(self, auto_size_is_content_based: bool) -> bool {
+        self.preferred.is_intrinsic() || (self.preferred.is_auto() && auto_size_is_content_based)
+    }
+
     #[inline(always)]
     /// Resolve authored content-based constraints and their automatic minimum.
     fn resolve_content_based_constraints(
@@ -715,6 +727,38 @@ impl ContentBasedBlockSize {
     #[inline(always)]
     pub(crate) const fn resolved_constraints(self) -> ResolvedAxisConstraints {
         self.resolved_constraints
+    }
+
+    /// Replace an earlier content callback result after a formatting context
+    /// establishes the final inline-size constraint.
+    ///
+    /// Flexbox measures an item's hypothetical cross size after resolving
+    /// flexible main sizes. A new preferred value from that callback owns a
+    /// content-based preferred property, while direct preferred sizes retain
+    /// precedence. Min/max still merge through the initially captured source
+    /// constraints.
+    pub(crate) fn apply_remeasured_to_block_axis(
+        self,
+        resolved: ContentBasedSizeConstraints,
+        writing_mode: WritingMode,
+        minimum_border_box_size: Size<f32>,
+        size: &mut Size<Option<f32>>,
+        min_size: &mut Size<Option<f32>>,
+        max_size: &mut Size<Option<f32>>,
+    ) {
+        if resolved.preferred.is_some() && self.properties.preferred_is_content_based(self.auto_size_is_content_based) {
+            let mut logical_size = writing_mode.to_logical(*size);
+            logical_size.block_size = None;
+            *size = writing_mode.to_physical(logical_size);
+        }
+        resolved.apply_to_block_axis(
+            writing_mode,
+            self.resolved_constraints,
+            minimum_border_box_size,
+            size,
+            min_size,
+            max_size,
+        );
     }
 
     /// Whether the constraint space supplied definite initial block geometry

@@ -1398,6 +1398,27 @@ fn generate_anonymous_flex_items(
                 ..constraint_input
             });
             let block_axis = child_writing_mode.block_axis();
+            // Retain direct authored and transferred sources before the early
+            // intrinsic block-size probe materializes provisional numeric
+            // values. Hypothetical cross sizing will re-run that content
+            // callback after the flexed main size is known.
+            let content_based_block_size = ContentBasedBlockSize::new(
+                BlockSizeProperties::new(
+                    raw_logical_size.block_size,
+                    raw_logical_min_size.block_size,
+                    raw_logical_max_size.block_size,
+                ),
+                aspect_ratio,
+                pb_sum,
+                AutoSizeBehavior::FitContent,
+                AvailableSpace::MaxContent,
+                overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+                None,
+            );
+            let block_axis_constraints_without_transfer =
+                constraints_without_transfer.block_axis_constraints(child_writing_mode);
+            let content_based_block_size = content_based_block_size
+                .with_resolved_constraints(constraints_with_transfer.block_axis_constraints(child_writing_mode));
             let block_known_dimensions = match block_axis {
                 AbsoluteAxis::Horizontal => Size { width: None, height: constraints_with_transfer.size.height },
                 AbsoluteAxis::Vertical => Size { width: constraints_with_transfer.size.width, height: None },
@@ -1468,22 +1489,6 @@ fn generate_anonymous_flex_items(
                 constraints_without_transfer.apply_automatic_minimum(axis, automatic_minimum.value);
                 depends_on_block_constraints |= automatic_minimum.depends_on_block_constraints;
             }
-            let content_based_block_size = ContentBasedBlockSize::new(
-                BlockSizeProperties::new(
-                    raw_logical_size.block_size,
-                    raw_logical_min_size.block_size,
-                    raw_logical_max_size.block_size,
-                ),
-                aspect_ratio,
-                pb_sum,
-                AutoSizeBehavior::FitContent,
-                AvailableSpace::MaxContent,
-                overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
-                None,
-            )
-            .with_resolved_constraints(constraints_with_transfer.block_axis_constraints(child_writing_mode));
-            let block_axis_constraints_without_transfer =
-                constraints_without_transfer.block_axis_constraints(child_writing_mode);
             size = constraints_with_transfer.size;
             let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
             let specified_size_suggestion = definite_preferred_size.main(constants.dir);
@@ -2856,9 +2861,9 @@ fn determine_hypothetical_cross_size(
 
             let mut min_size_with_transfer = child.min_size_with_transfer;
             let mut max_size_with_transfer = child.max_size_with_transfer;
-            content_constraints.apply_to_block_axis(
+            child.content_based_block_size.apply_remeasured_to_block_axis(
+                content_constraints,
                 child_writing_mode,
-                child.content_based_block_size.resolved_constraints(),
                 padding_border,
                 &mut preferred_size,
                 &mut min_size_with_transfer,
@@ -2868,14 +2873,17 @@ fn determine_hypothetical_cross_size(
             child.max_size_with_transfer = max_size_with_transfer;
 
             let mut size_without_transfer = preferred_size;
-            content_constraints.apply_to_block_axis(
-                child_writing_mode,
-                child.block_axis_constraints_without_transfer,
-                padding_border,
-                &mut size_without_transfer,
-                &mut child.min_size,
-                &mut child.max_size,
-            );
+            child
+                .content_based_block_size
+                .with_resolved_constraints(child.block_axis_constraints_without_transfer)
+                .apply_remeasured_to_block_axis(
+                    content_constraints,
+                    child_writing_mode,
+                    padding_border,
+                    &mut size_without_transfer,
+                    &mut child.min_size,
+                    &mut child.max_size,
+                );
             child.depends_on_block_constraints |= content_constraints.depends_on_block_constraints;
         }
 
