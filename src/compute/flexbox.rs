@@ -58,33 +58,29 @@ enum UsedFlexBasis {
     Stretch,
 }
 
-/// Sizing operation currently performed by the flex algorithm.
+/// Intrinsic inline-size algorithm requested from the flex container.
 ///
 /// A wrapped column container has a dedicated intrinsic inline-size
 /// operation: its max-content contribution follows the columns formed under
 /// the block constraint, while its min-content contribution is the largest
-/// item contribution. Keeping that phase explicit prevents normal line
-/// cross-size aggregation from silently defining both values.
+/// item contribution. This state is deliberately independent from intrinsic
+/// block-size measurement: a caller can request both physical axes without
+/// making one operation erase the other.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum FlexSizingPhase {
-    /// Resolve the flex container's used size and lay out its items.
-    Layout,
-    /// Measure an intrinsic axis that does not use one of the specialized
-    /// flex inline-contribution algorithms below.
-    IntrinsicMeasurement,
+enum FlexIntrinsicInlineSize {
     /// Intrinsic main sizing for a row flex container under the given
     /// min-/max-content constraint.
-    RowIntrinsic(AvailableSpace),
+    Row(AvailableSpace),
     /// Intrinsic inline sizing for a single-line column flex container.
     ///
     /// A column's intrinsic inline contribution is the largest item
     /// contribution. It is deliberately computed before flexible-length
     /// resolution so a flexed block size cannot feed back through an aspect
     /// ratio and manufacture an inline contribution.
-    ColumnIntrinsic(AvailableSpace),
+    Column(AvailableSpace),
     /// Intrinsic inline sizing for a wrapped column under the given
     /// min-/max-content constraint.
-    ColumnWrapIntrinsic(AvailableSpace),
+    ColumnWrap(AvailableSpace),
 }
 
 impl UsedFlexBasis {
@@ -479,8 +475,12 @@ struct AlgoConstants {
     cross_axis_flex_start_reversed: bool,
     /// Is wrapping enabled (in either direction)
     is_wrap: bool,
-    /// Intrinsic sizing operation selected for this layout pass.
-    sizing_phase: FlexSizingPhase,
+    /// Specialized intrinsic inline-size operation, when one was requested.
+    intrinsic_inline_size: Option<FlexIntrinsicInlineSize>,
+    /// Whether a block-axis main size comes from the intrinsic block size
+    /// produced by flex layout. This is independent from an inline-size probe
+    /// so a two-axis measurement can compute both quantities correctly.
+    uses_layout_intrinsic_block_size: bool,
     /// Whether `flex-wrap` reverses the logical cross axis.
     wrap_reverse: bool,
     /// Whether the normalized physical cross axis is reversed. Horizontal
@@ -590,6 +590,22 @@ fn flex_item_intrinsic_definite_dimensions(
         constants.dir,
         item.preferred_cross_size_is_definite.then(|| known_dimensions.cross(constants.dir)).flatten(),
     )
+}
+
+/// Project an intrinsic flex-item constraint into the child's main axis.
+///
+/// Min-/max-content constraints describe intrinsic inline sizing. When the
+/// flex container's main axis maps to the child's block axis, Blink instead
+/// measures the child with an indefinite initial block size and reads the
+/// layout result's intrinsic block size. `MaxContent` is Taffy's unbounded
+/// available-space representation for that block-axis layout measurement.
+#[inline]
+fn flex_item_content_main_constraint(item: &FlexItem, inline_constraint: AvailableSpace) -> AvailableSpace {
+    if item.main_axis_is_inline {
+        inline_constraint
+    } else {
+        AvailableSpace::MaxContent
+    }
 }
 
 /// Resolve the space available to a flex item's cross axis.
@@ -758,7 +774,7 @@ fn compute_preliminary(
     // flexible-length resolution in its block axis. Resolve it directly from
     // the item contributions, matching the intrinsic sizing entry point used
     // by block layout, floats, tables, and other shrink-to-fit callers.
-    if let FlexSizingPhase::ColumnIntrinsic(constraint) = constants.sizing_phase {
+    if let Some(FlexIntrinsicInlineSize::Column(constraint)) = constants.intrinsic_inline_size {
         let (intrinsic_cross_size, depends_on_block_constraints) = determine_single_line_column_intrinsic_cross_size(
             tree,
             &mut flex_items,
@@ -1039,17 +1055,17 @@ fn compute_constants(
         && inputs.sizing_purpose == SizingPurpose::IntrinsicContribution
         && inputs.axis.contains(writing_mode.inline_axis())
         && matches!(inline_available_space, AvailableSpace::MinContent | AvailableSpace::MaxContent);
-    let sizing_phase = if inputs.sizing_purpose == SizingPurpose::Layout {
-        FlexSizingPhase::Layout
-    } else if !is_intrinsic_inline_probe {
-        FlexSizingPhase::IntrinsicMeasurement
-    } else if main_axis_is_inline {
-        FlexSizingPhase::RowIntrinsic(inline_available_space)
-    } else if is_wrap {
-        FlexSizingPhase::ColumnWrapIntrinsic(inline_available_space)
-    } else {
-        FlexSizingPhase::ColumnIntrinsic(inline_available_space)
-    };
+    let intrinsic_inline_size = is_intrinsic_inline_probe.then_some({
+        if main_axis_is_inline {
+            FlexIntrinsicInlineSize::Row(inline_available_space)
+        } else if is_wrap {
+            FlexIntrinsicInlineSize::ColumnWrap(inline_available_space)
+        } else {
+            FlexIntrinsicInlineSize::Column(inline_available_space)
+        }
+    });
+    let uses_layout_intrinsic_block_size = main_axis_is_block
+        && (inputs.sizing_purpose == SizingPurpose::Layout || inputs.axis.contains(writing_mode.block_axis()));
 
     AlgoConstants {
         dir,
@@ -1063,7 +1079,8 @@ fn compute_constants(
         cross_axis_start_reversed: flow.cross_axis_start_reversed,
         cross_axis_flex_start_reversed: flow.cross_axis_flex_start_reversed,
         is_wrap,
-        sizing_phase,
+        intrinsic_inline_size,
+        uses_layout_intrinsic_block_size,
         wrap_reverse,
         cross_axis_reversed,
         writing_mode,
@@ -1852,15 +1869,16 @@ fn determine_flex_base_size(
             //    is auto and not definite, in this calculation use fit-content as the
             //    flex item’s cross size. The flex base size is the item’s resulting main size.
 
-            let content_constraint = match constants.sizing_phase {
+            let inline_constraint = match constants.intrinsic_inline_size {
                 // Row intrinsic sizing constructs each content-based flex base
                 // in an indefinite flex-basis space. Its content fallback is
                 // therefore max-content even while the container contribution
                 // itself is being queried under a min-content constraint.
-                FlexSizingPhase::RowIntrinsic(_) => AvailableSpace::MaxContent,
+                Some(FlexIntrinsicInlineSize::Row(_)) => AvailableSpace::MaxContent,
                 _ if available_space.main(dir) == AvailableSpace::MinContent => AvailableSpace::MinContent,
                 _ => AvailableSpace::MaxContent,
             };
+            let content_constraint = flex_item_content_main_constraint(child, inline_constraint);
             let child_available_space =
                 Size::MAX_CONTENT.with_main(dir, content_constraint).with_cross(dir, cross_axis_available_space);
 
@@ -1915,7 +1933,9 @@ fn determine_flex_base_size(
 
         child.resolved_minimum_main_size = style_min_main_size.unwrap_or({
             let min_content_main_size = {
-                let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
+                let child_available_space = Size::MIN_CONTENT
+                    .with_main(dir, flex_item_content_main_constraint(child, AvailableSpace::MinContent))
+                    .with_cross(dir, cross_axis_available_space);
 
                 debug_log!("COMPUTE CHILD MIN SIZE:");
                 let measured = tree.measure_child_size_with_metadata(
@@ -2259,19 +2279,16 @@ fn determine_container_main_size(
     let specified_outer_main_size = constants.node_outer_size.main(constants.dir);
     let needs_content_based_block_resolution =
         constants.main_axis_is_block && constants.resolve_content_based_block_size;
-    let uses_layout_intrinsic_block_size =
-        constants.main_axis_is_block && constants.sizing_phase == FlexSizingPhase::Layout;
     let needs_intrinsic_main_size = specified_outer_main_size.is_none() || needs_content_based_block_resolution;
     let intrinsic_outer_main_size = if !needs_intrinsic_main_size {
         None
-    } else if uses_layout_intrinsic_block_size {
-        // Blink's layout pass records a column container's intrinsic block
-        // size from the largest sum of line hypothetical main sizes. An
-        // incoming MaxContent available-space value is only a parent
-        // constraint here; it does not turn used layout into an intrinsic
-        // contribution query.
+    } else if constants.uses_layout_intrinsic_block_size {
+        // Blink's layout result records a column container's intrinsic block
+        // size from the largest sum of line hypothetical main sizes. Both a
+        // real layout and a parent's block-axis content measurement consume
+        // that value; neither is an intrinsic inline-contribution query.
         Some(largest_line_hypothetical_outer_main_size(lines, constants) + main_content_box_inset)
-    } else if let FlexSizingPhase::RowIntrinsic(constraint) = constants.sizing_phase {
+    } else if let Some(FlexIntrinsicInlineSize::Row(constraint)) = constants.intrinsic_inline_size {
         Some(
             determine_row_intrinsic_main_size(tree, constraint, available_space, lines, constants)
                 + main_content_box_inset,
@@ -3041,8 +3058,8 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
             .chain(minor_metrics.map(BaselineMetrics::cross_size))
             .fold(max_outer_cross_size, f32::max);
     }
-    let intrinsic_line_cross_size = match constants.sizing_phase {
-        FlexSizingPhase::ColumnWrapIntrinsic(AvailableSpace::MinContent) => flex_lines
+    let intrinsic_line_cross_size = match constants.intrinsic_inline_size {
+        Some(FlexIntrinsicInlineSize::ColumnWrap(AvailableSpace::MinContent)) => flex_lines
             .iter()
             .flat_map(|line| line.items.iter())
             .map(|item| item.hypothetical_outer_size.cross(constants.dir))

@@ -298,3 +298,76 @@ fn column_wrap_intrinsic_sizing_follows_logical_axes_in_vertical_writing() {
 
     assert_eq!(tree.layout(flex).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
+
+/// Regression for WPT
+/// `css/css-flexbox/flex-minimum-height-flex-items-029.html`.
+///
+/// When a wrapped column flexbox is itself a flex item, its content-based
+/// automatic minimum uses the intrinsic block size produced by flex layout.
+/// That size is the largest sum of the lines' outer hypothetical main sizes;
+/// it is not the longest line formed by laying the child out under a
+/// min-content block constraint.
+#[test]
+fn wrapped_column_reports_its_layout_intrinsic_block_size_to_an_auto_minimum() {
+    for writing_mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl] {
+        let mut tree = TaffyTree::<()>::new();
+        let physical_size = |inline_size, block_size| match writing_mode {
+            WritingMode::HorizontalTb => Size { width: inline_size, height: block_size },
+            WritingMode::VerticalLr | WritingMode::VerticalRl | WritingMode::SidewaysLr | WritingMode::SidewaysRl => {
+                Size { width: block_size, height: inline_size }
+            }
+        };
+        let item = |tree: &mut TaffyTree<()>| {
+            let item = tree
+                .new_leaf(Style {
+                    size: physical_size(length(100.0), auto()),
+                    min_size: physical_size(auto(), length(50.0)),
+                    flex_basis: length(0.0),
+                    flex_grow: 1.0,
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .unwrap();
+            tree.set_writing_mode(item, writing_mode).unwrap();
+            item
+        };
+        let first = item(&mut tree);
+        let second = item(&mut tree);
+        let wrapped = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    flex_wrap: FlexWrap::Wrap,
+                    size: physical_size(auto(), length(500.0)),
+                    flex_basis: length(0.0),
+                    flex_grow: 1.0,
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+        tree.set_writing_mode(wrapped, writing_mode).unwrap();
+        let outer = tree
+            .new_with_children(
+                Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() },
+                &[wrapped],
+            )
+            .unwrap();
+        tree.set_writing_mode(outer, writing_mode).unwrap();
+
+        tree.compute_layout(outer, Size::MAX_CONTENT).unwrap();
+
+        let block_size = |node| match writing_mode {
+            WritingMode::HorizontalTb => tree.layout(node).unwrap().size.height,
+            WritingMode::VerticalLr | WritingMode::VerticalRl | WritingMode::SidewaysLr | WritingMode::SidewaysRl => {
+                tree.layout(node).unwrap().size.width
+            }
+        };
+        assert_eq!(block_size(outer), 100.0, "{writing_mode:?} outer");
+        assert_eq!(block_size(wrapped), 100.0, "{writing_mode:?} wrapped");
+        assert_eq!(block_size(first), 50.0, "{writing_mode:?} first item");
+        assert_eq!(block_size(second), 50.0, "{writing_mode:?} second item");
+    }
+}
