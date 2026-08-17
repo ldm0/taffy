@@ -10,7 +10,7 @@ use crate::geometry::{AbsoluteAxis, LogicalSize, Size, WritingMode};
 use crate::style::{AvailableSpace, CoreStyle, Dimension, Overflow};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, RequestedAxis,
-    SizingMode,
+    SizingMode, SizingPurpose,
 };
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, ResolvedAspectRatio};
@@ -21,6 +21,30 @@ use super::aspect_ratio::{
 };
 use super::stretch::resolve_stretch_size_constraints;
 use super::used_size::{resolve_auto_size_preference, resolve_used_size, AutoSizeInput};
+
+/// Whether a replaced box's logical inline min-content contribution uses the
+/// cyclic percentage fallback from CSS Sizing.
+///
+/// Blink applies this when either the preferred or maximum logical inline
+/// size contains a percentage. Keeping the predicate at the shared
+/// constraint-space boundary lets child formatting contexts preserve the
+/// operation even when a direct preferred length would otherwise look fully
+/// resolved.
+pub(crate) fn replaced_min_content_contribution_is_cyclic(
+    inputs: LayoutInput,
+    writing_mode: WritingMode,
+    raw_size: Size<Dimension>,
+    raw_max_size: Size<Dimension>,
+) -> bool {
+    let logical_available_space = writing_mode.to_logical(inputs.available_space);
+    let logical_size = writing_mode.to_logical(raw_size);
+    let logical_max_size = writing_mode.to_logical(raw_max_size);
+    inputs.sizing_purpose == SizingPurpose::IntrinsicContribution
+        && inputs.axis.contains(writing_mode.inline_axis())
+        && logical_available_space.inline_size == AvailableSpace::MinContent
+        && (logical_size.inline_size.may_have_percentage_dependence()
+            || logical_max_size.inline_size.may_have_percentage_dependence())
+}
 
 /// Resolve the fit-content inline size selected by a containing formatting
 /// context for an automatically sized child.
@@ -1174,7 +1198,25 @@ pub(crate) fn resolve_node_size_constraints(
     let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
     let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
     let is_replaced = tree.get_core_container_style(node_id).is_compressible_replaced();
-    let direct = resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
+    let cyclic_replaced_contribution =
+        is_replaced && replaced_min_content_contribution_is_cyclic(inputs, writing_mode, raw_size, raw_max_size);
+    let mut direct =
+        resolve_direct_node_size_constraints(tree, inputs, writing_mode, sizing, TransferredSizesMode::Normal);
+    if cyclic_replaced_contribution {
+        let fallback = padding_border_size.get_abs(inline_axis);
+        match inline_axis {
+            AbsoluteAxis::Horizontal => {
+                direct.constraints.size.width = Some(fallback);
+                direct.constraints.aspect_ratio_applied.width = false;
+                direct.definite_preferred_size.width = None;
+            }
+            AbsoluteAxis::Vertical => {
+                direct.constraints.size.height = Some(fallback);
+                direct.constraints.aspect_ratio_applied.height = false;
+                direct.definite_preferred_size.height = None;
+            }
+        }
+    }
     let initial_geometry = inputs.known_dimensions.or(direct.constraints.initial_geometry());
     let content_size_override = if is_replaced {
         IntrinsicAxisValue::default()

@@ -92,6 +92,37 @@ mod block_replaced {
     }
 
     #[test]
+    fn percentage_max_width_makes_a_fixed_replaced_min_content_contribution_cyclic() {
+        let mut taffy = new_test_tree();
+        let child = taffy
+            .new_leaf_with_context(
+                Style {
+                    display: Display::Block,
+                    item_is_replaced: true,
+                    size: Size { width: length(100.0), height: length(100.0) },
+                    max_size: Size { width: percent(0.5), height: auto() },
+                    ..Default::default()
+                },
+                TestNodeContext::fixed(100.0, 100.0),
+            )
+            .unwrap();
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::min_content(), height: auto() },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        layout(&mut taffy, root);
+
+        assert_eq!(taffy.layout(root).unwrap().size.width, 0.0);
+        assert_eq!(taffy.layout(child).unwrap().size.width, 0.0);
+    }
+
+    #[test]
     fn auto_margins_center_replaced_child() {
         let mut taffy = new_test_tree();
         let child = taffy

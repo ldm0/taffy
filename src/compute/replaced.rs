@@ -14,6 +14,7 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::WritingMode;
 
 use super::common::box_sizing::{authored_size_to_content_box, border_box_to_content_box};
+use super::common::intrinsic_size::replaced_min_content_contribution_is_cyclic;
 
 /// Natural content metrics supplied by the embedding engine.
 ///
@@ -146,6 +147,12 @@ pub fn compute_replaced_layout(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
+    let logical_raw_size = context.writing_mode.to_logical(raw_size);
+    let logical_default_object_size = context.writing_mode.to_logical(default_object_size);
+    let ratio_only_max_content_inline_size = logical_raw_size
+        .inline_size
+        .may_have_percentage_dependence()
+        .then_some(logical_default_object_size.inline_size);
     let box_sizing = style.box_sizing();
     let mut preferred_size = authored_size_to_content_box(
         raw_size.maybe_resolve(preferred_percentage_basis, &resolve_calc_value),
@@ -162,6 +169,18 @@ pub fn compute_replaced_layout(
         box_sizing,
         padding_border_sum,
     );
+
+    // CSS Sizing gives replaced elements a special min-content contribution:
+    // if their preferred or maximum logical inline size contains a
+    // percentage, that preferred contribution is zero and only the minimum
+    // inline constraint may raise it. Treat the whole percentage-dependent
+    // value as cyclic here, rather than evaluating an absolute `calc()` term
+    // against a zero basis. Max-content keeps the normal replaced fallback.
+    if replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size) {
+        let mut logical_preferred_size = context.writing_mode.to_logical(preferred_size);
+        logical_preferred_size.inline_size = Some(0.0);
+        preferred_size = context.writing_mode.to_physical(logical_preferred_size);
+    }
 
     for (raw, resolved, contained) in [
         (raw_size, &mut preferred_size, contained_content_size),
@@ -184,7 +203,13 @@ pub fn compute_replaced_layout(
     let intrinsic_basis = content_known.or(preferred_size);
     let intrinsic_fallback = natural_size.or_else(|| {
         context.aspect_ratio.ratio.map(|_| {
-            ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
+            ratio_only_stretch_size(
+                available_space,
+                context.writing_mode,
+                context.aspect_ratio,
+                padding_border_sum,
+                ratio_only_max_content_inline_size,
+            )
         })
     });
     let intrinsic_size = Size {
@@ -264,7 +289,13 @@ pub fn compute_replaced_layout(
         .expect("preferred replaced dimensions or natural sizing determine both axes")
     } else {
         natural_size.unwrap_or_else(|| {
-            ratio_only_stretch_size(available_space, context.writing_mode, context.aspect_ratio, padding_border_sum)
+            ratio_only_stretch_size(
+                available_space,
+                context.writing_mode,
+                context.aspect_ratio,
+                padding_border_sum,
+                ratio_only_max_content_inline_size,
+            )
         })
     };
     let size = unclamped.map(|value| value.max(0.0));
@@ -456,21 +487,26 @@ fn normalized_natural_size(
 
 /// Resolve the stretch-fit fallback for replaced content that has only a
 /// preferred ratio. Replaced layout stretches in its logical inline axis and
-/// derives the orthogonal axis through that ratio.
+/// derives the orthogonal axis through that ratio. An indefinite max-content
+/// query uses the category's default logical inline size when the preferred
+/// inline size contains a percentage; the corresponding min-content query is
+/// cyclic and therefore contributes zero.
 fn ratio_only_stretch_size(
     available_space: Size<AvailableSpace>,
     writing_mode: WritingMode,
     aspect_ratio: ResolvedAspectRatio,
     padding_border: Size<f32>,
+    percentage_max_content_inline_size: Option<f32>,
 ) -> Size<f32> {
-    let stretch_axis = |space: AvailableSpace, inset: f32| match space {
+    let stretch_inline_axis = |space: AvailableSpace, inset: f32| match space {
         AvailableSpace::Definite(size) => (size - inset).max(0.0),
-        AvailableSpace::MinContent | AvailableSpace::MaxContent => 0.0,
+        AvailableSpace::MinContent => 0.0,
+        AvailableSpace::MaxContent => percentage_max_content_inline_size.unwrap_or(0.0),
     };
     let ratio_basis = if writing_mode.is_horizontal() {
-        Size { width: Some(stretch_axis(available_space.width, padding_border.width)), height: None }
+        Size { width: Some(stretch_inline_axis(available_space.width, padding_border.width)), height: None }
     } else {
-        Size { width: None, height: Some(stretch_axis(available_space.height, padding_border.height)) }
+        Size { width: None, height: Some(stretch_inline_axis(available_space.height, padding_border.height)) }
     };
     complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
         .expect("a valid preferred ratio resolves the stretch-fit axis")
@@ -557,9 +593,16 @@ fn ratio_basis_scale(constrained: f32, original: f32, inset: f32, box_sizing: Bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dimension, Rect, Style};
+    use crate::{Dimension, Rect, SizingPurpose, Style};
 
     type TestStyle = Style<crate::sys::DefaultCheapStr>;
+
+    #[cfg(feature = "calc")]
+    #[repr(align(8))]
+    struct ReplacedCalcToken;
+
+    #[cfg(feature = "calc")]
+    static REPLACED_CALC_TOKEN: ReplacedCalcToken = ReplacedCalcToken;
 
     fn inputs(parent_size: Size<Option<f32>>) -> LayoutInput {
         LayoutInput {
@@ -1151,6 +1194,191 @@ mod tests {
             )
             .size,
             Size { width: 50.0, height: 50.0 }
+        );
+    }
+
+    /// Regression for
+    /// <https://wpt.live/css/css-sizing/svg-intrinsic-size-006.html>.
+    ///
+    /// A percentage-sized replaced box with only a natural ratio contributes
+    /// its category's default object size to max-content. Its min-content
+    /// contribution remains zero, and a definite containing block resolves
+    /// the authored percentage normally. This is the same split as Blink's
+    /// replaced StretchFit fallback.
+    #[test]
+    fn ratio_only_percentage_size_uses_default_object_max_content_contribution() {
+        let style: TestStyle = Style {
+            size: Size { width: Dimension::percent(0.1), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        let context = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+        );
+        let contribution = |available_width| {
+            let mut input = inputs(Size::NONE);
+            input.sizing_purpose = crate::SizingPurpose::IntrinsicContribution;
+            input.axis = RequestedAxis::Horizontal;
+            input.available_space.width = available_width;
+            compute_replaced_layout(input, &style, context, |_, _| 0.0).size
+        };
+
+        assert_eq!(contribution(AvailableSpace::MinContent), Size { width: 0.0, height: 0.0 });
+        assert_eq!(contribution(AvailableSpace::MaxContent), Size { width: 300.0, height: 300.0 });
+
+        let mut layout_input = inputs(Size { width: Some(200.0), height: None });
+        layout_input.run_mode = crate::RunMode::PerformLayout;
+        layout_input.sizing_purpose = crate::SizingPurpose::Layout;
+        layout_input.available_space.width = AvailableSpace::Definite(200.0);
+        assert_eq!(
+            compute_replaced_layout(layout_input, &style, context, |_, _| 0.0).size,
+            Size { width: 20.0, height: 20.0 }
+        );
+    }
+
+    #[cfg(feature = "calc")]
+    #[test]
+    fn ratio_only_percentage_calc_uses_intrinsic_contribution_rules() {
+        let style: TestStyle = Style {
+            size: Size {
+                width: Dimension::calc((&REPLACED_CALC_TOKEN as *const ReplacedCalcToken).cast()),
+                height: Dimension::auto(),
+            },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        let context = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+        );
+        let resolve_calc = |_: *const (), basis: f32| 20.0 + 0.1 * basis;
+        let contribution = |available_width| {
+            let mut input = inputs(Size::NONE);
+            input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+            input.axis = RequestedAxis::Horizontal;
+            input.available_space.width = available_width;
+            compute_replaced_layout(input, &style, context, resolve_calc).size
+        };
+
+        assert_eq!(contribution(AvailableSpace::MinContent), Size { width: 0.0, height: 0.0 });
+        assert_eq!(contribution(AvailableSpace::MaxContent), Size { width: 300.0, height: 300.0 });
+
+        let mut layout_input = inputs(Size { width: Some(200.0), height: None });
+        layout_input.sizing_purpose = SizingPurpose::Layout;
+        layout_input.available_space.width = AvailableSpace::Definite(200.0);
+        assert_eq!(
+            compute_replaced_layout(layout_input, &style, context, resolve_calc).size,
+            Size { width: 40.0, height: 40.0 }
+        );
+    }
+
+    #[test]
+    fn percentage_dependent_min_content_honors_minimum_and_maximum_constraints() {
+        let context = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+        );
+        let contribution = |style: &TestStyle, available_width| {
+            let mut input = inputs(Size::NONE);
+            input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+            input.axis = RequestedAxis::Horizontal;
+            input.available_space.width = available_width;
+            compute_replaced_layout(input, style, context, |_, _| 0.0).size
+        };
+
+        let percentage_with_minimum: TestStyle = Style {
+            size: Size { width: Dimension::percent(0.1), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        assert_eq!(
+            contribution(&percentage_with_minimum, AvailableSpace::MinContent),
+            Size { width: 50.0, height: 50.0 }
+        );
+        assert_eq!(
+            contribution(&percentage_with_minimum, AvailableSpace::MaxContent),
+            Size { width: 300.0, height: 300.0 }
+        );
+
+        let percentage_maximum: TestStyle = Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            max_size: Size { width: Dimension::percent(0.5), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        assert_eq!(contribution(&percentage_maximum, AvailableSpace::MinContent), Size { width: 0.0, height: 0.0 });
+        assert_eq!(contribution(&percentage_maximum, AvailableSpace::MaxContent), Size { width: 100.0, height: 100.0 });
+    }
+
+    #[test]
+    fn percentage_default_object_fallback_uses_logical_inline_axis() {
+        let style: TestStyle = Style {
+            size: Size { width: Dimension::auto(), height: Dimension::percent(0.1) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        };
+        let context = ReplacedSizingContext::new(
+            WritingMode::VerticalRl,
+            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+        );
+        let mut input = inputs(Size::NONE);
+        input.parent_writing_mode = WritingMode::VerticalRl;
+        input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+        input.axis = RequestedAxis::Vertical;
+        input.available_space = Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent };
+
+        assert_eq!(
+            compute_replaced_layout(input, &style, context, |_, _| 0.0).size,
+            Size { width: 150.0, height: 150.0 }
+        );
+    }
+
+    #[test]
+    fn percentage_default_fallback_does_not_override_stronger_replaced_data() {
+        let percentage_width: TestStyle = Style {
+            size: Size { width: Dimension::percent(0.1), height: Dimension::auto() },
+            aspect_ratio: Some(2.0),
+            ..Style::default()
+        };
+        let mut input = inputs(Size::NONE);
+        input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+        input.axis = RequestedAxis::Horizontal;
+
+        let natural_width = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size { width: Some(100.0), height: None }, Size { width: 300.0, height: 150.0 }),
+        );
+        assert_eq!(
+            compute_replaced_layout(input, &percentage_width, natural_width, |_, _| 0.0).size,
+            Size { width: 100.0, height: 50.0 }
+        );
+
+        let fixed_block_axis: TestStyle = Style {
+            size: Size { width: Dimension::percent(0.1), height: Dimension::length(50.0) },
+            aspect_ratio: Some(2.0),
+            ..Style::default()
+        };
+        let ratio_only = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
+        );
+        assert_eq!(
+            compute_replaced_layout(input, &fixed_block_axis, ratio_only, |_, _| 0.0).size,
+            Size { width: 100.0, height: 50.0 }
         );
     }
 

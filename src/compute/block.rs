@@ -24,9 +24,9 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
     fit_content_inline_size, intrinsic_content_size_from_initial_geometry, measure_aspect_ratio_automatic_minimum,
-    measure_child_intrinsic_contribution, resolve_intrinsic_axis_constraints, resolve_node_size_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput,
-    ResolvedNodeSizing,
+    measure_child_intrinsic_contribution, replaced_min_content_contribution_is_cyclic,
+    resolve_intrinsic_axis_constraints, resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
+    IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
 use crate::tree::OutOfFlowContainingBlock;
@@ -367,6 +367,11 @@ struct BlockItem {
     /// rather than being stretch-sized.
     /// <https://www.w3.org/TR/CSS22/visudet.html#block-replaced-width>
     is_replaced: bool,
+
+    /// A percentage in the replaced box's preferred or maximum logical
+    /// inline size makes its min-content contribution cyclic. Preserve that
+    /// provenance so a direct preferred length cannot bypass child sizing.
+    has_cyclic_replaced_inline_contribution: bool,
 
     /// Whether this item is laid out by the block formatting algorithm.
     ///
@@ -1008,6 +1013,7 @@ fn generate_item_list(
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
             let mut automatic_inline_minimum = None;
             let mut intrinsic_context = None;
+            let mut cyclic_replaced_inline_contribution = false;
             let mut size = raw_size
                 .maybe_resolve(physical_node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
@@ -1139,7 +1145,15 @@ fn generate_item_list(
                     block_margins_are_collapsible: Line::TRUE,
                 };
                 let intrinsic_available_size = child_available_space.get_abs(intrinsic_axis);
+                let has_cyclic_replaced_inline_contribution = is_replaced
+                    && replaced_min_content_contribution_is_cyclic(
+                        intrinsic_inputs,
+                        child_writing_mode,
+                        raw_size,
+                        raw_max_size,
+                    );
                 intrinsic_context = Some((intrinsic_axis, intrinsic_inputs, intrinsic_available_size));
+                cyclic_replaced_inline_contribution = has_cyclic_replaced_inline_contribution;
             }
 
             let preferred_size_is_indefinite = size.map(|size| size.is_none());
@@ -1209,6 +1223,7 @@ fn generate_item_list(
                 order: 0,
                 is_table,
                 is_replaced,
+                has_cyclic_replaced_inline_contribution: cyclic_replaced_inline_contribution,
                 uses_block_layout,
                 is_in_same_bfc,
                 inline_auto_behavior,
@@ -1259,8 +1274,12 @@ fn determine_content_based_container_inline_size(
     let mut float_contribution = FloatIntrinsicWidthCalculator::new(available_inline_size);
     let mut depends_on_block_constraints = false;
     for item in items.iter_mut().filter(|item| item.position != Position::Absolute) {
-        let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
-        let known_logical_size = parent_writing_mode.to_logical(known_dimensions);
+        let mut known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
+        let mut known_logical_size = parent_writing_mode.to_logical(known_dimensions);
+        if item.has_cyclic_replaced_inline_contribution {
+            known_logical_size.inline_size = None;
+            known_dimensions = parent_writing_mode.to_physical(known_logical_size);
+        }
         let min_logical_size = parent_writing_mode.to_logical(item.min_size);
         let max_logical_size = parent_writing_mode.to_logical(item.max_size);
 
