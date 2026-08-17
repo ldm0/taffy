@@ -812,9 +812,15 @@ impl LayoutOutput {
         Self::from_sizes(size, Size::zero())
     }
 
-    /// Add block-constraint dependency metadata to a measured result.
+    /// Attach block-constraint dependency metadata to a rich measurement.
+    ///
+    /// Custom formatting-context adapters may return [`LayoutOutput`] from a
+    /// `ComputeSize` operation when their parent also needs fragment state
+    /// such as baselines. Exposing the metadata builder keeps that rich result
+    /// equivalent to [`IntrinsicSizeResult`] when it is later projected into
+    /// the size-only protocol.
     #[inline(always)]
-    pub(crate) fn with_block_constraint_dependency(mut self, depends: bool) -> Self {
+    pub fn with_block_constraint_dependency(mut self, depends: bool) -> Self {
         self.depends_on_block_constraints |= depends;
         self
     }
