@@ -255,7 +255,8 @@ pub fn compute_replaced_layout(
         return replaced_output(size.map(|value| value.max(0.0)) + padding_border_sum);
     }
 
-    let unclamped = if preferred_size.width.is_some() || preferred_size.height.is_some() {
+    let direct_preferred_axes = Size { width: preferred_size.width.is_some(), height: preferred_size.height.is_some() };
+    let unclamped = if direct_preferred_axes.width || direct_preferred_axes.height {
         complete_replaced_size(
             apply_aspect_ratio_to_content_size(preferred_size, context.aspect_ratio, padding_border_sum),
             natural_size,
@@ -267,20 +268,77 @@ pub fn compute_replaced_layout(
         })
     };
     let size = unclamped.map(|value| value.max(0.0));
-    let width_violation = constraint_violation(size.width, min_size.width, max_size.width);
-    let height_violation = constraint_violation(size.height, min_size.height, max_size.height);
 
     if context.aspect_ratio.ratio.is_none() {
         return replaced_output(size.maybe_clamp(min_size, max_size) + padding_border_sum);
     }
 
-    let size = match (width_violation, height_violation) {
+    let size = constrain_replaced_size(
+        size,
+        direct_preferred_axes,
+        min_size,
+        max_size,
+        context.aspect_ratio,
+        padding_border_sum,
+    );
+    replaced_output(size + padding_border_sum)
+}
+
+/// Apply used min/max constraints without losing which preferred axes were
+/// resolved directly.
+///
+/// Blink's replaced sizing keeps independently resolved inline and block
+/// sizes as two optionals. When one is present, it owns that axis: constraints
+/// first clamp the direct value, the ratio derives only the missing axis, and
+/// constraints on that derived axis do not feed back. A natural-size
+/// candidate has no direct axis, so both dimensions remain coupled by the
+/// preferred ratio during constraint reconciliation.
+fn constrain_replaced_size(
+    size: Size<f32>,
+    direct_axes: Size<bool>,
+    min_size: Size<Option<f32>>,
+    max_size: Size<Option<f32>>,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> Size<f32> {
+    match (direct_axes.width, direct_axes.height) {
+        (true, true) => size.maybe_clamp(min_size, max_size),
+        (true, false) => {
+            let width = size.width.maybe_clamp(min_size.width, max_size.width);
+            let height = content_height_from_width(width, aspect_ratio, padding_border)
+                .expect("a resolved ratio transfers a direct width to height")
+                .maybe_clamp(min_size.height, max_size.height);
+            Size { width, height }
+        }
+        (false, true) => {
+            let height = size.height.maybe_clamp(min_size.height, max_size.height);
+            let width = content_width_from_height(height, aspect_ratio, padding_border)
+                .expect("a resolved ratio transfers a direct height to width")
+                .maybe_clamp(min_size.width, max_size.width);
+            Size { width, height }
+        }
+        (false, false) => constrain_natural_replaced_size(size, min_size, max_size, aspect_ratio, padding_border),
+    }
+}
+
+/// Reconcile constraints for a natural replaced size while preserving its
+/// preferred ratio where the min/max pair permits it.
+fn constrain_natural_replaced_size(
+    size: Size<f32>,
+    min_size: Size<Option<f32>>,
+    max_size: Size<Option<f32>>,
+    aspect_ratio: ResolvedAspectRatio,
+    padding_border: Size<f32>,
+) -> Size<f32> {
+    let width_violation = constraint_violation(size.width, min_size.width, max_size.width);
+    let height_violation = constraint_violation(size.height, min_size.height, max_size.height);
+    match (width_violation, height_violation) {
         (ConstraintViolation::None, ConstraintViolation::None) => size,
         (ConstraintViolation::Maximum, ConstraintViolation::None) => {
             let width = max_size.width.expect("maximum width violation has a bound");
             Size {
                 width,
-                height: content_height_from_width(width, context.aspect_ratio, padding_border_sum)
+                height: content_height_from_width(width, aspect_ratio, padding_border)
                     .expect("a resolved ratio transfers width to height")
                     .maybe_max(min_size.height),
             }
@@ -289,7 +347,7 @@ pub fn compute_replaced_layout(
             let width = min_size.width.expect("minimum width violation has a bound");
             Size {
                 width,
-                height: content_height_from_width(width, context.aspect_ratio, padding_border_sum)
+                height: content_height_from_width(width, aspect_ratio, padding_border)
                     .expect("a resolved ratio transfers width to height")
                     .maybe_min(max_size.height),
             }
@@ -297,7 +355,7 @@ pub fn compute_replaced_layout(
         (ConstraintViolation::None, ConstraintViolation::Maximum) => {
             let height = max_size.height.expect("maximum height violation has a bound");
             Size {
-                width: content_width_from_height(height, context.aspect_ratio, padding_border_sum)
+                width: content_width_from_height(height, aspect_ratio, padding_border)
                     .expect("a resolved ratio transfers height to width")
                     .maybe_max(min_size.width),
                 height,
@@ -306,7 +364,7 @@ pub fn compute_replaced_layout(
         (ConstraintViolation::None, ConstraintViolation::Minimum) => {
             let height = min_size.height.expect("minimum height violation has a bound");
             Size {
-                width: content_width_from_height(height, context.aspect_ratio, padding_border_sum)
+                width: content_width_from_height(height, aspect_ratio, padding_border)
                     .expect("a resolved ratio transfers height to width")
                     .maybe_min(max_size.width),
                 height,
@@ -315,18 +373,18 @@ pub fn compute_replaced_layout(
         (ConstraintViolation::Maximum, ConstraintViolation::Maximum) => {
             let width = max_size.width.expect("maximum width violation has a bound");
             let height = max_size.height.expect("maximum height violation has a bound");
-            if ratio_basis_scale(width, size.width, padding_border_sum.width, context.aspect_ratio.box_sizing)
-                <= ratio_basis_scale(height, size.height, padding_border_sum.height, context.aspect_ratio.box_sizing)
+            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.box_sizing)
+                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.box_sizing)
             {
                 Size {
                     width,
-                    height: content_height_from_width(width, context.aspect_ratio, padding_border_sum)
+                    height: content_height_from_width(width, aspect_ratio, padding_border)
                         .expect("a resolved ratio transfers width to height")
                         .maybe_max(min_size.height),
                 }
             } else {
                 Size {
-                    width: content_width_from_height(height, context.aspect_ratio, padding_border_sum)
+                    width: content_width_from_height(height, aspect_ratio, padding_border)
                         .expect("a resolved ratio transfers height to width")
                         .maybe_max(min_size.width),
                     height,
@@ -336,11 +394,11 @@ pub fn compute_replaced_layout(
         (ConstraintViolation::Minimum, ConstraintViolation::Minimum) => {
             let width = min_size.width.expect("minimum width violation has a bound");
             let height = min_size.height.expect("minimum height violation has a bound");
-            if ratio_basis_scale(width, size.width, padding_border_sum.width, context.aspect_ratio.box_sizing)
-                <= ratio_basis_scale(height, size.height, padding_border_sum.height, context.aspect_ratio.box_sizing)
+            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.box_sizing)
+                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.box_sizing)
             {
                 Size {
-                    width: content_width_from_height(height, context.aspect_ratio, padding_border_sum)
+                    width: content_width_from_height(height, aspect_ratio, padding_border)
                         .expect("a resolved ratio transfers height to width")
                         .maybe_min(max_size.width),
                     height,
@@ -348,7 +406,7 @@ pub fn compute_replaced_layout(
             } else {
                 Size {
                     width,
-                    height: content_height_from_width(width, context.aspect_ratio, padding_border_sum)
+                    height: content_height_from_width(width, aspect_ratio, padding_border)
                         .expect("a resolved ratio transfers width to height")
                         .maybe_min(max_size.height),
                 }
@@ -362,8 +420,7 @@ pub fn compute_replaced_layout(
             width: max_size.width.expect("maximum width violation has a bound"),
             height: min_size.height.expect("minimum height violation has a bound"),
         },
-    };
-    replaced_output(size + padding_border_sum)
+    }
 }
 
 /// Normalize independently optional natural axes in the node's logical
@@ -641,6 +698,77 @@ mod tests {
 
         assert_eq!(measure_with_ratio_box(BoxSizing::BorderBox), Size { width: 100.0, height: 50.0 });
         assert_eq!(measure_with_ratio_box(BoxSizing::ContentBox), Size { width: 100.0, height: 60.0 });
+    }
+
+    /// Blink resolves an authored replaced axis independently, then derives
+    /// only the still-auto axis through the preferred ratio. A constraint on
+    /// that derived axis must not feed back into the authored axis, while a
+    /// constraint on the authored axis does change the ratio basis.
+    #[test]
+    fn definite_preferred_axes_own_replaced_constraint_order() {
+        let auto = Dimension::auto;
+        let px = Dimension::length;
+        let cases = [
+            (
+                "derived height maximum",
+                Size { width: px(200.0), height: auto() },
+                Size { width: auto(), height: auto() },
+                Size { width: auto(), height: px(60.0) },
+                Size { width: 200.0, height: 60.0 },
+            ),
+            (
+                "derived width maximum",
+                Size { width: auto(), height: px(90.0) },
+                Size { width: auto(), height: auto() },
+                Size { width: px(100.0), height: auto() },
+                Size { width: 100.0, height: 90.0 },
+            ),
+            (
+                "two authored axes",
+                Size { width: px(200.0), height: px(80.0) },
+                Size { width: auto(), height: auto() },
+                Size { width: auto(), height: px(60.0) },
+                Size { width: 200.0, height: 60.0 },
+            ),
+            (
+                "authored width maximum",
+                Size { width: px(200.0), height: auto() },
+                Size { width: auto(), height: auto() },
+                Size { width: px(100.0), height: auto() },
+                Size { width: 100.0, height: 50.0 },
+            ),
+            (
+                "authored width minimum",
+                Size { width: px(200.0), height: auto() },
+                Size { width: px(240.0), height: auto() },
+                Size { width: auto(), height: auto() },
+                Size { width: 240.0, height: 120.0 },
+            ),
+            (
+                "authored width and derived height constraints",
+                Size { width: px(200.0), height: auto() },
+                Size { width: auto(), height: px(80.0) },
+                Size { width: px(100.0), height: auto() },
+                Size { width: 100.0, height: 80.0 },
+            ),
+        ];
+
+        for (label, size, min_size, max_size, expected) in cases {
+            let style: TestStyle = Style { size, min_size, max_size, aspect_ratio: Some(2.0), ..Style::default() };
+            let actual = compute_replaced_layout(
+                inputs(Size::NONE),
+                &style,
+                ReplacedSizingContext::new(
+                    WritingMode::HorizontalTb,
+                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    SizeContainment::NONE,
+                    ReplacedNaturalSizing::fixed(Size { width: 120.0, height: 60.0 }),
+                ),
+                |_, _| 0.0,
+            )
+            .size;
+            assert_eq!(actual, expected, "{label}");
+        }
     }
 
     /// Regression for
