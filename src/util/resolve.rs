@@ -101,23 +101,31 @@ impl<In, Out, T: MaybeResolve<In, Out>> MaybeResolve<Size<In>, Size<Out>> for Si
 }
 
 impl ResolveOrZero<Option<f32>, f32> for LengthPercentage {
-    /// Will return a default value of result is evaluated to `None`
+    /// Resolve an indefinite percentage basis as zero.
+    ///
+    /// This distinction matters for `calc()`: `calc(10% + 100px)` contributes
+    /// `100px` when its percentage basis is indefinite, rather than making the
+    /// entire expression disappear. Callers that need to preserve
+    /// indefiniteness must use [`MaybeResolve`] instead.
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(context, calc).unwrap_or(0.0)
+        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
     }
 }
 
 impl ResolveOrZero<Option<f32>, f32> for LengthPercentageAuto {
-    /// Will return a default value of result is evaluated to `None`
+    /// Resolve an indefinite percentage basis as zero while retaining the
+    /// absolute component of `calc()` values. `auto` still resolves to zero.
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(context, calc).unwrap_or(0.0)
+        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
     }
 }
 
 impl ResolveOrZero<Option<f32>, f32> for Dimension {
-    /// Will return a default value of result is evaluated to `None`
+    /// Resolve an indefinite percentage basis as zero while retaining the
+    /// absolute component of `calc()` values. Intrinsic keywords and `auto`
+    /// still resolve to zero at this scalar boundary.
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(context, calc).unwrap_or(0.0)
+        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
     }
 }
 
@@ -387,6 +395,35 @@ mod tests {
             roz_case(Rect::from_percent(5.0, 5.0, 5.0, 5.0), Some(5.0), Rect::new(25.0, 25.0, 25.0, 25.0));
             roz_case(Rect::from_percent(5.0, 5.0, 5.0, 5.0), Some(-5.0), Rect::new(-25.0, -25.0, -25.0, -25.0));
             roz_case(Rect::from_percent(5.0, 5.0, 5.0, 5.0), Some(0.0), Rect::zero());
+        }
+    }
+
+    #[cfg(feature = "calc")]
+    mod resolve_or_zero_calc {
+        use super::{MaybeResolve, ResolveOrZero};
+        use crate::style::{Dimension, LengthPercentage, LengthPercentageAuto};
+
+        #[repr(align(8))]
+        struct CalcToken;
+
+        static CALC_TOKEN: CalcToken = CalcToken;
+
+        #[test]
+        fn indefinite_basis_keeps_the_absolute_calc_component() {
+            let pointer = (&CALC_TOKEN as *const CalcToken).cast();
+            let resolve = |_: *const (), basis: f32| 100.0 + 0.1 * basis;
+
+            let length_percentage = LengthPercentage::calc(pointer);
+            let length_percentage_auto = LengthPercentageAuto::calc(pointer);
+            let dimension = Dimension::calc(pointer);
+
+            assert_eq!(length_percentage.maybe_resolve(None, resolve), None);
+            assert_eq!(length_percentage_auto.maybe_resolve(None, resolve), None);
+            assert_eq!(dimension.maybe_resolve(None, resolve), None);
+
+            assert_eq!(length_percentage.resolve_or_zero(None, resolve), 100.0);
+            assert_eq!(length_percentage_auto.resolve_or_zero(None, resolve), 100.0);
+            assert_eq!(dimension.resolve_or_zero(None, resolve), 100.0);
         }
     }
 }
