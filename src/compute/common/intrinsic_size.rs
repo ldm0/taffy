@@ -144,6 +144,25 @@ fn measure_intrinsic_axis(
     )
 }
 
+/// Measure a child's min-/max-content contribution along one physical axis.
+///
+/// A content-size probe asks for the box's raw content geometry and therefore
+/// ignores authored constraints in the queried axis. A contribution is a
+/// containing-formatting-context query: the child's preferred size and its
+/// min/max constraints participate before the result is returned. Keeping
+/// this operation at the shared child-sizing seam prevents flex, grid, and
+/// block layout from rebuilding that ordering around raw content measurements.
+#[inline]
+pub(crate) fn measure_child_intrinsic_contribution(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    mut inputs: ChildLayoutInput,
+    axis: AbsoluteAxis,
+) -> IntrinsicSizeResult {
+    inputs.sizing_mode = SizingMode::InherentSize;
+    tree.measure_child_size_with_metadata(node_id, inputs, RequestedAxis::from(axis))
+}
+
 /// One resolved intrinsic axis value together with cache dependency metadata.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct IntrinsicAxisValue {

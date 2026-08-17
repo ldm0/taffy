@@ -24,8 +24,9 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 use super::common::baseline::{logical_block_baseline, physical_baseline};
 use super::common::intrinsic_size::{
     fit_content_inline_size, intrinsic_content_size_from_initial_geometry, measure_aspect_ratio_automatic_minimum,
-    resolve_intrinsic_axis_constraints, resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
-    IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput, ResolvedNodeSizing,
+    measure_child_intrinsic_contribution, resolve_intrinsic_axis_constraints, resolve_node_size_constraints,
+    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput,
+    ResolvedNodeSizing,
 };
 use super::common::stretch::resolve_stretch_size_constraints;
 use crate::tree::OutOfFlowContainingBlock;
@@ -1269,7 +1270,8 @@ fn determine_content_based_container_inline_size(
         let inline_size = match known_logical_size.inline_size {
             Some(inline_size) => inline_size,
             None => {
-                let measured = tree.measure_child_size_with_metadata(
+                let measured = measure_child_intrinsic_contribution(
+                    tree,
                     item.node_id,
                     ChildLayoutInput::new(
                         known_dimensions,
@@ -1282,7 +1284,7 @@ fn determine_content_based_container_inline_size(
                         SizingMode::InherentSize,
                         Line::TRUE,
                     ),
-                    RequestedAxis::from(parent_writing_mode.inline_axis()),
+                    parent_writing_mode.inline_axis(),
                 );
                 item.depends_on_block_constraints |= measured.depends_on_block_constraints;
                 parent_writing_mode.to_logical(measured.size).inline_size

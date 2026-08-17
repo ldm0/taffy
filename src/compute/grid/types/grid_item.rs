@@ -3,6 +3,7 @@ use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
+use crate::compute::common::intrinsic_size::measure_child_intrinsic_contribution;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbstractAxis, Line, LogicalSize, Rect, Size};
@@ -632,7 +633,8 @@ impl GridItem {
         // Spec:
         // https://www.w3.org/TR/css-grid-1/#grid-item-sizing
         // https://www.w3.org/TR/css-grid-1/#algo-overview
-        let measured = tree.measure_child_size_with_metadata(
+        let measured = measure_child_intrinsic_contribution(
+            tree,
             self.node,
             ChildLayoutInput::new(
                 Size::NONE,
@@ -647,7 +649,7 @@ impl GridItem {
             )
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
-            axis.to_absolute(self.parent_writing_direction.mode).into(),
+            axis.to_absolute(self.parent_writing_direction.mode),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
         measured.size.get_abs(axis.to_absolute(self.parent_writing_direction.mode))
@@ -682,7 +684,8 @@ impl GridItem {
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
-        let measured = tree.measure_child_size_with_metadata(
+        let measured = measure_child_intrinsic_contribution(
+            tree,
             self.node,
             ChildLayoutInput::new(
                 Size::NONE,
@@ -697,7 +700,7 @@ impl GridItem {
             )
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
-            axis.to_absolute(self.parent_writing_direction.mode).into(),
+            axis.to_absolute(self.parent_writing_direction.mode),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
         measured.size.get_abs(axis.to_absolute(self.parent_writing_direction.mode))

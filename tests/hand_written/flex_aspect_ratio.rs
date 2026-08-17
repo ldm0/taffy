@@ -301,6 +301,59 @@ fn column_content_minimum_is_capped_by_the_transferred_cross_maximum() {
     assert_eq!(item_size, Size { width: 25.0, height: 200.0 });
 }
 
+/// Regression for WPT css/css-flexbox/flexbox-min-height-auto-002a.html.
+///
+/// The flex item's definite width is its intrinsic inline contribution. Its
+/// larger authored height must not transfer back through the image's intrinsic
+/// ratio and widen the shrink-to-fit column flex container.
+#[test]
+fn replaced_definite_width_controls_a_column_flex_intrinsic_contribution() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                item_is_replaced: true,
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width: Dimension::length(30.0), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                border: Rect::length(2.0),
+                ..Style::default()
+            },
+            // The generic test tree cannot dispatch to `compute_replaced_layout`
+            // directly. Return the 100px ratio-transferred content probe that
+            // the replaced sizing entry point produces for this style.
+            TestNodeContext::fixed(100.0, 100.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                float: Float::Left,
+                size: Size { width: Dimension::auto(), height: Dimension::length(1.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    let parent = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(400.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[container],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(parent, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 34.0, height: 1.0 });
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 34.0, height: 34.0 });
+}
+
 /// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-037.html.
 ///
 /// Flexbox part E obtains the block-axis flex base size from the item's

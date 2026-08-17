@@ -33,10 +33,10 @@ use super::common::aspect_ratio::{
 use super::common::content_size::compute_content_size_contribution;
 use super::common::intrinsic_size::{
     fit_content_inline_size_with_metadata, intrinsic_content_size_from_initial_geometry,
-    measure_aspect_ratio_automatic_minimum, resolve_content_based_block_size_constraints,
-    resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size, resolve_minimum_size,
-    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue,
-    NodeSizeConstraintInput, ResolvedNodeSizing,
+    measure_aspect_ratio_automatic_minimum, measure_child_intrinsic_contribution,
+    resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
+    resolve_intrinsic_preferred_axis_size, resolve_minimum_size, resolve_node_size_constraints, BlockSizeProperties,
+    ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::stretch::StretchSizeProperties;
 use crate::tree::OutOfFlowContainingBlock;
@@ -2074,9 +2074,10 @@ fn collect_flex_lines<'a>(
 /// Compute the intrinsic inline contribution of a single-line column.
 ///
 /// Flexing changes an item's used block size, but intrinsic inline sizing is a
-/// contribution query, not used layout. Measuring the content in the cross
-/// axis first and then applying the item's preferred/min/max sources prevents
-/// that later block size from feeding back through `aspect-ratio`.
+/// contribution query, not used layout. The shared intrinsic-contribution
+/// operation applies the item's preferred/min/max sources at the child sizing
+/// boundary, so a later flexed block size cannot feed back through
+/// `aspect-ratio`.
 fn determine_single_line_column_intrinsic_cross_size(
     tree: &mut impl LayoutFlexboxContainer,
     items: &mut [FlexItem],
@@ -2093,34 +2094,22 @@ fn determine_single_line_column_intrinsic_cross_size(
     let mut depends_on_block_constraints = false;
 
     for item in items {
-        let measured = tree.measure_child_size_with_metadata(
+        let measured = measure_child_intrinsic_contribution(
+            tree,
             item.node,
             ChildLayoutInput::new(
                 Size::NONE,
                 constants.node_percentage_size,
                 constants.writing_mode,
                 child_available_space,
-                SizingMode::ContentSize,
+                SizingMode::InherentSize,
                 Line::FALSE,
             ),
-            dir.cross_axis().into(),
+            dir.cross_axis(),
         );
         item.depends_on_block_constraints |= measured.depends_on_block_constraints;
 
-        let preferred_cross_is_auto = tree.get_flexbox_child_style(item.node).size().cross(dir).is_auto();
-        let ratio_supplied_cross = item.preferred_size_aspect_ratio_applied.cross(dir);
-        let preferred_cross =
-            if preferred_cross_is_auto && !ratio_supplied_cross { None } else { item.preferred_size.cross(dir) };
-        let minimum_cross = item.min_size_with_transfer.cross(dir);
-        let maximum_cross = item.max_size_with_transfer.cross(dir);
-        let padding_border_cross = (item.padding + item.border).cross_axis_sum(dir);
-        let contribution = measured
-            .size
-            .cross(dir)
-            .maybe_max(preferred_cross)
-            .maybe_clamp(minimum_cross, maximum_cross)
-            .max(padding_border_cross)
-            + item.margin.cross_axis_sum(dir);
+        let contribution = measured.size.cross(dir) + item.margin.cross_axis_sum(dir);
         largest_contribution = largest_contribution.max(contribution);
         depends_on_block_constraints |= item.depends_on_block_constraints;
     }
