@@ -1037,12 +1037,15 @@ fn generate_item_list(
             let uses_block_layout = child_style.uses_block_layout();
             let is_table = child_style.is_table();
             let is_replaced = child_style.is_compressible_replaced();
+            let should_stretch_auto_inline_size =
+                tree.should_stretch_auto_inline_size_in_block_container(child_node_id);
             let establishes_new_formatting_context = tree.establishes_new_formatting_context(child_node_id);
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
             let inline_auto_behavior = if position != Position::Absolute
                 && is_not_floated
                 && !is_table
                 && !is_replaced
+                && should_stretch_auto_inline_size
                 && !child_writing_mode.is_orthogonal_to(writing_mode)
             {
                 AutoSizeBehavior::StretchImplicit

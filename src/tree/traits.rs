@@ -239,6 +239,19 @@ pub trait LayoutPartialTree: TraversePartialTree {
         false
     }
 
+    /// Whether this node's automatic inline size stretches when it is an
+    /// in-flow child of a block container.
+    ///
+    /// This is normally true for non-replaced, non-table block children.
+    /// Browser integrations can opt native controls out without classifying
+    /// them as replaced or tables. The decision is deliberately scoped to the
+    /// block-parent constraint boundary, so flex and grid alignment remain
+    /// unaffected.
+    #[inline(always)]
+    fn should_stretch_auto_inline_size_in_block_container(&self, _node_id: NodeId) -> bool {
+        true
+    }
+
     /// Resolve tree-owned layout environment at a parent-to-child dispatch
     /// boundary.
     ///
