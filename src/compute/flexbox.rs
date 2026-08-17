@@ -10,7 +10,7 @@ use crate::geometry::{
 };
 use crate::style::{
     AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, Dimension, FlexWrap,
-    JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
+    JustifyContent, LengthPercentage, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
 };
 use crate::style::{CoreStyle, FlexDirection, FlexboxContainerStyle, FlexboxItemStyle};
 use crate::style_helpers::{TaffyMaxContent, TaffyMinContent};
@@ -510,7 +510,11 @@ struct AlgoConstants {
     content_box_inset: Rect<f32>,
     /// The size reserved for scrollbar gutters in each axis
     scrollbar_gutter: Point<f32>,
-    /// The gap of this section
+    /// Authored logical column/row gaps. Keeping the unresolved values lets
+    /// the inline-axis percentage basis become final without manufacturing a
+    /// definite block-axis basis.
+    raw_gap: Size<LengthPercentage>,
+    /// Used physical gap of this section.
     gap: Size<f32>,
     /// The align_items property of this node
     align_items: AlignItems,
@@ -554,6 +558,30 @@ impl AlgoConstants {
             Line { start: logical.inline_start, end: logical.inline_end }
         }
     }
+}
+
+/// Resolve flex gaps against the same percentage size passed to descendants.
+///
+/// CSS makes an auto inline size available after intrinsic sizing, so cyclic
+/// inline-axis gaps can resolve for final layout. An auto block size remains
+/// an indefinite percentage basis; its percentage gap therefore stays zero.
+fn resolve_flex_gap(
+    tree: &impl LayoutFlexboxContainer,
+    raw_gap: &Size<LengthPercentage>,
+    writing_mode: WritingMode,
+    percentage_size: Size<Option<f32>>,
+) -> Size<f32> {
+    let logical_percentage_size = writing_mode.to_logical(percentage_size);
+    writing_mode.to_physical(LogicalSize {
+        inline_size: raw_gap
+            .width
+            .maybe_resolve(logical_percentage_size.inline_size, |val, basis| tree.calc(val, basis))
+            .unwrap_or(0.0),
+        block_size: raw_gap
+            .height
+            .maybe_resolve(logical_percentage_size.block_size, |val, basis| tree.calc(val, basis))
+            .unwrap_or(0.0),
+    })
 }
 
 /// Select flex-imposed definite axes from a set of known child dimensions.
@@ -811,8 +839,7 @@ fn compute_preliminary(
     debug_log!("collect_flex_lines");
     let mut flex_lines = collect_flex_lines(&constants, available_space, &mut flex_items);
 
-    // If container size is undefined, determine the container's main size
-    // and then re-resolve gaps based on newly determined size
+    // If the container size is undefined, determine its main size.
     debug_log!("determine_container_main_size");
     let intrinsic_block_size_is_main = constants.main_axis_is_block && constants.resolve_content_based_block_size;
     match (constants.node_inner_size.main(constants.dir), intrinsic_block_size_is_main) {
@@ -829,15 +856,26 @@ fn compute_preliminary(
 
             debug_log!("constants.node_outer_size", dbg:constants.node_outer_size);
             debug_log!("constants.node_inner_size", dbg:constants.node_inner_size);
+        }
+    }
+    if constants.main_axis_is_inline {
+        constants
+            .node_percentage_size
+            .set_main(constants.dir, Some(constants.inner_container_size.main(constants.dir)));
+        constants.gap =
+            resolve_flex_gap(tree, &constants.raw_gap, constants.writing_mode, constants.node_percentage_size);
 
-            // Re-resolve percentage gaps
-            let style = tree.get_flexbox_container_style(node);
-            let inner_container_size = constants.inner_container_size.main(constants.dir);
-            let raw_gap = style.gap();
-            let logical_main_gap = if constants.main_axis_is_inline { raw_gap.width } else { raw_gap.height };
-            let new_gap =
-                logical_main_gap.maybe_resolve(inner_container_size, |val, basis| tree.calc(val, basis)).unwrap_or(0.0);
-            constants.gap.set_main(constants.dir, new_gap);
+        // Cyclic percentage gaps contribute zero while determining an auto
+        // inline size, but resolve against that final inline size for used
+        // layout. The first collection above belongs to the intrinsic sizing
+        // pass; wrapped layout must collect again with both the final main
+        // size and final gap. This second collection does not feed back into
+        // the container's intrinsic size.
+        if constants.is_wrap {
+            drop(flex_lines);
+            let final_available_space = available_space
+                .with_main(constants.dir, AvailableSpace::Definite(constants.inner_container_size.main(constants.dir)));
+            flex_lines = collect_flex_lines(&constants, final_available_space, &mut flex_items);
         }
     }
 
@@ -869,6 +907,13 @@ fn compute_preliminary(
     // replaces the single-line size.
     debug_log!("determine_container_cross_size");
     determine_container_cross_size(&flex_lines, node_outer_size, intrinsic_line_cross_size, &mut constants);
+    if !constants.main_axis_is_inline {
+        constants
+            .node_percentage_size
+            .set_cross(constants.dir, Some(constants.inner_container_size.cross(constants.dir)));
+        constants.gap =
+            resolve_flex_gap(tree, &constants.raw_gap, constants.writing_mode, constants.node_percentage_size);
+    }
     if !constants.is_wrap && node_outer_size.cross(constants.dir).is_some() {
         flex_lines[0].cross_size = constants.inner_container_size.cross(constants.dir);
     }
@@ -1031,19 +1076,8 @@ fn compute_constants(
         inline_size: logical_inner_size_for_percentages.inline_size,
         block_size: logical_definite_inner_size.block_size,
     });
-    let logical_inner_size = writing_mode.to_logical(node_inner_size.or(Size::zero()));
     let raw_gap = style.gap();
-    let logical_gap = LogicalSize {
-        inline_size: raw_gap
-            .width
-            .maybe_resolve(logical_inner_size.inline_size, |val, basis| tree.calc(val, basis))
-            .unwrap_or(0.0),
-        block_size: raw_gap
-            .height
-            .maybe_resolve(logical_inner_size.block_size, |val, basis| tree.calc(val, basis))
-            .unwrap_or(0.0),
-    };
-    let gap = writing_mode.to_physical(logical_gap);
+    let gap = resolve_flex_gap(tree, &raw_gap, writing_mode, node_percentage_size);
 
     let container_size = Size::zero();
     let inner_container_size = Size::zero();
@@ -1090,6 +1124,7 @@ fn compute_constants(
         resolve_content_based_block_size,
         margin,
         border,
+        raw_gap,
         gap,
         content_box_inset,
         scrollbar_gutter,

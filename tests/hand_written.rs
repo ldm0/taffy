@@ -13,6 +13,7 @@ mod hand_written {
     mod flex_basis_intrinsic;
     mod flex_column_wrap_intrinsic;
     mod flex_definite_sizes;
+    mod flex_percentage_gaps;
     mod flex_row_intrinsic;
     mod flex_writing_modes;
     mod floats;
