@@ -1362,6 +1362,166 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(all(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+    fn available_intrinsic_floor_preserves_block_sizing_order() {
+        fn layout_height(
+            display: Display,
+            child_height: f32,
+            preferred: Dimension,
+            minimum: Dimension,
+            maximum: Dimension,
+            aspect_ratio: Option<f32>,
+            scroll_container: bool,
+        ) -> f32 {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let child = taffy
+                .new_leaf(Style {
+                    size: Size { width: length(10.0), height: length(child_height) },
+                    ..Style::default()
+                })
+                .unwrap();
+            let node = taffy
+                .new_with_children(
+                    Style {
+                        display,
+                        size: Size { width: length(100.0), height: preferred },
+                        min_size: Size { width: Dimension::auto(), height: minimum },
+                        max_size: Size { width: Dimension::auto(), height: maximum },
+                        aspect_ratio,
+                        overflow: if scroll_container {
+                            Point { x: Overflow::Hidden, y: Overflow::Hidden }
+                        } else {
+                            Point { x: Overflow::Visible, y: Overflow::Visible }
+                        },
+                        ..Style::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let input = LayoutInput {
+                run_mode: RunMode::PerformLayout,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::Layout,
+                axis: RequestedAxis::Both,
+                inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
+                block_auto_behavior: crate::AutoSizeBehavior::FitContentWithAvailableIntrinsicFloor,
+                known_dimensions: Size::NONE,
+                definite_dimensions: Size::NONE,
+                parent_size: Size { width: Some(100.0), height: Some(200.0) },
+                parent_writing_mode: crate::WritingMode::HorizontalTb,
+                available_space: Size {
+                    width: AvailableSpace::Definite(100.0),
+                    height: AvailableSpace::Definite(200.0),
+                },
+                block_margins_are_collapsible: Line::FALSE,
+            };
+            let height = taffy.as_layout_tree().compute_child_layout(node, input).size.height;
+            height
+        }
+
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            assert_eq!(
+                layout_height(display, 50.0, auto(), Dimension::auto(), Dimension::auto(), None, false),
+                200.0,
+                "{display:?} short content"
+            );
+            assert_eq!(
+                layout_height(display, 300.0, auto(), Dimension::auto(), Dimension::auto(), None, false),
+                300.0,
+                "{display:?} tall content"
+            );
+            assert_eq!(
+                layout_height(display, 50.0, auto(), Dimension::auto(), Dimension::auto(), Some(1.0), false),
+                200.0,
+                "{display:?} ratio automatic minimum"
+            );
+            assert_eq!(
+                layout_height(display, 50.0, auto(), length(0.0), Dimension::auto(), Some(1.0), false),
+                100.0,
+                "{display:?} ratio explicit minimum"
+            );
+            assert_eq!(
+                layout_height(display, 50.0, auto(), Dimension::auto(), Dimension::auto(), Some(1.0), true),
+                100.0,
+                "{display:?} ratio scroll container"
+            );
+            assert_eq!(
+                layout_height(display, 300.0, auto(), Dimension::auto(), length(120.0), None, false),
+                120.0,
+                "{display:?} authored maximum"
+            );
+            assert_eq!(
+                layout_height(display, 300.0, length(80.0), Dimension::auto(), Dimension::auto(), None, false,),
+                80.0,
+                "{display:?} explicit preferred"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+    fn available_intrinsic_floor_is_an_initial_percentage_basis() {
+        fn layout_with_percentage_child(display: Display, minimum: Dimension, aspect_ratio: Option<f32>) -> (f32, f32) {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let child = taffy
+                .new_leaf(Style {
+                    size: Size { width: length(10.0), height: Dimension::percent(0.5) },
+                    ..Style::default()
+                })
+                .unwrap();
+            let node = taffy
+                .new_with_children(
+                    Style {
+                        display,
+                        size: Size { width: length(100.0), height: auto() },
+                        min_size: Size { width: Dimension::auto(), height: minimum },
+                        aspect_ratio,
+                        ..Style::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let input = LayoutInput {
+                run_mode: RunMode::PerformLayout,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::Layout,
+                axis: RequestedAxis::Both,
+                inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
+                block_auto_behavior: crate::AutoSizeBehavior::FitContentWithAvailableIntrinsicFloor,
+                known_dimensions: Size::NONE,
+                definite_dimensions: Size::NONE,
+                parent_size: Size { width: Some(100.0), height: Some(200.0) },
+                parent_writing_mode: crate::WritingMode::HorizontalTb,
+                available_space: Size {
+                    width: AvailableSpace::Definite(100.0),
+                    height: AvailableSpace::Definite(200.0),
+                },
+                block_margins_are_collapsible: Line::FALSE,
+            };
+            let output = taffy.as_layout_tree().compute_child_layout(node, input);
+            (output.size.height, taffy.unrounded_layout(child).size.height)
+        }
+
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            assert_eq!(
+                layout_with_percentage_child(display, Dimension::auto(), None),
+                (200.0, 100.0),
+                "{display:?} intrinsic floor"
+            );
+            assert_eq!(
+                layout_with_percentage_child(display, Dimension::auto(), Some(1.0)),
+                (200.0, 100.0),
+                "{display:?} ratio automatic minimum"
+            );
+            assert_eq!(
+                layout_with_percentage_child(display, length(0.0), Some(1.0)),
+                (100.0, 50.0),
+                "{display:?} ratio-derived initial geometry"
+            );
+        }
+    }
+
     /// Test that adding `add_child()` works
     #[test]
     fn add_child() {

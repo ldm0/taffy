@@ -361,7 +361,8 @@ pub(super) fn align_and_position_item(
         block_size_properties,
         aspect_ratio,
         padding_border_size,
-        block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
+        block_auto_behavior,
+        item_writing_mode.to_logical(item_available_size.map(AvailableSpace::Definite)).block_size,
         overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
         None,
     );

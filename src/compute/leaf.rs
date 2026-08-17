@@ -235,7 +235,8 @@ where
         BlockSizeProperties::new(logical_size.block_size, logical_min_size.block_size, logical_max_size.block_size),
         content_aspect_ratio,
         pb_sum,
-        inputs.block_auto_behavior.is_content_based(content_aspect_ratio.ratio.is_some()),
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(inputs.available_space).block_size,
         overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
         contained_outer_block_size,
     );

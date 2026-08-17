@@ -491,12 +491,12 @@ pub fn compute_block_layout(
         raw_logical_min_size.block_size,
         raw_logical_max_size.block_size,
     );
-    let auto_size_is_content_based = inputs.block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some());
     let content_based_block_size = ContentBasedBlockSize::new(
         block_size_properties,
         aspect_ratio,
         padding_border_size,
-        auto_size_is_content_based,
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(inputs.available_space).block_size,
         is_scroll_container,
         contained_outer_block_size,
     );
@@ -505,7 +505,7 @@ pub fn compute_block_layout(
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
 
-    let node_sizing = resolve_node_size_constraints(
+    let mut node_sizing = resolve_node_size_constraints(
         tree,
         node_id,
         inputs,
@@ -521,6 +521,11 @@ pub fn compute_block_layout(
     );
     let block_axis_constraints = node_sizing.constraints.block_axis_constraints(writing_mode);
     let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
+    content_based_block_size.apply_initial_block_geometry(
+        writing_mode,
+        writing_mode.to_logical(inputs.known_dimensions).block_size,
+        &mut node_sizing,
+    );
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
     let node_outer_size = node_sizing.outer_size;
 
@@ -1799,7 +1804,7 @@ fn perform_final_layout_on_in_flow_children(
             // context (for example a Grid area or a flexed main size).
             let anticipated_inline_size = logical_item_size
                 .inline_size
-                .or_else(|| (item.inline_auto_behavior != AutoSizeBehavior::FitContent).then_some(stretch_inline_size))
+                .or_else(|| (!item.inline_auto_behavior.is_fit_content()).then_some(stretch_inline_size))
                 .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size)
                 .unwrap_or(stretch_inline_size);
 

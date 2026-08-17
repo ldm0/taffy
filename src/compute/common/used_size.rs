@@ -106,7 +106,7 @@ pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeReso
         logical_ratio_applied.inline_size = true;
     }
 
-    if inline_behavior != AutoSizeBehavior::FitContent
+    if !inline_behavior.is_fit_content()
         && logical_size_is_auto.inline_size
         && logical_fixed.inline_size.is_none()
         && logical_preferred.inline_size.is_none()

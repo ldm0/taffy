@@ -707,7 +707,8 @@ pub fn compute_flexbox_layout(
         block_size_properties,
         aspect_ratio,
         padding_border_sum,
-        inputs.block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(inputs.available_space).block_size,
         is_scroll_container,
         contained_outer_block_size,
     );
@@ -716,7 +717,7 @@ pub fn compute_flexbox_layout(
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
 
-    let node_sizing = resolve_node_size_constraints(
+    let mut node_sizing = resolve_node_size_constraints(
         tree,
         node,
         inputs,
@@ -732,6 +733,11 @@ pub fn compute_flexbox_layout(
     );
     let block_axis_constraints = node_sizing.constraints.block_axis_constraints(writing_mode);
     let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
+    content_based_block_size.apply_initial_block_geometry(
+        writing_mode,
+        writing_mode.to_logical(inputs.known_dimensions).block_size,
+        &mut node_sizing,
+    );
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
     let node_outer_size = node_sizing.outer_size;
 
@@ -1470,7 +1476,8 @@ fn generate_anonymous_flex_items(
                 ),
                 aspect_ratio,
                 pb_sum,
-                AutoSizeBehavior::FitContent.is_content_based(aspect_ratio.ratio.is_some()),
+                AutoSizeBehavior::FitContent,
+                AvailableSpace::MaxContent,
                 overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
                 None,
             )

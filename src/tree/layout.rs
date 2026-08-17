@@ -84,6 +84,14 @@ pub enum AutoSizeBehavior {
     /// Resolve `auto` from the formatting context's content contribution.
     #[default]
     FitContent,
+    /// Resolve `auto` from the formatting context's content contribution, but
+    /// floor its intrinsic block size at the definite available space.
+    ///
+    /// This is distinct from an authored or automatic `min-size`: a preferred
+    /// aspect ratio may still supply the used size when an explicit minimum
+    /// disables its content-based automatic minimum. The available size also
+    /// establishes the initial definite size used by descendants.
+    FitContentWithAvailableIntrinsicFloor,
     /// Stretch before considering a preferred aspect ratio.
     StretchExplicit,
     /// Stretch only if a preferred aspect ratio did not supply a size.
@@ -98,13 +106,28 @@ pub enum AutoSizeBehavior {
 }
 
 impl AutoSizeBehavior {
+    /// Whether the preferred size remains content-derived.
+    #[inline(always)]
+    pub const fn is_fit_content(self) -> bool {
+        matches!(self, Self::FitContent | Self::FitContentWithAvailableIntrinsicFloor)
+    }
+
     /// Whether `auto` uses content/intrinsic block-size semantics for this box.
     #[inline(always)]
     pub const fn is_content_based(self, has_preferred_aspect_ratio: bool) -> bool {
         match self {
-            Self::FitContent => true,
+            Self::FitContent | Self::FitContentWithAvailableIntrinsicFloor => true,
             Self::StretchExplicit | Self::FillAvailable => false,
             Self::StretchImplicit => has_preferred_aspect_ratio,
+        }
+    }
+
+    /// Return the intrinsic block-size floor contributed by this policy.
+    #[inline(always)]
+    pub const fn intrinsic_size_floor(self, available_space: AvailableSpace) -> Option<f32> {
+        match (self, available_space) {
+            (Self::FitContentWithAvailableIntrinsicFloor, AvailableSpace::Definite(size)) => Some(size),
+            _ => None,
         }
     }
 }
@@ -601,6 +624,8 @@ mod constraint_space_tests {
     fn block_auto_behavior_preserves_aspect_ratio_resolution_order() {
         assert!(AutoSizeBehavior::FitContent.is_content_based(false));
         assert!(AutoSizeBehavior::FitContent.is_content_based(true));
+        assert!(AutoSizeBehavior::FitContentWithAvailableIntrinsicFloor.is_content_based(false));
+        assert!(AutoSizeBehavior::FitContentWithAvailableIntrinsicFloor.is_content_based(true));
         assert!(!AutoSizeBehavior::StretchExplicit.is_content_based(true));
         assert!(!AutoSizeBehavior::StretchImplicit.is_content_based(false));
         assert!(AutoSizeBehavior::StretchImplicit.is_content_based(true));

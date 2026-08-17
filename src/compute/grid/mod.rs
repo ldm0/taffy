@@ -159,7 +159,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         block_size_properties,
         aspect_ratio,
         padding_border_size,
-        inputs.block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(inputs.available_space).block_size,
         is_scroll_container,
         explicit_contained_outer_block_size,
     );
@@ -169,7 +170,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
 
-    let node_sizing = resolve_node_size_constraints(
+    let mut node_sizing = resolve_node_size_constraints(
         tree,
         node,
         inputs,
@@ -182,6 +183,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             aspect_ratio,
             contained_outer_size: explicit_contained_outer_size,
         },
+    );
+    let block_axis_constraints = node_sizing.constraints.block_axis_constraints(writing_mode);
+    let content_based_block_size = content_based_block_size.with_resolved_constraints(block_axis_constraints);
+    content_based_block_size.apply_initial_block_geometry(
+        writing_mode,
+        writing_mode.to_logical(inputs.known_dimensions).block_size,
+        &mut node_sizing,
     );
     let mut resolved_constraints = node_sizing.constraints;
     let mut min_size = resolved_constraints.min_size;
@@ -253,7 +261,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .block_size
             .map(|space| space - logical_content_box_inset.block_size),
     };
-    if needs_content_based_block_resolution {
+    if needs_content_based_block_resolution && !content_based_block_size.has_available_intrinsic_floor() {
         // The authored block size still participates in the final used-size
         // clamp, but it must not stretch rows before their intrinsic block
         // contribution has been established. Blink expresses this with an

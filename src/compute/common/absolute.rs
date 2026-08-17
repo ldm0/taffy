@@ -502,7 +502,7 @@ fn implicit_block_stretch_precedes_inline_sizing(
     raw_logical_max_size: LogicalSize<Dimension>,
     has_preferred_aspect_ratio: bool,
 ) -> bool {
-    inline_auto_behavior == AutoSizeBehavior::FitContent
+    inline_auto_behavior.is_fit_content()
         && block_auto_behavior == AutoSizeBehavior::StretchImplicit
         && has_preferred_aspect_ratio
         && (raw_logical_size.inline_size.is_auto() || raw_logical_size.inline_size.is_intrinsic())
@@ -761,7 +761,13 @@ pub(crate) fn layout_out_of_flow_item(
         ),
         aspect_ratio,
         padding_border_sum,
-        block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some()),
+        block_auto_behavior,
+        child_writing_mode
+            .to_logical(Size {
+                width: AvailableSpace::Definite(available_width),
+                height: AvailableSpace::Definite(available_height),
+            })
+            .block_size,
         is_scroll_container,
         None,
     );
