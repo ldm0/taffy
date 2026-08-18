@@ -243,3 +243,64 @@ fn contained_grid_size_establishes_available_space_for_flexible_tracks() {
     assert_eq!(tree.layout(first).unwrap().size, Size { width: 25.0, height: 40.0 });
     assert_eq!(tree.layout(second).unwrap().size, Size { width: 75.0, height: 40.0 });
 }
+
+#[test]
+fn contained_grid_size_establishes_available_space_for_auto_repeat_columns() {
+    let mut tree = new_test_tree();
+    let children = (0..3)
+        .map(|_| {
+            tree.new_leaf(Style { size: Size { width: auto(), height: length(10.0) }, ..Default::default() }).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width: Dimension::max_content(), height: auto() },
+                border: Rect { left: length(3.0), right: length(3.0), top: length(3.0), bottom: length(3.0) },
+                grid_template_columns: vec![repeat("auto-fit", vec![length(15.0)])],
+                gap: Size { width: length(5.0), height: zero() },
+                ..Default::default()
+            },
+            &children,
+        )
+        .unwrap();
+    tree.set_size_containment(root, contained_size(Some(70.0), Some(80.0))).unwrap();
+
+    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(root).unwrap().size, Size { width: 76.0, height: 86.0 });
+    for (child, expected_x) in children.into_iter().zip([3.0, 23.0, 43.0]) {
+        assert_eq!(tree.layout(child).unwrap().location.x, expected_x);
+        assert_eq!(tree.layout(child).unwrap().size.width, 15.0);
+    }
+}
+
+#[test]
+fn contained_grid_size_establishes_available_space_for_auto_repeat_rows() {
+    let mut tree = new_test_tree();
+    let children = (0..3).map(|_| tree.new_leaf(Style::default()).unwrap()).collect::<Vec<_>>();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: Dimension::max_content() },
+                grid_template_columns: vec![fr(1.0)],
+                grid_template_rows: vec![repeat("auto-fit", vec![length(20.0)])],
+                gap: Size { width: zero(), height: length(10.0) },
+                ..Default::default()
+            },
+            &children,
+        )
+        .unwrap();
+    tree.set_size_containment(root, contained_size(Some(70.0), Some(80.0))).unwrap();
+
+    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(root).unwrap().size, Size { width: 70.0, height: 80.0 });
+    for (child, expected_y) in children.into_iter().zip([0.0, 30.0, 60.0]) {
+        assert_eq!(tree.layout(child).unwrap().location.y, expected_y);
+        assert_eq!(tree.layout(child).unwrap().size.height, 20.0);
+    }
+}

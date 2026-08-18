@@ -231,6 +231,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     let outer_node_size = node_sizing.outer_size;
     let definite_outer_node_size = node_sizing.definite_size;
+    // An explicit contained intrinsic size is not a definite size for
+    // descendant percentage resolution, but it is both the minimum and
+    // maximum available size used to expand this grid's auto-repeat tracks.
+    // Keep that distinction local to Grid instead of promoting containment
+    // into `ResolvedNodeSizing::definite_size`.
+    let auto_repeat_available_outer_size =
+        definite_outer_node_size.or(explicit_contained_outer_size.maybe_clamp(min_size, max_size));
     let constrained_available_space = definite_outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
         .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
@@ -312,7 +319,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // has a min- or max- size style then that will be used in it's place.
     let auto_fit_container_size = flow
         .to_logical_size(
-            definite_outer_node_size
+            auto_repeat_available_outer_size
                 .or(max_size)
                 .or(min_size)
                 .maybe_clamp(min_size, max_size)
@@ -326,10 +333,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Otherwise, if the grid container has a definite min size in the relevant axis:
     //   - then the number of repetitions is the smallest possible positive integer that fulfills that minimum requirement
     // Otherwise, the specified track list repeats only once.
-    let auto_repeat_fit_strategy = flow.to_logical_size(definite_outer_node_size.or(max_size).map(|val| match val {
-        Some(_) => AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
-        None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
-    }));
+    let auto_repeat_fit_strategy =
+        flow.to_logical_size(auto_repeat_available_outer_size.or(max_size).map(|val| match val {
+            Some(_) => AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
+            None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+        }));
 
     // Compute the number of rows and columns in the explicit grid *template*
     // (explicit tracks from grid_areas are computed separately below)
