@@ -195,6 +195,18 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let definite_outer_node_size = node_sizing.definite_size;
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
     let available_space = available_space.maybe_sub(margin.sum_axes());
+    // Blink keeps Grid's available size separate from the definiteness carried
+    // by its general constraint space. An explicit contained intrinsic size
+    // supplies both bounds used to expand auto-repeat tracks, but it must not
+    // become a percentage basis for descendants. Mask the resolved used size
+    // by the explicit containment override so authored sizing and min/max
+    // constraints remain authoritative without promoting it to
+    // `ResolvedNodeSizing::definite_size`.
+    let contained_auto_repeat_outer_size = Size {
+        width: explicit_contained_outer_size.width.and(outer_node_size.width),
+        height: explicit_contained_outer_size.height.and(outer_node_size.height),
+    };
+    let auto_repeat_available_outer_size = definite_outer_node_size.or(contained_auto_repeat_outer_size);
     let constrained_available_space = definite_outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
         .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
@@ -264,7 +276,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // This is very similar to the inner_node_size except if the inner_node_size is not definite but the node
     // has a min- or max- size style then that will be used in it's place.
     let auto_fit_container_size = flow.to_logical_size(
-        definite_outer_node_size
+        auto_repeat_available_outer_size
             .or(max_size)
             .or(min_size)
             .maybe_clamp(min_size, max_size)
@@ -278,10 +290,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Otherwise, if the grid container has a definite min size in the relevant axis:
     //   - then the number of repetitions is the smallest possible positive integer that fulfills that minimum requirement
     // Otherwise, the specified track list repeats only once.
-    let auto_repeat_fit_strategy = flow.to_logical_size(definite_outer_node_size.or(max_size).map(|val| match val {
-        Some(_) => AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
-        None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
-    }));
+    let auto_repeat_fit_strategy =
+        flow.to_logical_size(auto_repeat_available_outer_size.or(max_size).map(|val| match val {
+            Some(_) => AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
+            None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
+        }));
 
     // Compute the number of rows and columns in the explicit grid *template*
     // (explicit tracks from grid_areas are computed separately below)
