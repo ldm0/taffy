@@ -238,6 +238,83 @@ fn wrapped_flex_item_reresolves_stretch_against_its_line() {
     assert_eq!(tree.layout(child).unwrap().size.height, 55.0);
 }
 
+/// Regression for
+/// <https://wpt.live/css/css-sizing/stretch/flex-line-004.html>.
+///
+/// The container's intrinsic width is clamped after its min-content
+/// contribution is measured. That final used width is available to
+/// `width: stretch` without becoming a definite percentage basis. A wider
+/// sibling may still enlarge its own flex line independently.
+#[test]
+fn wrapped_column_stretch_uses_the_clamped_container_width_per_line() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = |tree: &mut TaffyTree<()>| {
+        tree.new_leaf(Style { display: Display::Block, size: Size::from_lengths(20.0, 20.0), ..Default::default() })
+            .unwrap()
+    };
+    let first_content = content(&mut tree);
+    let last_content = content(&mut tree);
+    let first = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width: Dimension::stretch(), height: length(75.0) },
+                border: Rect::length(3.0),
+                ..Default::default()
+            },
+            &[first_content],
+        )
+        .unwrap();
+    let wide = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            box_sizing: BoxSizing::ContentBox,
+            size: Size { width: length(150.0), height: auto() },
+            border: Rect::length(3.0),
+            ..Default::default()
+        })
+        .unwrap();
+    let last = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width: Dimension::stretch(), height: length(75.0) },
+                border: Rect::length(3.0),
+                ..Default::default()
+            },
+            &[last_content],
+        )
+        .unwrap();
+    let parent = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                box_sizing: BoxSizing::ContentBox,
+                flex_direction: FlexDirection::Column,
+                flex_wrap: FlexWrap::Wrap,
+                align_content: Some(AlignContent::START),
+                size: Size { width: Dimension::min_content(), height: length(100.0) },
+                max_size: Size { width: length(100.0), height: auto() },
+                border: Rect::length(3.0),
+                ..Default::default()
+            },
+            &[first, wide, last],
+        )
+        .unwrap();
+
+    tree.compute_layout(
+        parent,
+        Size { width: AvailableSpace::Definite(500.0), height: AvailableSpace::Definite(500.0) },
+    )
+    .unwrap();
+
+    assert_eq!(tree.layout(parent).unwrap().size.width, 106.0);
+    assert_eq!(tree.layout(first).unwrap().size.width, 156.0);
+    assert_eq!(tree.layout(last).unwrap().size.width, 100.0);
+}
+
 #[test]
 fn definite_flex_cross_stretch_transfers_into_the_flex_base_size() {
     let mut tree = TaffyTree::<()>::new();

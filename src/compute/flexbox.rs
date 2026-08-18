@@ -1206,7 +1206,11 @@ fn generate_anonymous_flex_items(
                     constants.dir.cross_axis(),
                 );
             let stretch_properties = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size);
-            let stretch_available_size = constants.node_definite_inner_size.maybe_sub(margin.sum_axes());
+            // `stretch` consumes the containing area's used size, not its
+            // percentage definiteness. Keep percentages on
+            // `node_percentage_size`, but let a content-derived or clamped
+            // container size establish the stretch-fit margin box.
+            let stretch_available_size = constants.node_inner_size.maybe_sub(margin.sum_axes());
             let stretch = stretch_properties.resolve(stretch_available_size, pb_sum);
             // Flex stores the untransferred preferred size in the authored
             // sizing box, while the shared stretch resolver returns the used
