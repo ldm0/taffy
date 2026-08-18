@@ -419,6 +419,26 @@ impl<'a> FlexLine<'a> {
             .find(|item| item.align_self.is_baseline() && item.baseline_group == group)
             .map(FlexItem::aligned_block_baseline)
     }
+
+    /// Return the first item in flex-flow order. Line construction retains
+    /// collection order, while a reversed main direction swaps the endpoints
+    /// when items are positioned and when fallback baselines are accumulated.
+    fn first_item_in_flex_flow(&self, main_reversed: bool) -> Option<&FlexItem> {
+        if main_reversed {
+            self.items.last()
+        } else {
+            self.items.first()
+        }
+    }
+
+    /// Return the last item in flex-flow order.
+    fn last_item_in_flex_flow(&self, main_reversed: bool) -> Option<&FlexItem> {
+        if main_reversed {
+            self.items.first()
+        } else {
+            self.items.last()
+        }
+    }
 }
 
 /// Select the flex container's first and last baselines after final item
@@ -433,18 +453,22 @@ fn flex_container_baselines(flex_lines: &[FlexLine<'_>], constants: &AlgoConstan
         if constants.main_axis_is_inline {
             line.shared_block_baseline(BaselineGroup::Major)
                 .or_else(|| line.shared_block_baseline(BaselineGroup::Minor))
-                .or_else(|| line.items.first().map(|item| item.first_block_baseline))
+                .or_else(|| {
+                    line.first_item_in_flex_flow(constants.authored_main_reversed).map(|item| item.first_block_baseline)
+                })
         } else {
-            line.items.first().map(|item| item.first_block_baseline)
+            line.first_item_in_flex_flow(constants.authored_main_reversed).map(|item| item.first_block_baseline)
         }
     });
     let last = last_line.and_then(|line| {
         if constants.main_axis_is_inline {
             line.shared_block_baseline(BaselineGroup::Minor)
                 .or_else(|| line.shared_block_baseline(BaselineGroup::Major))
-                .or_else(|| line.items.last().map(|item| item.last_block_baseline))
+                .or_else(|| {
+                    line.last_item_in_flex_flow(constants.authored_main_reversed).map(|item| item.last_block_baseline)
+                })
         } else {
-            line.items.last().map(|item| item.last_block_baseline)
+            line.last_item_in_flex_flow(constants.authored_main_reversed).map(|item| item.last_block_baseline)
         }
     });
 

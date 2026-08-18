@@ -459,6 +459,68 @@ fn flex_first_and_last_baselines_use_distinct_sharing_groups() {
     assert_eq!(tree.unrounded_layout(last).location, Point { x: 40.0, y: 90.0 });
 }
 
+fn nested_flex_reference_offset(flex_direction: FlexDirection, alignment: AlignItems) -> f32 {
+    let mut tree = TaffyTree::<()>::new();
+    let reference =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: length(20.0) }, ..Style::default() }).unwrap();
+    let small = tree
+        .new_leaf(Style {
+            size: Size { width: length(10.0), height: length(10.0) },
+            flex_shrink: 0.0,
+            ..Style::default()
+        })
+        .unwrap();
+    let large = tree
+        .new_leaf(Style {
+            size: Size { width: length(30.0), height: length(30.0) },
+            flex_shrink: 0.0,
+            ..Style::default()
+        })
+        .unwrap();
+    let nested = tree
+        .new_with_children(
+            Style { display: Display::Flex, flex_direction, flex_shrink: 0.0, ..Style::default() },
+            &[small, large],
+        )
+        .unwrap();
+    let outer = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                align_items: Some(alignment),
+                size: Size { width: length(200.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[reference, nested],
+        )
+        .unwrap();
+
+    tree.compute_layout(outer, Size::MAX_CONTENT).unwrap();
+    tree.unrounded_layout(reference).location.y
+}
+
+#[test]
+fn reversed_flex_flow_exports_fallback_baselines_from_its_flow_endpoints() {
+    let cases = [
+        (FlexDirection::Row, AlignItems::BASELINE, 0.0),
+        (FlexDirection::RowReverse, AlignItems::BASELINE, 10.0),
+        (FlexDirection::Column, AlignItems::BASELINE, 0.0),
+        (FlexDirection::ColumnReverse, AlignItems::BASELINE, 10.0),
+        (FlexDirection::Row, AlignItems::LAST_BASELINE, 80.0),
+        (FlexDirection::RowReverse, AlignItems::LAST_BASELINE, 60.0),
+        (FlexDirection::Column, AlignItems::LAST_BASELINE, 80.0),
+        (FlexDirection::ColumnReverse, AlignItems::LAST_BASELINE, 80.0),
+    ];
+
+    for (direction, alignment, expected) in cases {
+        assert_eq!(
+            nested_flex_reference_offset(direction, alignment),
+            expected,
+            "unexpected {alignment:?} fallback exported by {direction:?}"
+        );
+    }
+}
+
 #[test]
 fn flex_wrap_reverse_flips_the_last_baseline_group_once() {
     let mut tree = TaffyTree::<()>::new();
