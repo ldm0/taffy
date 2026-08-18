@@ -19,6 +19,7 @@ mod hand_written {
     mod floats;
     mod grid_automatic_minimum;
     mod grid_constraint_space;
+    mod grid_detailed_layout_info;
     mod grid_flexible_tracks;
     mod grid_ratio_contributions;
     mod grid_track_rerun;
