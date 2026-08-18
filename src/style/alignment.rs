@@ -11,7 +11,7 @@
 #[cfg(feature = "parse")]
 use crate::util::parse::{CssParseResult, FromCss, Parser, Token};
 
-use crate::geometry::{AbsoluteAxis, WritingMode};
+use crate::geometry::{AbsoluteAxis, AbstractAxis, WritingMode};
 use crate::style::Direction;
 
 /// The position-keyword half of [`AlignItems`] (and its aliases `AlignSelf`,
@@ -83,6 +83,12 @@ pub enum AlignContentKeyword {
     FlexStart,
     /// Items are packed towards the flex-relative end of the axis.
     FlexEnd,
+    /// Items are packed toward the line-left edge when alignment is inline,
+    /// or the physical left edge when a horizontal block axis is aligned.
+    Left,
+    /// Items are packed toward the line-right edge when alignment is inline,
+    /// or the physical right edge when a horizontal block axis is aligned.
+    Right,
     /// Items are centered around the middle of the axis.
     Center,
     /// Contents participate in first-baseline content alignment.
@@ -436,6 +442,12 @@ impl AlignContent {
     pub const FLEX_START: Self = Self { keyword: AlignContentKeyword::FlexStart, safety: AlignmentSafety::Default };
     /// Items are packed towards the flex-relative end of the axis.
     pub const FLEX_END: Self = Self { keyword: AlignContentKeyword::FlexEnd, safety: AlignmentSafety::Default };
+    /// Items are packed toward the line-left or physical-left edge selected by
+    /// the formatting context.
+    pub const LEFT: Self = Self { keyword: AlignContentKeyword::Left, safety: AlignmentSafety::Default };
+    /// Items are packed toward the line-right or physical-right edge selected
+    /// by the formatting context.
+    pub const RIGHT: Self = Self { keyword: AlignContentKeyword::Right, safety: AlignmentSafety::Default };
     /// Items are centered around the middle of the axis.
     pub const CENTER: Self = Self { keyword: AlignContentKeyword::Center, safety: AlignmentSafety::Default };
     /// Contents participate in first-baseline content alignment.
@@ -464,6 +476,10 @@ impl AlignContent {
     /// Like [`AlignContent::FLEX_END`], but falls back to [`AlignContent::START`] when the
     /// content overflows the alignment container, to avoid data loss.
     pub const SAFE_FLEX_END: Self = Self { keyword: AlignContentKeyword::FlexEnd, safety: AlignmentSafety::Safe };
+    /// Like [`AlignContent::LEFT`], with safe overflow alignment.
+    pub const SAFE_LEFT: Self = Self { keyword: AlignContentKeyword::Left, safety: AlignmentSafety::Safe };
+    /// Like [`AlignContent::RIGHT`], with safe overflow alignment.
+    pub const SAFE_RIGHT: Self = Self { keyword: AlignContentKeyword::Right, safety: AlignmentSafety::Safe };
     /// Like [`AlignContent::CENTER`], but falls back to [`AlignContent::START`] when the
     /// content overflows the alignment container, to avoid data loss.
     pub const SAFE_CENTER: Self = Self { keyword: AlignContentKeyword::Center, safety: AlignmentSafety::Safe };
@@ -476,6 +492,10 @@ impl AlignContent {
         Self { keyword: AlignContentKeyword::FlexStart, safety: AlignmentSafety::Unsafe };
     /// Explicitly unsafe flex-end alignment.
     pub const UNSAFE_FLEX_END: Self = Self { keyword: AlignContentKeyword::FlexEnd, safety: AlignmentSafety::Unsafe };
+    /// Explicitly unsafe line-left or physical-left alignment.
+    pub const UNSAFE_LEFT: Self = Self { keyword: AlignContentKeyword::Left, safety: AlignmentSafety::Unsafe };
+    /// Explicitly unsafe line-right or physical-right alignment.
+    pub const UNSAFE_RIGHT: Self = Self { keyword: AlignContentKeyword::Right, safety: AlignmentSafety::Unsafe };
     /// Explicitly unsafe center alignment.
     pub const UNSAFE_CENTER: Self = Self { keyword: AlignContentKeyword::Center, safety: AlignmentSafety::Unsafe };
 
@@ -502,6 +522,60 @@ impl AlignContent {
     pub const fn is_last_baseline(self) -> bool {
         matches!(self.keyword, AlignContentKeyword::LastBaseline)
     }
+
+    /// Resolve `left` and `right` once the formatting context has selected a
+    /// logical alignment axis.
+    ///
+    /// On the inline axis these are line-relative and follow `direction`. On
+    /// a horizontal block axis they retain their physical left/right meaning;
+    /// on a vertical block axis both fall back to logical start. This mirrors
+    /// CSS Box Alignment and keeps physical intent intact until writing mode
+    /// and the formatting model's axis are both known.
+    #[inline]
+    pub(crate) const fn resolve_axis_relative(
+        self,
+        writing_mode: WritingMode,
+        direction: Direction,
+        axis: AbstractAxis,
+    ) -> Self {
+        let keyword = match (self.keyword, axis) {
+            (AlignContentKeyword::Left, AbstractAxis::Inline) => {
+                if matches!(direction, Direction::Ltr) {
+                    AlignContentKeyword::Start
+                } else {
+                    AlignContentKeyword::End
+                }
+            }
+            (AlignContentKeyword::Right, AbstractAxis::Inline) => {
+                if matches!(direction, Direction::Ltr) {
+                    AlignContentKeyword::End
+                } else {
+                    AlignContentKeyword::Start
+                }
+            }
+            (AlignContentKeyword::Left, AbstractAxis::Block)
+                if matches!(writing_mode.block_axis(), AbsoluteAxis::Horizontal) =>
+            {
+                if writing_mode.is_block_flow_reversed() {
+                    AlignContentKeyword::End
+                } else {
+                    AlignContentKeyword::Start
+                }
+            }
+            (AlignContentKeyword::Right, AbstractAxis::Block)
+                if matches!(writing_mode.block_axis(), AbsoluteAxis::Horizontal) =>
+            {
+                if writing_mode.is_block_flow_reversed() {
+                    AlignContentKeyword::Start
+                } else {
+                    AlignContentKeyword::End
+                }
+            }
+            (AlignContentKeyword::Left | AlignContentKeyword::Right, AbstractAxis::Block) => AlignContentKeyword::Start,
+            (keyword, _) => keyword,
+        };
+        Self { keyword, safety: self.safety }
+    }
 }
 
 #[cfg(feature = "parse")]
@@ -516,6 +590,8 @@ impl FromCss for AlignContent {
                     "end" => Ok(Self::SAFE_END),
                     "flex-start" => Ok(Self::SAFE_FLEX_START),
                     "flex-end" => Ok(Self::SAFE_FLEX_END),
+                    "left" => Ok(Self::SAFE_LEFT),
+                    "right" => Ok(Self::SAFE_RIGHT),
                     "center" => Ok(Self::SAFE_CENTER),
                     _ => Err(input.new_unexpected_token_error(Token::Ident(pos))),
                 }
@@ -527,6 +603,8 @@ impl FromCss for AlignContent {
                     "end" => Ok(Self::UNSAFE_END),
                     "flex-start" => Ok(Self::UNSAFE_FLEX_START),
                     "flex-end" => Ok(Self::UNSAFE_FLEX_END),
+                    "left" => Ok(Self::UNSAFE_LEFT),
+                    "right" => Ok(Self::UNSAFE_RIGHT),
                     "center" => Ok(Self::UNSAFE_CENTER),
                     _ => Err(input.new_unexpected_token_error(Token::Ident(pos))),
                 }
@@ -535,6 +613,8 @@ impl FromCss for AlignContent {
             "end" => Ok(Self::END),
             "flex-start" => Ok(Self::FLEX_START),
             "flex-end" => Ok(Self::FLEX_END),
+            "left" => Ok(Self::LEFT),
+            "right" => Ok(Self::RIGHT),
             "center" => Ok(Self::CENTER),
             "baseline" => {
                 if input.is_exhausted() {
@@ -722,6 +802,8 @@ const ALIGN_CONTENT_NAMES: &[&str] = &[
     "End",
     "FlexStart",
     "FlexEnd",
+    "Left",
+    "Right",
     "Center",
     "Baseline",
     "LastBaseline",
@@ -733,11 +815,15 @@ const ALIGN_CONTENT_NAMES: &[&str] = &[
     "SafeEnd",
     "SafeFlexStart",
     "SafeFlexEnd",
+    "SafeLeft",
+    "SafeRight",
     "SafeCenter",
     "UnsafeStart",
     "UnsafeEnd",
     "UnsafeFlexStart",
     "UnsafeFlexEnd",
+    "UnsafeLeft",
+    "UnsafeRight",
     "UnsafeCenter",
 ];
 
@@ -749,6 +835,8 @@ impl serde::Serialize for AlignContent {
             (AlignContentKeyword::End, AlignmentSafety::Default) => "End",
             (AlignContentKeyword::FlexStart, AlignmentSafety::Default) => "FlexStart",
             (AlignContentKeyword::FlexEnd, AlignmentSafety::Default) => "FlexEnd",
+            (AlignContentKeyword::Left, AlignmentSafety::Default) => "Left",
+            (AlignContentKeyword::Right, AlignmentSafety::Default) => "Right",
             (AlignContentKeyword::Center, AlignmentSafety::Default) => "Center",
             (AlignContentKeyword::Baseline, _) => "Baseline",
             (AlignContentKeyword::LastBaseline, _) => "LastBaseline",
@@ -760,11 +848,15 @@ impl serde::Serialize for AlignContent {
             (AlignContentKeyword::End, AlignmentSafety::Safe) => "SafeEnd",
             (AlignContentKeyword::FlexStart, AlignmentSafety::Safe) => "SafeFlexStart",
             (AlignContentKeyword::FlexEnd, AlignmentSafety::Safe) => "SafeFlexEnd",
+            (AlignContentKeyword::Left, AlignmentSafety::Safe) => "SafeLeft",
+            (AlignContentKeyword::Right, AlignmentSafety::Safe) => "SafeRight",
             (AlignContentKeyword::Center, AlignmentSafety::Safe) => "SafeCenter",
             (AlignContentKeyword::Start, AlignmentSafety::Unsafe) => "UnsafeStart",
             (AlignContentKeyword::End, AlignmentSafety::Unsafe) => "UnsafeEnd",
             (AlignContentKeyword::FlexStart, AlignmentSafety::Unsafe) => "UnsafeFlexStart",
             (AlignContentKeyword::FlexEnd, AlignmentSafety::Unsafe) => "UnsafeFlexEnd",
+            (AlignContentKeyword::Left, AlignmentSafety::Unsafe) => "UnsafeLeft",
+            (AlignContentKeyword::Right, AlignmentSafety::Unsafe) => "UnsafeRight",
             (AlignContentKeyword::Center, AlignmentSafety::Unsafe) => "UnsafeCenter",
         };
         serializer.serialize_str(name)
@@ -786,6 +878,8 @@ impl<'de> serde::Deserialize<'de> for AlignContent {
                     "End" => AlignContent::END,
                     "FlexStart" => AlignContent::FLEX_START,
                     "FlexEnd" => AlignContent::FLEX_END,
+                    "Left" => AlignContent::LEFT,
+                    "Right" => AlignContent::RIGHT,
                     "Center" => AlignContent::CENTER,
                     "Baseline" => AlignContent::BASELINE,
                     "LastBaseline" => AlignContent::LAST_BASELINE,
@@ -797,11 +891,15 @@ impl<'de> serde::Deserialize<'de> for AlignContent {
                     "SafeEnd" => AlignContent::SAFE_END,
                     "SafeFlexStart" => AlignContent::SAFE_FLEX_START,
                     "SafeFlexEnd" => AlignContent::SAFE_FLEX_END,
+                    "SafeLeft" => AlignContent::SAFE_LEFT,
+                    "SafeRight" => AlignContent::SAFE_RIGHT,
                     "SafeCenter" => AlignContent::SAFE_CENTER,
                     "UnsafeStart" => AlignContent::UNSAFE_START,
                     "UnsafeEnd" => AlignContent::UNSAFE_END,
                     "UnsafeFlexStart" => AlignContent::UNSAFE_FLEX_START,
                     "UnsafeFlexEnd" => AlignContent::UNSAFE_FLEX_END,
+                    "UnsafeLeft" => AlignContent::UNSAFE_LEFT,
+                    "UnsafeRight" => AlignContent::UNSAFE_RIGHT,
                     "UnsafeCenter" => AlignContent::UNSAFE_CENTER,
                     other => return Err(E::unknown_variant(other, ALIGN_CONTENT_NAMES)),
                 })
@@ -965,6 +1063,8 @@ mod tests {
     #[test]
     fn align_content_is_safe() {
         assert!(AlignContent::SAFE_START.is_safe());
+        assert!(AlignContent::SAFE_LEFT.is_safe());
+        assert!(AlignContent::SAFE_RIGHT.is_safe());
         assert!(AlignContent::SAFE_CENTER.is_safe());
         assert!(!AlignContent::SPACE_BETWEEN.is_safe());
         assert!(!AlignContent::BASELINE.is_safe());
@@ -976,6 +1076,8 @@ mod tests {
     fn align_content_keyword_strips_safe() {
         assert_eq!(AlignContent::SAFE_START.keyword(), AlignContentKeyword::Start);
         assert_eq!(AlignContent::SAFE_FLEX_END.keyword(), AlignContentKeyword::FlexEnd);
+        assert_eq!(AlignContent::SAFE_LEFT.keyword(), AlignContentKeyword::Left);
+        assert_eq!(AlignContent::SAFE_RIGHT.keyword(), AlignContentKeyword::Right);
         assert_eq!(AlignContent::SAFE_CENTER.keyword(), AlignContentKeyword::Center);
         assert_eq!(AlignContent::SPACE_BETWEEN.keyword(), AlignContentKeyword::SpaceBetween);
     }
@@ -987,6 +1089,27 @@ mod tests {
         assert!(!AlignContent::START.is_baseline());
         assert!(!AlignContent::BASELINE.is_last_baseline());
         assert!(AlignContent::LAST_BASELINE.is_last_baseline());
+    }
+
+    #[test]
+    fn content_alignment_resolves_left_and_right_at_the_logical_axis_boundary() {
+        use AbstractAxis::{Block, Inline};
+        use Direction::{Ltr, Rtl};
+        use WritingMode::{HorizontalTb, SidewaysLr, VerticalLr, VerticalRl};
+
+        assert_eq!(AlignContent::LEFT.resolve_axis_relative(HorizontalTb, Ltr, Inline), AlignContent::START);
+        assert_eq!(AlignContent::RIGHT.resolve_axis_relative(HorizontalTb, Ltr, Inline), AlignContent::END);
+        assert_eq!(AlignContent::LEFT.resolve_axis_relative(VerticalRl, Rtl, Inline), AlignContent::END);
+        assert_eq!(AlignContent::RIGHT.resolve_axis_relative(SidewaysLr, Rtl, Inline), AlignContent::START);
+
+        assert_eq!(AlignContent::LEFT.resolve_axis_relative(VerticalRl, Ltr, Block), AlignContent::END);
+        assert_eq!(AlignContent::RIGHT.resolve_axis_relative(VerticalRl, Rtl, Block), AlignContent::START);
+        assert_eq!(AlignContent::LEFT.resolve_axis_relative(VerticalLr, Rtl, Block), AlignContent::START);
+        assert_eq!(AlignContent::RIGHT.resolve_axis_relative(SidewaysLr, Ltr, Block), AlignContent::END);
+
+        assert_eq!(AlignContent::LEFT.resolve_axis_relative(HorizontalTb, Ltr, Block), AlignContent::START);
+        assert_eq!(AlignContent::RIGHT.resolve_axis_relative(HorizontalTb, Rtl, Block), AlignContent::START);
+        assert_eq!(AlignContent::SAFE_RIGHT.resolve_axis_relative(VerticalRl, Ltr, Block), AlignContent::SAFE_START);
     }
 
     #[cfg(feature = "parse")]
@@ -1061,6 +1184,8 @@ mod tests {
     #[test]
     fn parse_align_content_plain() {
         assert_eq!("start".parse::<AlignContent>().unwrap(), AlignContent::START);
+        assert_eq!("left".parse::<AlignContent>().unwrap(), AlignContent::LEFT);
+        assert_eq!("right".parse::<AlignContent>().unwrap(), AlignContent::RIGHT);
         assert_eq!("baseline".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
         assert_eq!("first baseline".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
         assert_eq!("baseline first".parse::<AlignContent>().unwrap(), AlignContent::BASELINE);
@@ -1079,6 +1204,8 @@ mod tests {
         assert_eq!("safe end".parse::<AlignContent>().unwrap(), AlignContent::SAFE_END);
         assert_eq!("safe flex-start".parse::<AlignContent>().unwrap(), AlignContent::SAFE_FLEX_START);
         assert_eq!("safe flex-end".parse::<AlignContent>().unwrap(), AlignContent::SAFE_FLEX_END);
+        assert_eq!("safe left".parse::<AlignContent>().unwrap(), AlignContent::SAFE_LEFT);
+        assert_eq!("safe right".parse::<AlignContent>().unwrap(), AlignContent::SAFE_RIGHT);
         assert_eq!("safe center".parse::<AlignContent>().unwrap(), AlignContent::SAFE_CENTER);
     }
 
@@ -1087,6 +1214,8 @@ mod tests {
     fn parse_align_content_unsafe_preserves_modifier() {
         assert_eq!("unsafe start".parse::<AlignContent>().unwrap(), AlignContent::UNSAFE_START);
         assert_eq!("unsafe flex-end".parse::<AlignContent>().unwrap(), AlignContent::UNSAFE_FLEX_END);
+        assert_eq!("unsafe left".parse::<AlignContent>().unwrap(), AlignContent::UNSAFE_LEFT);
+        assert_eq!("unsafe right".parse::<AlignContent>().unwrap(), AlignContent::UNSAFE_RIGHT);
     }
 
     #[cfg(feature = "parse")]
@@ -1154,6 +1283,8 @@ mod tests {
             (AlignContent::END, "\"End\""),
             (AlignContent::FLEX_START, "\"FlexStart\""),
             (AlignContent::FLEX_END, "\"FlexEnd\""),
+            (AlignContent::LEFT, "\"Left\""),
+            (AlignContent::RIGHT, "\"Right\""),
             (AlignContent::CENTER, "\"Center\""),
             (AlignContent::BASELINE, "\"Baseline\""),
             (AlignContent::LAST_BASELINE, "\"LastBaseline\""),
@@ -1165,11 +1296,15 @@ mod tests {
             (AlignContent::SAFE_END, "\"SafeEnd\""),
             (AlignContent::SAFE_FLEX_START, "\"SafeFlexStart\""),
             (AlignContent::SAFE_FLEX_END, "\"SafeFlexEnd\""),
+            (AlignContent::SAFE_LEFT, "\"SafeLeft\""),
+            (AlignContent::SAFE_RIGHT, "\"SafeRight\""),
             (AlignContent::SAFE_CENTER, "\"SafeCenter\""),
             (AlignContent::UNSAFE_START, "\"UnsafeStart\""),
             (AlignContent::UNSAFE_END, "\"UnsafeEnd\""),
             (AlignContent::UNSAFE_FLEX_START, "\"UnsafeFlexStart\""),
             (AlignContent::UNSAFE_FLEX_END, "\"UnsafeFlexEnd\""),
+            (AlignContent::UNSAFE_LEFT, "\"UnsafeLeft\""),
+            (AlignContent::UNSAFE_RIGHT, "\"UnsafeRight\""),
             (AlignContent::UNSAFE_CENTER, "\"UnsafeCenter\""),
         ];
         for (value, expected) in cases {

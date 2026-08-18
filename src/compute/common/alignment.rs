@@ -109,6 +109,9 @@ pub fn apply_alignment_fallback(
         AlignContentKeyword::End => ResolvedAlignContentKeyword::End,
         AlignContentKeyword::FlexStart => ResolvedAlignContentKeyword::FlexStart,
         AlignContentKeyword::FlexEnd => ResolvedAlignContentKeyword::FlexEnd,
+        AlignContentKeyword::Left | AlignContentKeyword::Right => {
+            unreachable!("physical content alignment must be resolved at the formatting-context boundary")
+        }
         AlignContentKeyword::Center => ResolvedAlignContentKeyword::Center,
         AlignContentKeyword::Baseline => {
             is_safe = true;

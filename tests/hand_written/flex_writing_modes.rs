@@ -548,6 +548,95 @@ fn flex_wrap_reverse_flips_the_last_baseline_group_once() {
 }
 
 #[test]
+fn vertical_column_justify_left_and_right_keep_their_physical_edges() {
+    for writing_mode in
+        [WritingMode::VerticalRl, WritingMode::VerticalLr, WritingMode::SidewaysRl, WritingMode::SidewaysLr]
+    {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                for position in [Position::Relative, Position::Absolute] {
+                    for (justify_content, expected_x) in [(JustifyContent::LEFT, 0.0), (JustifyContent::RIGHT, 12.0)] {
+                        let mut tree = TaffyTree::<()>::new();
+                        let child = new_leaf(
+                            &mut tree,
+                            Style {
+                                position,
+                                size: Size { width: length(8.0), height: length(6.0) },
+                                flex_shrink: 0.0,
+                                ..Style::default()
+                            },
+                            writing_mode,
+                        );
+                        let container = new_container(
+                            &mut tree,
+                            Style {
+                                display: Display::Flex,
+                                direction,
+                                flex_direction,
+                                justify_content: Some(justify_content),
+                                size: Size { width: length(20.0), height: length(16.0) },
+                                ..Style::default()
+                            },
+                            &[child],
+                            writing_mode,
+                        );
+
+                        tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+                        assert_eq!(
+                            tree.layout(child).unwrap().location.x,
+                            expected_x,
+                            "{writing_mode:?} {direction:?} {flex_direction:?} {position:?} {justify_content:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn vertical_main_axis_justify_left_and_right_fall_back_to_block_start() {
+    for flex_direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+        for position in [Position::Relative, Position::Absolute] {
+            for justify_content in [JustifyContent::LEFT, JustifyContent::RIGHT] {
+                let mut tree = TaffyTree::<()>::new();
+                let child = new_leaf(
+                    &mut tree,
+                    Style {
+                        position,
+                        size: Size { width: length(8.0), height: length(6.0) },
+                        flex_shrink: 0.0,
+                        ..Style::default()
+                    },
+                    WritingMode::HorizontalTb,
+                );
+                let container = new_container(
+                    &mut tree,
+                    Style {
+                        display: Display::Flex,
+                        flex_direction,
+                        justify_content: Some(justify_content),
+                        size: Size { width: length(20.0), height: length(16.0) },
+                        ..Style::default()
+                    },
+                    &[child],
+                    WritingMode::HorizontalTb,
+                );
+
+                tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+                assert_eq!(
+                    tree.layout(child).unwrap().location.y,
+                    0.0,
+                    "{flex_direction:?} {position:?} {justify_content:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn absolute_flex_last_baseline_uses_its_end_fallback() {
     let mut tree = TaffyTree::<()>::new();
     let child = tree

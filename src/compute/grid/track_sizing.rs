@@ -204,6 +204,8 @@ pub(super) fn compute_alignment_gutter_adjustment(
         | AlignContentKeyword::FlexStart
         | AlignContentKeyword::End
         | AlignContentKeyword::FlexEnd
+        | AlignContentKeyword::Left
+        | AlignContentKeyword::Right
         | AlignContentKeyword::Center
         | AlignContentKeyword::Baseline
         | AlignContentKeyword::LastBaseline => 1,
@@ -218,6 +220,8 @@ pub(super) fn compute_alignment_gutter_adjustment(
         | AlignContentKeyword::Start
         | AlignContentKeyword::FlexEnd
         | AlignContentKeyword::End
+        | AlignContentKeyword::Left
+        | AlignContentKeyword::Right
         | AlignContentKeyword::Center
         | AlignContentKeyword::Baseline
         | AlignContentKeyword::LastBaseline

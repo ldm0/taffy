@@ -218,8 +218,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let derive_contained_block_size =
         logical_containment_axes.block_size && logical_contained_content_size.block_size.is_none();
 
-    let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
-    let justify_content = style.justify_content().unwrap_or(JustifyContent::STRETCH);
+    let align_content = style.align_content().unwrap_or(AlignContent::STRETCH).resolve_axis_relative(
+        writing_mode,
+        direction,
+        AbstractAxis::Block,
+    );
+    let justify_content = style.justify_content().unwrap_or(JustifyContent::STRETCH).resolve_axis_relative(
+        writing_mode,
+        direction,
+        AbstractAxis::Inline,
+    );
     let align_items = style.align_items();
     let justify_items = style.justify_items();
 

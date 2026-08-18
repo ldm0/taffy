@@ -1083,8 +1083,16 @@ fn compute_constants(
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
 
     let align_items = style.align_items().unwrap_or(AlignItems::NORMAL).resolve_normal(AlignItems::STRETCH);
-    let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
-    let justify_content = style.justify_content();
+    let main_alignment_axis = if main_axis_is_inline { AbstractAxis::Inline } else { AbstractAxis::Block };
+    let cross_alignment_axis = main_alignment_axis.other();
+    let align_content = style.align_content().unwrap_or(AlignContent::STRETCH).resolve_axis_relative(
+        writing_mode,
+        inline_direction,
+        cross_alignment_axis,
+    );
+    let justify_content = style
+        .justify_content()
+        .map(|alignment| alignment.resolve_axis_relative(writing_mode, inline_direction, main_alignment_axis));
     let horizontal_direction = flow.horizontal_direction;
 
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
@@ -3840,6 +3848,9 @@ fn flex_main_static_position_edge(justify_content: JustifyContent, reverse: bool
             } else {
                 StaticPositionEdge::Start
             }
+        }
+        AlignContentKeyword::Left | AlignContentKeyword::Right => {
+            unreachable!("physical content alignment is resolved when flex constants are built")
         }
     }
 }

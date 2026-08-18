@@ -1,6 +1,7 @@
 //! Computes the CSS block layout algorithm in the case that the block container being laid out contains only block-level boxes
 use crate::geometry::{
-    Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size, WritingDirection,
+    AbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size,
+    WritingDirection,
 };
 use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
@@ -649,7 +650,9 @@ fn compute_inner(
         || logical_border.block_end > 0.0;
 
     let text_align = style.text_align();
-    let align_content = style.align_content();
+    let align_content = style
+        .align_content()
+        .map(|alignment| alignment.resolve_axis_relative(writing_mode, direction, AbstractAxis::Block));
     drop(style);
 
     let available_logical_space = writing_mode.to_logical(available_space);

@@ -269,6 +269,34 @@ fn grid_item_start_alignment_follows_each_logical_axis() {
 }
 
 #[test]
+fn grid_justify_content_left_and_right_keep_physical_horizontal_edges() {
+    for direction in [Direction::Ltr, Direction::Rtl] {
+        for (justify_content, expected_x) in [(JustifyContent::LEFT, 0.0), (JustifyContent::RIGHT, 80.0)] {
+            let mut tree = TaffyTree::<()>::new();
+            let child = tree.new_leaf(Style::default()).unwrap();
+            let container = tree
+                .new_with_children(
+                    Style {
+                        display: Display::Grid,
+                        direction,
+                        justify_content: Some(justify_content),
+                        size: Size { width: length(100.0), height: length(40.0) },
+                        grid_template_columns: vec![length(20.0)],
+                        grid_template_rows: vec![length(10.0)],
+                        ..Style::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+
+            tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+            assert_eq!(tree.layout(child).unwrap().location.x, expected_x, "{direction:?} {justify_content:?}");
+        }
+    }
+}
+
+#[test]
 fn grid_percentages_gaps_and_padding_use_logical_axis_sizes() {
     for (writing_mode, direction) in [
         (WritingMode::HorizontalTb, Direction::Ltr),
