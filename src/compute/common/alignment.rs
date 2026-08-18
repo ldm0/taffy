@@ -71,6 +71,21 @@ impl ResolvedAlignContentKeyword {
             Self::Center | Self::SpaceBetween | Self::SpaceEvenly | Self::SpaceAround => self,
         }
     }
+
+    /// Reverse only logical `start`/`end` edges while retaining flex-relative
+    /// and distributed positions.
+    ///
+    /// Flex main-axis placement uses a physical low-to-high offset on a
+    /// vertical axis. When logical main-start is the physical high edge, only
+    /// logical positions need projection: `flex-start` already follows the
+    /// independently normalized flex direction.
+    pub(crate) fn logical_edges_reversed(self) -> Self {
+        match self {
+            Self::Start => Self::End,
+            Self::End => Self::Start,
+            other => other,
+        }
+    }
 }
 
 /// Resolve the `safe`/`unsafe` overflow-position fallback for a self-level alignment value
@@ -236,5 +251,10 @@ mod tests {
         assert_eq!(ResolvedAlignContentKeyword::Stretch.reversed(), ResolvedAlignContentKeyword::End);
         assert_eq!(ResolvedAlignContentKeyword::Center.reversed(), ResolvedAlignContentKeyword::Center);
         assert_eq!(ResolvedAlignContentKeyword::SpaceBetween.reversed(), ResolvedAlignContentKeyword::SpaceBetween);
+        assert_eq!(ResolvedAlignContentKeyword::Start.logical_edges_reversed(), ResolvedAlignContentKeyword::End);
+        assert_eq!(
+            ResolvedAlignContentKeyword::FlexStart.logical_edges_reversed(),
+            ResolvedAlignContentKeyword::FlexStart
+        );
     }
 }

@@ -118,6 +118,8 @@ struct FlexFlow {
     /// This remains logical: writing-mode and `direction` reversal is applied
     /// only when a logical position is projected into physical coordinates.
     authored_main_reversed: bool,
+    /// Whether logical main-start is the physical high edge.
+    main_axis_start_reversed: bool,
     /// Direction of the physical horizontal axis, wherever it appears in the
     /// main/cross pair.
     horizontal_direction: Direction,
@@ -176,6 +178,7 @@ impl FlexFlow {
         Self {
             direction,
             authored_main_reversed,
+            main_axis_start_reversed: base_main_reversed,
             horizontal_direction,
             main_axis_is_inline,
             cross_axis_start_reversed: base_cross_reversed,
@@ -481,6 +484,8 @@ struct AlgoConstants {
     dir: FlexDirection,
     /// Whether the authored flex main direction is reversed.
     authored_main_reversed: bool,
+    /// Whether logical main-start is the physical high edge.
+    main_axis_start_reversed: bool,
     /// The CSS inline direction inherited by the container.
     inline_direction: Direction,
     /// The direction of the physical horizontal axis.
@@ -1148,6 +1153,7 @@ fn compute_constants(
     AlgoConstants {
         dir,
         authored_main_reversed: flow.authored_main_reversed,
+        main_axis_start_reversed: flow.main_axis_start_reversed,
         inline_direction,
         horizontal_direction,
         is_row,
@@ -3344,8 +3350,15 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
         let layout_reverse = constants.dir.is_reverse();
         let gap = constants.gap.main(constants.dir);
         let raw_justify_content_mode = constants.justify_content.unwrap_or(JustifyContent::FLEX_START);
-        let justify_content_mode =
+        let mut justify_content_mode =
             apply_alignment_fallback(justification_free_space, num_items, raw_justify_content_mode);
+        // Horizontal RTL placement already measures offsets from the physical
+        // high edge. Vertical placement measures from the low edge, so project
+        // logical start/end once here. Flex-relative positions remain governed
+        // by the independently normalized flex direction.
+        if constants.is_column && constants.main_axis_start_reversed {
+            justify_content_mode = justify_content_mode.logical_edges_reversed();
+        }
 
         let justify_item = |(i, child): (usize, &mut FlexItem)| {
             child.offset_main = compute_alignment_offset(

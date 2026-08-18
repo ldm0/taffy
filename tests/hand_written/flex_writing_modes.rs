@@ -596,6 +596,57 @@ fn vertical_column_justify_left_and_right_keep_their_physical_edges() {
 }
 
 #[test]
+fn vertical_row_content_alignment_distinguishes_logical_and_physical_edges() {
+    for writing_mode in [WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in [FlexDirection::Row, FlexDirection::RowReverse] {
+                for position in [Position::Relative, Position::Absolute] {
+                    for (justify_content, expected_y) in [
+                        (JustifyContent::LEFT, 0.0),
+                        (JustifyContent::RIGHT, 10.0),
+                        (JustifyContent::START, if direction == Direction::Rtl { 10.0 } else { 0.0 }),
+                        (JustifyContent::END, if direction == Direction::Rtl { 0.0 } else { 10.0 }),
+                    ] {
+                        let mut tree = TaffyTree::<()>::new();
+                        let child = new_leaf(
+                            &mut tree,
+                            Style {
+                                position,
+                                size: Size { width: length(8.0), height: length(6.0) },
+                                flex_shrink: 0.0,
+                                ..Style::default()
+                            },
+                            writing_mode,
+                        );
+                        let container = new_container(
+                            &mut tree,
+                            Style {
+                                display: Display::Flex,
+                                direction,
+                                flex_direction,
+                                justify_content: Some(justify_content),
+                                size: Size { width: length(20.0), height: length(16.0) },
+                                ..Style::default()
+                            },
+                            &[child],
+                            writing_mode,
+                        );
+
+                        tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+                        assert_eq!(
+                            tree.layout(child).unwrap().location.y,
+                            expected_y,
+                            "{writing_mode:?} {direction:?} {flex_direction:?} {position:?} {justify_content:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn vertical_main_axis_justify_left_and_right_fall_back_to_block_start() {
     for flex_direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
         for position in [Position::Relative, Position::Absolute] {
