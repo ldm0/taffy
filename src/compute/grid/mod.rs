@@ -1,6 +1,6 @@
 //! This module is a partial implementation of the CSS Grid Level 1 specification
 //! <https://www.w3.org/TR/css-grid-1>
-use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup, FontBaseline};
+use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Point, Size};
 use crate::style::{AlignItems, AvailableSpace, Overflow, Position};
@@ -114,6 +114,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     inputs: LayoutInput,
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
+    let font_baseline = tree.get_font_baseline(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, available_space, run_mode, .. } = inputs;
 
@@ -397,6 +398,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     for item in &mut items {
         item.aspect_ratio = tree.get_resolved_aspect_ratio(item.node);
+        item.parent_font_baseline = font_baseline;
         item.resolve_baseline_context(tree.get_writing_mode(item.node));
     }
 
@@ -1348,11 +1350,7 @@ fn grid_container_baselines(items: &[GridItem], flow: GridFlow) -> (f32, f32) {
     debug_assert!(!items.is_empty());
 
     let synthesize = |item: &GridItem| {
-        synthesized_logical_baseline(
-            item.block_size,
-            flow.writing_direction(),
-            FontBaseline::for_writing_mode(flow.writing_direction().mode),
-        )
+        synthesized_logical_baseline(item.block_size, flow.writing_direction(), item.parent_font_baseline)
     };
     let aligned_baseline = |item: &GridItem| {
         if item.align_self.is_last_baseline() {
@@ -1851,8 +1849,9 @@ mod tests {
 
     #[test]
     fn grid_synthesizes_missing_baselines_on_the_line_under_edge() {
-        let item =
+        let mut item =
             baseline_item(0, Line { start: 0, end: 2 }, Line { start: 0, end: 2 }, false, 10.0, 20.0, None, None);
+        item.parent_font_baseline = crate::FontBaseline::Central;
 
         assert_eq!(
             grid_container_baselines(

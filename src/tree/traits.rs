@@ -130,6 +130,7 @@ use super::{
     ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, NodeId,
     OutOfFlowCandidate, OutOfFlowContainingBlock, RequestedAxis, RunMode,
 };
+use crate::compute::FontBaseline;
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{LogicalStaticPosition, Size, WritingDirection, WritingMode};
@@ -195,6 +196,17 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// provided every leaf-layout call receives the same value.
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.get_core_container_style(node_id).writing_mode()
+    }
+
+    /// Return the font baseline used to synthesize missing fragment baselines.
+    ///
+    /// The default preserves Taffy's standalone behavior by deriving the value
+    /// from the writing mode. Browser integrations should override this with
+    /// their computed-style value because `text-orientation: sideways` uses an
+    /// alphabetic baseline even in a vertical writing mode. Implementations
+    /// that cache layout must invalidate the node when this value changes.
+    fn get_font_baseline(&self, node_id: NodeId) -> FontBaseline {
+        FontBaseline::from_writing_mode(self.get_writing_mode(node_id))
     }
 
     /// Returns the node's used aspect ratio and the sizing box whose dimensions

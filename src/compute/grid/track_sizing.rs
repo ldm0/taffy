@@ -1,7 +1,7 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
 use super::types::{GridItem, GridTrack, TrackCounts};
-use crate::compute::common::baseline::{logical_block_baseline, synthesized_logical_baseline, FontBaseline};
+use crate::compute::common::baseline::{logical_block_baseline, synthesized_logical_baseline};
 use crate::geometry::{AbstractAxis, Line, LogicalSize, Size, WritingDirection};
 use crate::style::{AlignContent, AlignContentKeyword, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
@@ -519,11 +519,7 @@ fn resolve_item_baselines(
             continue;
         }
         let baseline_from_start = fragment_baseline.unwrap_or_else(|| {
-            synthesized_logical_baseline(
-                baseline_block_size,
-                baseline_writing_direction,
-                FontBaseline::for_writing_mode(parent_writing_direction.mode),
-            )
+            synthesized_logical_baseline(baseline_block_size, baseline_writing_direction, item.parent_font_baseline)
         });
         let baseline =
             if alignment.is_last_baseline() { baseline_block_size - baseline_from_start } else { baseline_from_start };

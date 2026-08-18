@@ -490,6 +490,9 @@ struct AlgoConstants {
     /// Writing mode that owns the container's logical axes.
     writing_mode: WritingMode,
 
+    /// Computed font baseline used when a child fragment cannot expose one.
+    font_baseline: FontBaseline,
+
     /// The item's min_size style
     min_size: Size<Option<f32>>,
     /// The item's max_size style
@@ -774,6 +777,7 @@ fn compute_preliminary(
     content_based_block_size: ContentBasedBlockSize,
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
+    let font_baseline = tree.get_font_baseline(node);
 
     // Define some general constants we will need for the remainder of the algorithm.
     let mut constants = compute_constants(
@@ -782,6 +786,7 @@ fn compute_preliminary(
         inputs,
         node_sizing,
         writing_mode,
+        font_baseline,
         content_based_block_size,
     );
     let LayoutInput { available_space, run_mode, .. } = inputs;
@@ -1031,6 +1036,7 @@ fn compute_constants(
     inputs: LayoutInput,
     node_sizing: ResolvedNodeSizing,
     writing_mode: WritingMode,
+    font_baseline: FontBaseline,
     content_based_block_size: ContentBasedBlockSize,
 ) -> AlgoConstants {
     let LayoutInput { sizing_mode, .. } = inputs;
@@ -1124,6 +1130,7 @@ fn compute_constants(
         wrap_reverse,
         cross_axis_reversed,
         writing_mode,
+        font_baseline,
         min_size: node_sizing.min_size,
         max_size: node_sizing.max_size,
         content_based_block_size,
@@ -2948,7 +2955,7 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
-    let font_baseline = FontBaseline::for_writing_mode(constants.writing_mode);
+    let font_baseline = constants.font_baseline;
 
     for line in flex_lines {
         for child in line.items.iter_mut() {
@@ -3611,7 +3618,7 @@ fn calculate_flex_item(
     // flex container selects its own first and last baseline. Relative
     // positioning intentionally does not alter the in-flow baseline position.
     let writing_direction = constants.writing_direction();
-    let font_baseline = FontBaseline::for_writing_mode(constants.writing_mode);
+    let font_baseline = constants.font_baseline;
     let child_block_size = constants.writing_mode.to_logical(size).block_size;
     let logical_block_offset =
         writing_direction.converter(constants.container_size).to_logical_point(static_location, size).block_offset;

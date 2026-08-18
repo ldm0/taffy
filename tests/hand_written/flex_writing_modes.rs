@@ -336,6 +336,44 @@ fn vertical_row_aligns_synthesized_baselines_on_the_logical_block_axis() {
 }
 
 #[test]
+fn computed_font_baseline_controls_vertical_flex_synthesis_and_invalidates_cache() {
+    let mut tree = TaffyTree::<()>::new();
+    let wide = new_leaf(
+        &mut tree,
+        Style { size: Size { width: length(100.0), height: length(50.0) }, flex_shrink: 0.0, ..Style::default() },
+        WritingMode::VerticalLr,
+    );
+    let narrow = new_leaf(
+        &mut tree,
+        Style { size: Size { width: length(50.0), height: length(50.0) }, flex_shrink: 0.0, ..Style::default() },
+        WritingMode::VerticalLr,
+    );
+    let container = new_container(
+        &mut tree,
+        Style {
+            display: Display::Flex,
+            align_items: Some(AlignItems::BASELINE),
+            size: Size { width: length(100.0), height: length(100.0) },
+            ..Style::default()
+        },
+        &[wide, narrow],
+        WritingMode::VerticalLr,
+    );
+
+    assert_eq!(tree.font_baseline(container).unwrap(), FontBaseline::Central);
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.unrounded_layout(narrow).location, Point { x: 25.0, y: 50.0 });
+
+    tree.set_font_baseline(container, FontBaseline::Alphabetic).unwrap();
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.unrounded_layout(narrow).location, Point { x: 0.0, y: 50.0 });
+
+    tree.clear_font_baseline(container).unwrap();
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.unrounded_layout(narrow).location, Point { x: 25.0, y: 50.0 });
+}
+
+#[test]
 fn flex_last_baseline_uses_each_items_last_fragment_baseline() {
     let mut tree = TaffyTree::<()>::new();
     let first_line =

@@ -2,7 +2,9 @@
 use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
+use crate::compute::common::baseline::{
+    determine_baseline_group, determine_baseline_writing_mode, BaselineGroup, FontBaseline,
+};
 use crate::compute::common::intrinsic_size::measure_child_intrinsic_contribution;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
@@ -67,6 +69,9 @@ pub(in super::super) struct GridItem {
     /// Logical axes and progression directions of the grid container that
     /// establishes this item's containing block.
     pub parent_writing_direction: WritingDirection,
+
+    /// Font baseline computed for the parent grid container.
+    pub parent_font_baseline: FontBaseline,
 
     /// The order of the item in the children array
     ///
@@ -171,6 +176,7 @@ impl GridItem {
         GridItem {
             node,
             parent_writing_direction,
+            parent_font_baseline: FontBaseline::from_writing_mode(parent_writing_direction.mode),
             source_order,
             row: placement.block,
             column: placement.inline,

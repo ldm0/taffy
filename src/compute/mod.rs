@@ -50,6 +50,7 @@ pub use self::common::alignment::{
     apply_alignment_fallback as resolve_content_alignment_fallback,
     compute_alignment_offset as compute_content_alignment_offset, ResolvedAlignContentKeyword,
 };
+pub use self::common::baseline::FontBaseline;
 
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};

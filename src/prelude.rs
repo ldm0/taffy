@@ -14,6 +14,7 @@ pub use crate::{
     tree::{
         Layout, LayoutEnvironment, LayoutPartialTree, NodeId, PrintTree, RoundTree, TraversePartialTree, TraverseTree,
     },
+    FontBaseline,
 };
 
 #[cfg(feature = "flexbox")]

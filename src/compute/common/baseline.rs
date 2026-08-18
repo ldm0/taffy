@@ -17,7 +17,7 @@ pub(crate) enum BaselineGroup {
 /// Font baseline used when an alignment subject cannot expose a compatible
 /// fragment baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FontBaseline {
+pub enum FontBaseline {
     /// Alphabetic baseline synthesized on the line-under edge.
     Alphabetic,
     /// Central baseline synthesized halfway through the alignment axis.
@@ -25,10 +25,11 @@ pub(crate) enum FontBaseline {
 }
 
 impl FontBaseline {
-    /// Resolve the CSS initial baseline for a writing mode. Upright vertical
-    /// text uses the central baseline; horizontal and sideways text use the
-    /// alphabetic baseline.
-    pub(crate) fn for_writing_mode(writing_mode: WritingMode) -> Self {
+    /// Resolve the fallback baseline for a writing mode.
+    ///
+    /// Browser integrations should instead project the computed font baseline
+    /// when properties such as `text-orientation` can select a different value.
+    pub const fn from_writing_mode(writing_mode: WritingMode) -> Self {
         match writing_mode {
             WritingMode::VerticalRl | WritingMode::VerticalLr => Self::Central,
             WritingMode::HorizontalTb | WritingMode::SidewaysRl | WritingMode::SidewaysLr => Self::Alphabetic,

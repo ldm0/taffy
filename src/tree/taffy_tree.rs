@@ -19,7 +19,7 @@ use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
     compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_tree,
-    compute_root_layout, round_layout,
+    compute_root_layout, round_layout, FontBaseline,
 };
 use crate::CacheTree;
 
@@ -100,6 +100,10 @@ struct NodeData {
     /// The inherited writing mode that owns this node's logical axes.
     pub(crate) writing_mode: WritingMode,
 
+    /// Explicit computed font baseline, or `None` to derive it from the
+    /// writing mode for standalone Taffy callers.
+    pub(crate) font_baseline: Option<FontBaseline>,
+
     /// Used size-containment state at this layout-node boundary.
     pub(crate) size_containment: SizeContainment,
 
@@ -129,6 +133,7 @@ impl NodeData {
         Self {
             style,
             writing_mode: WritingMode::HorizontalTb,
+            font_baseline: None,
             size_containment: SizeContainment::NONE,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
@@ -459,6 +464,12 @@ where
     #[inline(always)]
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.taffy.nodes[node_id.into()].writing_mode
+    }
+
+    #[inline(always)]
+    fn get_font_baseline(&self, node_id: NodeId) -> FontBaseline {
+        let node = &self.taffy.nodes[node_id.into()];
+        node.font_baseline.unwrap_or_else(|| FontBaseline::from_writing_mode(node.writing_mode))
     }
 
     #[inline(always)]
@@ -962,6 +973,27 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn writing_mode(&self, node: NodeId) -> TaffyResult<WritingMode> {
         Ok(self.nodes[node.into()].writing_mode)
+    }
+
+    /// Sets the computed font baseline used to synthesize missing fragment baselines.
+    #[inline]
+    pub fn set_font_baseline(&mut self, node: NodeId, font_baseline: FontBaseline) -> TaffyResult<()> {
+        self.nodes[node.into()].font_baseline = Some(font_baseline);
+        self.mark_dirty(node)
+    }
+
+    /// Clears an explicit font baseline so it follows the node's writing mode again.
+    #[inline]
+    pub fn clear_font_baseline(&mut self, node: NodeId) -> TaffyResult<()> {
+        self.nodes[node.into()].font_baseline = None;
+        self.mark_dirty(node)
+    }
+
+    /// Gets the font baseline used to synthesize missing fragment baselines.
+    #[inline]
+    pub fn font_baseline(&self, node: NodeId) -> TaffyResult<FontBaseline> {
+        let node = &self.nodes[node.into()];
+        Ok(node.font_baseline.unwrap_or_else(|| FontBaseline::from_writing_mode(node.writing_mode)))
     }
 
     /// Sets the used size-containment state at this node boundary.

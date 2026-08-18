@@ -383,6 +383,39 @@ fn grid_baseline_groups_follow_item_line_directions() {
 }
 
 #[test]
+fn computed_font_baseline_controls_vertical_grid_synthesis() {
+    let mut tree = TaffyTree::<()>::new();
+    let wide =
+        tree.new_leaf(Style { size: Size { width: length(100.0), height: length(50.0) }, ..Style::default() }).unwrap();
+    let narrow =
+        tree.new_leaf(Style { size: Size { width: length(50.0), height: length(50.0) }, ..Style::default() }).unwrap();
+    for child in [wide, narrow] {
+        tree.set_writing_mode(child, WritingMode::VerticalLr).unwrap();
+    }
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: length(100.0) },
+                grid_template_columns: vec![length(50.0), length(50.0)],
+                grid_template_rows: vec![length(100.0)],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[wide, narrow],
+        )
+        .unwrap();
+    tree.set_writing_mode(container, WritingMode::VerticalLr).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.unrounded_layout(narrow).location, Point { x: 25.0, y: 50.0 });
+
+    tree.set_font_baseline(container, FontBaseline::Alphabetic).unwrap();
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.unrounded_layout(narrow).location, Point { x: 0.0, y: 50.0 });
+}
+
+#[test]
 fn grid_column_baseline_groups_align_in_the_inline_axis() {
     let mut tree = TaffyTree::<()>::new();
     let major =
