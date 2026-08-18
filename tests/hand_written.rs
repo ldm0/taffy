@@ -40,4 +40,5 @@ mod hand_written {
     mod serde;
     mod size_containment;
     mod stretch_sizing;
+    mod used_margins;
 }

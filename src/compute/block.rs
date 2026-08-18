@@ -1866,7 +1866,17 @@ fn perform_final_layout_on_in_flow_children(
                 block_start: block_start_margin_set.resolve(),
                 block_end: block_end_margin_set.resolve(),
             };
-            let resolved_margin = writing_direction.to_physical_box_strut(resolved_logical_margin);
+            // Placement consumes collapsed block-axis margin struts, but the
+            // public Layout result represents this box's own used margins.
+            // Descendant margins that collapse through the box must not leak
+            // into CSSOM-facing geometry. Block-axis auto margins resolve to
+            // zero; inline-axis auto margins retain their distributed space.
+            let used_margin = writing_direction.to_physical_box_strut(LogicalBoxStrut {
+                inline_start: resolved_logical_margin.inline_start,
+                inline_end: resolved_logical_margin.inline_end,
+                block_start: item_margin.block_start.unwrap_or(0.0),
+                block_end: item_margin.block_end.unwrap_or(0.0),
+            });
 
             // Resolve item inset
             let inset = item
@@ -2030,7 +2040,7 @@ fn perform_final_layout_on_in_flow_children(
                     location: Point::ZERO,
                     padding: item.padding,
                     border: item.border,
-                    margin: resolved_margin,
+                    margin: used_margin,
                 },
                 logical_offset: logical_location,
                 participates_in_align_content: true,

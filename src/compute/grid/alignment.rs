@@ -427,7 +427,7 @@ pub(super) fn align_and_position_item(
 
     let physical_size = Size { width, height };
     let logical_size = flow.to_logical_size(physical_size);
-    let (inline_offset, inline_margin) = align_item_within_area(
+    let (inline_offset, _) = align_item_within_area(
         Line {
             start: logical_grid_area_offset.inline_offset,
             end: logical_grid_area_offset.inline_offset + logical_grid_area_size.inline_size,
@@ -440,7 +440,7 @@ pub(super) fn align_and_position_item(
         baseline_shim.inline,
         baseline_group.inline,
     );
-    let (block_offset, block_margin) = align_item_within_area(
+    let (block_offset, _) = align_item_within_area(
         Line {
             start: logical_grid_area_offset.block_offset,
             end: logical_grid_area_offset.block_offset + logical_grid_area_size.block_size,
@@ -456,11 +456,14 @@ pub(super) fn align_and_position_item(
     let logical_location = LogicalOffset { inline_offset, block_offset };
     let location = converter.to_physical_point(logical_location, physical_size);
 
-    let resolved_margin = flow.writing_direction().to_physical_box_strut(LogicalBoxStrut {
-        inline_start: inline_margin.start,
-        inline_end: inline_margin.end,
-        block_start: block_margin.start,
-        block_end: block_margin.end,
+    // Auto-margin expansion and baseline shims position the item inside its
+    // grid area, but Blink does not expose either as the LayoutBox's used
+    // margin. Retain only the item's own resolved non-auto margins here.
+    let used_margin = flow.writing_direction().to_physical_box_strut(LogicalBoxStrut {
+        inline_start: logical_margin.inline_start.unwrap_or(0.0),
+        inline_end: logical_margin.inline_end.unwrap_or(0.0),
+        block_start: logical_margin.block_start.unwrap_or(0.0),
+        block_end: logical_margin.block_end.unwrap_or(0.0),
     });
 
     tree.set_unrounded_layout(
@@ -474,7 +477,7 @@ pub(super) fn align_and_position_item(
             scrollbar_size,
             padding,
             border,
-            margin: resolved_margin,
+            margin: used_margin,
         },
     );
 
