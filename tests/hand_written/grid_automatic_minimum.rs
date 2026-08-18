@@ -104,3 +104,32 @@ fn intrinsic_minimum_can_raise_a_smaller_fixed_track_maximum() {
     assert_eq!(tree.layout(contributor).unwrap().size.width, 75.0);
     assert_eq!(tree.layout(stretched).unwrap().size.width, 90.0);
 }
+
+#[test]
+fn ratio_item_automatic_minimum_transfers_a_stretched_cross_size() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let item = tree
+        .new_leaf(Style {
+            aspect_ratio: Some(2.0),
+            align_self: Some(AlignSelf::STRETCH),
+            justify_self: Some(AlignSelf::STRETCH),
+            ..Default::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size::from_lengths(200.0, 200.0), ..Default::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The 200px stretched block size is a definite transferred-size
+    // suggestion. The item's automatic inline minimum therefore contributes
+    // 400px to the auto column, even though the grid container is only 200px
+    // wide. The final explicit stretch then fills that 400px track.
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 400.0, height: 200.0 });
+}

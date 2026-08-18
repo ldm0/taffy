@@ -183,6 +183,20 @@ pub(crate) fn measure_child_intrinsic_contribution(
     mut inputs: ChildLayoutInput,
     axis: AbsoluteAxis,
 ) -> IntrinsicSizeResult {
+    // The queried axis is content-sized for an intrinsic contribution even
+    // when final self-alignment will explicitly stretch it. Keep the
+    // opposite-axis policy intact: a definite cross-axis stretch can still
+    // provide the transferred-size suggestion for a preferred aspect ratio.
+    // This is the same split as Blink's
+    // `ComputeMinAndMaxContentContributionInternal`, which resolves the main
+    // contribution length as fit-content while retaining the constraint
+    // space's block auto behavior.
+    let writing_mode = tree.get_writing_mode(node_id);
+    if axis == writing_mode.inline_axis() {
+        inputs.inline_auto_behavior = AutoSizeBehavior::FitContent;
+    } else {
+        inputs.block_auto_behavior = AutoSizeBehavior::FitContent;
+    }
     inputs.sizing_mode = SizingMode::InherentSize;
     tree.measure_child_size_with_metadata(node_id, inputs, RequestedAxis::from(axis))
 }
