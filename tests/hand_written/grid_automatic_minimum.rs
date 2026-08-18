@@ -133,3 +133,53 @@ fn ratio_item_automatic_minimum_transfers_a_stretched_cross_size() {
     // wide. The final explicit stretch then fills that 400px track.
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 400.0, height: 200.0 });
 }
+
+#[test]
+fn ratio_item_normal_alignment_uses_its_definite_cross_size_for_the_auto_column() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let item = tree.new_leaf(Style { aspect_ratio: Some(2.0), ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size::from_lengths(200.0, 200.0), ..Default::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // Grid's `normal` alignment is a weak stretch. During the item's inline
+    // intrinsic contribution, its definite 200px cross size transfers through
+    // the preferred ratio and grows the auto column to 400px.
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 400.0, height: 200.0 });
+}
+
+#[test]
+fn explicit_block_stretch_ignores_an_inline_maximum_transferred_through_ratio() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let item = tree
+        .new_leaf(Style {
+            aspect_ratio: Some(2.0),
+            max_size: Size { width: length(200.0), height: auto() },
+            align_self: Some(AlignSelf::STRETCH),
+            justify_self: Some(AlignSelf::STRETCH),
+            ..Default::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size::from_lengths(200.0, 200.0), ..Default::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The authored 200px inline maximum limits the inline stretch. It must not
+    // become a 100px transferred block maximum because explicit block stretch
+    // resolves `auto` before preferred-ratio transfer.
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 200.0, height: 200.0 });
+}

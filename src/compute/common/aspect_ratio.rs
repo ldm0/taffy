@@ -291,10 +291,24 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     size = floor_border_box_size(size, padding_border);
     min_size = floor_border_box_size(min_size, padding_border);
     max_size = floor_border_box_size(max_size, padding_border);
+    // A strong stretch resolves an authored `auto` in its target axis before
+    // preferred-ratio size transfer. Keep constraints authored in that axis,
+    // but do not project opposite-axis constraints into it. The auto check is
+    // essential: an intrinsic or otherwise non-auto preferred size is not
+    // controlled by the containing formatting context's stretch policy.
+    let mut logical_transfer_targets = writing_mode.to_logical(preferred_size_is_indefinite);
+    let logical_size_is_auto = writing_mode.to_logical(size_is_auto);
+    if inline_auto_behavior.resolves_before_aspect_ratio() && logical_size_is_auto.inline_size {
+        logical_transfer_targets.inline_size = false;
+    }
+    if block_auto_behavior.resolves_before_aspect_ratio() && logical_size_is_auto.block_size {
+        logical_transfer_targets.block_size = false;
+    }
+    let transfer_targets = writing_mode.to_physical(logical_transfer_targets);
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
         TransferredSizesMode::Normal => (
-            transferred_constraints(min_size, preferred_size_is_indefinite, aspect_ratio, padding_border),
-            transferred_constraints(max_size, preferred_size_is_indefinite, aspect_ratio, padding_border),
+            transferred_constraints(min_size, transfer_targets, aspect_ratio, padding_border),
+            transferred_constraints(max_size, transfer_targets, aspect_ratio, padding_border),
         ),
         TransferredSizesMode::Ignore => (Size::NONE, Size::NONE),
     };
@@ -358,7 +372,7 @@ pub(crate) fn apply_preferred_aspect_ratio(
     let source = writing_mode.to_logical(size);
     let authored_auto = writing_mode.to_logical(size_is_auto);
     let mut resolved = writing_mode.to_logical(ratio_resolved_size);
-    if matches!(inline_auto_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
+    if inline_auto_behavior.resolves_before_aspect_ratio()
         && authored_auto.inline_size
         && source.inline_size.is_none()
         && resolved.inline_size.is_some()
@@ -368,7 +382,7 @@ pub(crate) fn apply_preferred_aspect_ratio(
         // but leave the preferred inline size for the formatting context.
         resolved.inline_size = None;
     }
-    if matches!(block_auto_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
+    if block_auto_behavior.resolves_before_aspect_ratio()
         && authored_auto.block_size
         && source.block_size.is_none()
         && resolved.block_size.is_some()
@@ -522,6 +536,71 @@ mod tests {
 
         assert_eq!(implicit_block, Size { width: Some(100.0), height: Some(50.0) });
         assert_eq!(explicit_block, Size { width: Some(100.0), height: None });
+    }
+
+    #[test]
+    fn strong_auto_size_targets_retain_only_their_authored_constraints() {
+        for behavior in [AutoSizeBehavior::StretchExplicit, AutoSizeBehavior::FillAvailable] {
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: Size::NONE,
+                preferred_size_is_indefinite: Size { width: true, height: true },
+                min_size: Size::NONE,
+                max_size: Size { width: Some(200.0), height: Some(150.0) },
+                size_is_auto: Size { width: true, height: true },
+                writing_mode: WritingMode::HorizontalTb,
+                inline_auto_behavior: behavior,
+                block_auto_behavior: behavior,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+                padding_border: Size::ZERO,
+            });
+
+            assert_eq!(resolved.max_size, Size { width: Some(200.0), height: Some(150.0) });
+        }
+    }
+
+    #[test]
+    fn strong_block_constraint_target_follows_the_writing_mode() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size::NONE,
+            preferred_size_is_indefinite: Size { width: true, height: true },
+            min_size: Size::NONE,
+            // In vertical writing mode, this physical height is the authored
+            // logical inline maximum. It must not transfer into the strongly
+            // stretched logical block (physical width) axis.
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::VerticalRl,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::StretchExplicit,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.max_size, Size { width: None, height: Some(100.0) });
+    }
+
+    #[test]
+    fn non_auto_target_keeps_ratio_constraint_transfer_under_a_stretch_policy() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            // This numeric width materialized from an intrinsic keyword. The
+            // containing context's inline stretch policy therefore does not
+            // own it, even though it was initially indefinite.
+            size: Size { width: Some(200.0), height: None },
+            preferred_size_is_indefinite: Size { width: true, height: false },
+            min_size: Size::NONE,
+            max_size: Size { width: None, height: Some(100.0) },
+            size_is_auto: Size { width: false, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::StretchExplicit,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.max_size, Size { width: Some(100.0), height: Some(100.0) });
     }
 
     #[test]

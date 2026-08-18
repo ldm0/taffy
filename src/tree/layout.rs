@@ -106,6 +106,13 @@ pub enum AutoSizeBehavior {
 }
 
 impl AutoSizeBehavior {
+    /// Whether definite available space resolves `auto` before a preferred
+    /// aspect ratio can synthesize this axis.
+    #[inline(always)]
+    pub(crate) const fn resolves_before_aspect_ratio(self) -> bool {
+        matches!(self, Self::StretchExplicit | Self::FillAvailable)
+    }
+
     /// Whether the preferred size remains content-derived.
     #[inline(always)]
     pub const fn is_fit_content(self) -> bool {

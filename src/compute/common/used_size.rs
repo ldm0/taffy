@@ -42,13 +42,16 @@ pub(crate) struct AutoSizeInput {
 ///
 /// A fixed block size, parent-owned explicit stretch, or child-owned
 /// `FillAvailable` size is available as a preferred-ratio basis before weak
-/// inline stretch. Only `FillAvailable` copies the block basis into the
-/// child's preferred size; fixed and ordinary explicit-stretch dimensions
-/// remain parent-owned.
+/// inline stretch. A weak block stretch is also a basis while the inline axis
+/// is explicitly being queried as content-sized: there is then no competing
+/// inline stretch for it to yield to. Only `FillAvailable` copies the block
+/// basis into the child's preferred size; fixed and alignment-owned stretch
+/// dimensions remain parent-owned.
 ///
-/// This mirrors Blink's `ComputeInlineSizeForFragmentInternal`: a strong block
-/// stretch makes the ratio applicable before weak inline stretch, while two
-/// weak stretches prefer the inline axis.
+/// This combines Blink's intrinsic-contribution query with
+/// `ComputeInlineSizeForFragmentInternal`: the queried inline axis is
+/// fit-content, a definite cross size may then transfer through the ratio, and
+/// two competing weak stretches still prefer the inline axis.
 #[inline(always)]
 pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeResolution {
     let AutoSizeInput {
@@ -73,24 +76,23 @@ pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeReso
     let logical_minimum_border_box_size = writing_mode.to_logical(minimum_border_box_size);
     let mut logical_ratio_applied = writing_mode.to_logical(Size { width: false, height: false });
 
-    let explicit_block_stretch =
-        if matches!(block_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
-            && logical_size_is_auto.block_size
-        {
-            match logical_available.block_size {
-                AvailableSpace::Definite(size) => Some(
-                    size.maybe_clamp(logical_min.block_size, logical_max.block_size)
-                        .max(logical_minimum_border_box_size.block_size),
-                ),
-                AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
-            }
-        } else {
-            None
-        };
+    let block_stretch_precedes_inline = block_behavior.resolves_before_aspect_ratio()
+        || (block_behavior == AutoSizeBehavior::StretchImplicit && inline_behavior.is_fit_content());
+    let block_stretch_basis = if block_stretch_precedes_inline && logical_size_is_auto.block_size {
+        match logical_available.block_size {
+            AvailableSpace::Definite(size) => Some(
+                size.maybe_clamp(logical_min.block_size, logical_max.block_size)
+                    .max(logical_minimum_border_box_size.block_size),
+            ),
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+        }
+    } else {
+        None
+    };
 
     let ratio_basis = crate::geometry::LogicalSize {
         inline_size: logical_fixed.inline_size.or(logical_preferred.inline_size),
-        block_size: logical_fixed.block_size.or(logical_preferred.block_size).or(explicit_block_stretch),
+        block_size: logical_fixed.block_size.or(logical_preferred.block_size).or(block_stretch_basis),
     };
     let physical_ratio_basis = writing_mode.to_physical(ratio_basis);
     let ratio_resolved = writing_mode.to_logical(physical_ratio_basis.maybe_apply_aspect_ratio_with_box_sizing(
@@ -98,7 +100,7 @@ pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeReso
         BoxSizing::BorderBox,
         minimum_border_box_size,
     ));
-    if !matches!(inline_behavior, AutoSizeBehavior::StretchExplicit | AutoSizeBehavior::FillAvailable)
+    if !inline_behavior.resolves_before_aspect_ratio()
         && ratio_basis.inline_size.is_none()
         && ratio_resolved.inline_size.is_some()
     {
@@ -124,7 +126,7 @@ pub(crate) fn resolve_auto_size_preference(input: AutoSizeInput) -> AutoSizeReso
         && logical_fixed.block_size.is_none()
         && logical_preferred.block_size.is_none()
     {
-        logical_preferred.block_size = explicit_block_stretch;
+        logical_preferred.block_size = block_stretch_basis;
     }
 
     AutoSizeResolution {
@@ -281,6 +283,22 @@ mod tests {
             Some(1.0),
         );
         assert_eq!(clamped.size, Size { width: Some(100.0), height: None });
+    }
+
+    #[test]
+    fn implicit_block_stretch_is_a_ratio_basis_for_a_fit_content_inline_query() {
+        let resolved = resolve_auto_size(
+            Size::NONE,
+            Size::NONE,
+            AutoSizeBehavior::FitContent,
+            AutoSizeBehavior::StretchImplicit,
+            Size { width: AvailableSpace::MaxContent, height: AvailableSpace::Definite(200.0) },
+            Size::NONE,
+            Some(2.0),
+        );
+
+        assert_eq!(resolved.size, Size { width: Some(400.0), height: None });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: true, height: false });
     }
 
     #[test]
