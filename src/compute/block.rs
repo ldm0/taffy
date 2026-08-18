@@ -1740,14 +1740,6 @@ fn perform_final_layout_on_in_flow_children(
                             block_ctx.bfc_layout_opportunities(min_block_offset, line_margins, direction, item.clear);
                         for slot in opportunities {
                             let stretch_inline_size = slot.stretch_width.max(min_auto_inline_size);
-                            let anticipated_inline_size = logical_item_size
-                                .inline_size
-                                .unwrap_or(stretch_inline_size)
-                                .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size);
-                            if slot.segment_id.is_some() && anticipated_inline_size > slot.border_width + 0.001 {
-                                continue;
-                            }
-
                             let item_layout = tree
                                 .compute_child_layout(item.node_id, child_inputs_for_inline_size(stretch_inline_size));
                             let final_logical_size = writing_mode.to_logical(item_layout.size);

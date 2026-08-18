@@ -178,3 +178,63 @@ fn independent_formatting_context_ratio_uses_the_available_float_band() {
         (Point { x: 0.0, y: 50.0 }, Point { x: 160.0, y: 50.0 }, Size { width: 40.0, height: 40.0 },)
     );
 }
+
+/// Regression for the `stretch` variants covered by
+/// <https://wpt.live/css/css-sizing/stretch/bfc-next-to-float-1.html> and
+/// <https://wpt.live/css/css-sizing/stretch/bfc-next-to-float-2.html>.
+///
+/// The available size of an independent formatting context is the selected
+/// float-exclusion opportunity, not the full containing block. Preferred,
+/// minimum, and maximum `stretch` constraints must all be resolved in that
+/// opportunity's constraint space.
+#[test]
+fn independent_formatting_context_stretch_uses_the_available_float_band() {
+    for (size, min_size, max_size) in [
+        (Size { width: Dimension::stretch(), height: length(100.0) }, Size::auto(), Size::auto()),
+        (
+            Size { width: length(0.0), height: length(100.0) },
+            Size { width: Dimension::stretch(), height: auto() },
+            Size::auto(),
+        ),
+        (
+            Size { width: length(1000.0), height: length(100.0) },
+            Size::auto(),
+            Size { width: Dimension::stretch(), height: auto() },
+        ),
+    ] {
+        let mut taffy = new_test_tree();
+        let floated = taffy.new_leaf(float_block(100.0, 100.0, Float::Left)).unwrap();
+        let independent = taffy
+            .new_leaf(Style { display: Display::FlowRoot, size, min_size, max_size, ..Default::default() })
+            .unwrap();
+        let root = taffy.new_with_children(root_style(200.0), &[floated, independent]).unwrap();
+
+        taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(taffy.layout(independent).unwrap().location, Point { x: 100.0, y: 0.0 });
+        assert_eq!(taffy.layout(independent).unwrap().size, Size { width: 100.0, height: 100.0 });
+    }
+}
+
+#[test]
+fn independent_formatting_context_stretch_keeps_box_edges_inside_the_float_band() {
+    let mut taffy = new_test_tree();
+    let floated = taffy.new_leaf(float_block(100.0, 100.0, Float::Left)).unwrap();
+    let independent = taffy
+        .new_leaf(Style {
+            display: Display::FlowRoot,
+            box_sizing: BoxSizing::ContentBox,
+            size: Size { width: Dimension::stretch(), height: length(100.0) },
+            margin: Rect { left: length(10.0), ..Rect::zero() },
+            padding: Rect { left: length(10.0), right: length(10.0), ..Rect::zero() },
+            border: Rect { left: length(10.0), right: length(10.0), ..Rect::zero() },
+            ..Default::default()
+        })
+        .unwrap();
+    let root = taffy.new_with_children(root_style(200.0), &[floated, independent]).unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(taffy.layout(independent).unwrap().location, Point { x: 100.0, y: 0.0 });
+    assert_eq!(taffy.layout(independent).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
