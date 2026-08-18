@@ -21,4 +21,5 @@ mod hand_written {
     mod scrollbar_insets;
     mod serde;
     mod test_tree;
+    mod used_margins;
 }

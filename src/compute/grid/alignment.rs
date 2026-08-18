@@ -322,7 +322,7 @@ pub(super) fn align_and_position_item(
     // Resolve final size
     let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
 
-    let (x, x_margin) = align_item_within_area(
+    let (x, _) = align_item_within_area(
         Line { start: grid_area.left, end: grid_area.right },
         justify_self.unwrap_or(alignment_styles.horizontal),
         width,
@@ -332,7 +332,7 @@ pub(super) fn align_and_position_item(
         0.0,
         direction,
     );
-    let (y, y_margin) = align_item_within_area(
+    let (y, _) = align_item_within_area(
         Line { start: grid_area.top, end: grid_area.bottom },
         align_self.unwrap_or(alignment_styles.vertical),
         height,
@@ -343,7 +343,15 @@ pub(super) fn align_and_position_item(
         Direction::Ltr,
     );
 
-    let resolved_margin = Rect { left: x_margin.start, right: x_margin.end, top: y_margin.start, bottom: y_margin.end };
+    // Auto-margin expansion and baseline shims position the item inside its
+    // grid area, but Blink does not expose either as the LayoutBox's used
+    // margin. Retain only the item's own resolved non-auto margins here.
+    let used_margin = Rect {
+        left: margin.left.unwrap_or(0.0),
+        right: margin.right.unwrap_or(0.0),
+        top: margin.top.unwrap_or(0.0),
+        bottom: margin.bottom.unwrap_or(0.0),
+    };
 
     tree.set_unrounded_layout(
         node,
@@ -356,7 +364,7 @@ pub(super) fn align_and_position_item(
             scrollbar_size,
             padding,
             border,
-            margin: resolved_margin,
+            margin: used_margin,
         },
     );
 

@@ -1356,6 +1356,17 @@ fn perform_final_layout_on_in_flow_children(
                 top: top_margin_set.resolve(),
                 bottom: bottom_margin_set.resolve(),
             };
+            // Placement consumes collapsed block-axis margin struts, but the
+            // public Layout result represents this box's own used margins.
+            // Descendant margins that collapse through the box must not leak
+            // into CSSOM-facing geometry. Block-axis auto margins resolve to
+            // zero; inline-axis auto margins retain their distributed space.
+            let used_margin = Rect {
+                left: resolved_margin.left,
+                right: resolved_margin.right,
+                top: item_margin.top.unwrap_or(0.0),
+                bottom: item_margin.bottom.unwrap_or(0.0),
+            };
 
             // Resolve item inset
             let inset = item
@@ -1538,7 +1549,7 @@ fn perform_final_layout_on_in_flow_children(
                 location,
                 padding: item.padding,
                 border: item.border,
-                margin: resolved_margin,
+                margin: used_margin,
             });
 
             #[cfg(feature = "content_size")]
