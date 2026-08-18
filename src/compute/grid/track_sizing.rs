@@ -303,9 +303,22 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
         resolve_item_baselines(tree, axis, items, inner_node_size);
     }
 
-    // If all tracks have base_size = growth_limit, then skip the rest of this function.
-    // Note: this can only happen both track sizing function have the same fixed track sizing function
-    if axis_tracks.iter().all(|track| track.base_size == track.growth_limit) {
+    // Fixed tracks cannot be changed by intrinsic track sizing. Equality by
+    // itself is not sufficient here: `minmax(auto, 0px)` also initializes its
+    // base size and growth limit to zero, but its automatic minimum still has
+    // to collect grid-item contributions before the fixed maximum is floored.
+    let all_tracks_have_fixed_used_sizes = axis_tracks.iter().all(|track| {
+        track.base_size == track.growth_limit
+            && track
+                .min_track_sizing_function
+                .definite_value(inner_node_size.get(axis), |val, basis| tree.calc(val, basis))
+                .is_some()
+            && track
+                .max_track_sizing_function
+                .definite_value(inner_node_size.get(axis), |val, basis| tree.calc(val, basis))
+                .is_some()
+    });
+    if all_tracks_have_fixed_used_sizes {
         return;
     }
 

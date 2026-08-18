@@ -65,3 +65,42 @@ fn unrelated_auto_min_track_does_not_enable_a_spanning_items_automatic_minimum()
     assert_eq!(item.size.width, 100.0);
     assert_eq!(unrelated_track_item.location.x, 100.0);
 }
+
+#[test]
+fn intrinsic_minimum_can_raise_a_smaller_fixed_track_maximum() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let contributor = tree
+        .new_leaf(Style {
+            box_sizing: BoxSizing::ContentBox,
+            size: Size { width: length(60.0), height: auto() },
+            margin: Rect { left: length(5.0), right: length(10.0), top: zero(), bottom: zero() },
+            padding: Rect { left: length(6.0), right: length(3.0), ..Rect::zero() },
+            border: Rect { left: length(2.0), right: length(4.0), ..Rect::zero() },
+            grid_row: Line { start: line(1), end: line(2) },
+            ..Default::default()
+        })
+        .unwrap();
+    let stretched =
+        tree.new_leaf(Style { grid_row: Line { start: line(2), end: line(3) }, ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                grid_template_columns: vec![minmax(auto(), length(0.0))],
+                ..Default::default()
+            },
+            &[contributor, stretched],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The contributor's 60px content box plus 9px padding, 6px border and
+    // 15px margins establishes a 90px automatic minimum for the track. The
+    // fixed 0px maximum is floored by that minimum rather than suppressing it.
+    assert_eq!(tree.layout(contributor).unwrap().size.width, 75.0);
+    assert_eq!(tree.layout(stretched).unwrap().size.width, 90.0);
+}
