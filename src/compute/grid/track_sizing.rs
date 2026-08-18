@@ -168,9 +168,19 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let available_space = grid_area_size.with(self.axis, None);
         let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
-        let contribution =
-            item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
-        contribution + margin_axis_sums.get(self.axis)
+        let contribution = item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size);
+        let physical_axis = match self.axis {
+            AbstractAxis::Inline => item.parent_writing_mode.inline_axis(),
+            AbstractAxis::Block => item.parent_writing_mode.block_axis(),
+        };
+        contribution.outer_size(margin_axis_sums.get(self.axis), || {
+            item.spanned_fixed_track_limit(
+                self.axis,
+                axis_tracks,
+                self.inner_node_size.get_abs(physical_axis),
+                &|value, basis| self.tree.resolve_calc_value(value, basis),
+            )
+        })
     }
 
     /// Resolve the contribution used by the intrinsic-minimum phase.
@@ -358,9 +368,21 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
         resolve_item_baselines(tree, axis, items, inner_node_size);
     }
 
-    // If all tracks have base_size = growth_limit, then skip the rest of this function.
-    // Note: this can only happen both track sizing function have the same fixed track sizing function
-    if axis_tracks.iter().all(|track| track.base_size == track.growth_limit) {
+    // Intrinsic minimums may floor a smaller fixed maximum. Equal initialized
+    // base sizes and growth limits therefore prove that sizing is complete
+    // only when both sizing functions are definite.
+    let all_tracks_have_fixed_used_sizes = axis_tracks.iter().all(|track| {
+        track.base_size == track.growth_limit
+            && track
+                .min_track_sizing_function
+                .definite_value(inner_node_size.get(axis), |value, basis| tree.calc(value, basis))
+                .is_some()
+            && track
+                .max_track_sizing_function
+                .definite_value(inner_node_size.get(axis), |value, basis| tree.calc(value, basis))
+                .is_some()
+    });
+    if all_tracks_have_fixed_used_sizes {
         return TrackSizingResult::default();
     }
 

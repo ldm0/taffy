@@ -32,6 +32,62 @@ enum MinimumContributionSource {
     MaxContent,
 }
 
+/// The border-box part of a Grid item's minimum contribution and the rule
+/// that may clamp its complete outer contribution.
+///
+/// The fixed-track clamp applies only to a content-based automatic minimum.
+/// Keeping that provenance beside the cached measurement prevents authored
+/// minimums from being clamped merely because they have the same numeric size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in super::super) struct GridItemMinimumContribution {
+    /// The measured contribution through the item's border-box edge.
+    border_box_size: f32,
+    /// Whether and how a definite spanned-track maximum may clamp the value.
+    clamp: MinimumContributionClamp,
+}
+
+/// Track-dependent clamping selected from the authored sizing source.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MinimumContributionClamp {
+    /// The contribution comes from an authored size or an ordinary zero
+    /// minimum and is not limited by the spanned tracks.
+    None,
+    /// Clamp the content-based automatic minimum to the definite maximum of
+    /// the spanned tracks, without crossing the item's outer inset floor.
+    FixedTrackMaximum {
+        /// The item's padding and border sum in the measured axis.
+        border_padding_floor: f32,
+    },
+}
+
+impl GridItemMinimumContribution {
+    /// Construct a contribution that is independent of track maxima.
+    #[inline(always)]
+    fn unclamped(border_box_size: f32) -> Self {
+        Self { border_box_size, clamp: MinimumContributionClamp::None }
+    }
+
+    /// Construct a content-based automatic minimum with its inset floor.
+    #[inline(always)]
+    fn content_based(border_box_size: f32, border_padding_floor: f32) -> Self {
+        Self { border_box_size, clamp: MinimumContributionClamp::FixedTrackMaximum { border_padding_floor } }
+    }
+
+    /// Resolve the complete outer contribution after margins, baseline shims,
+    /// and the definite maximum of the spanned tracks are known.
+    #[inline(always)]
+    pub fn outer_size(self, margin_axis_sum: f32, fixed_track_maximum: impl FnOnce() -> Option<f32>) -> f32 {
+        let outer_size = self.border_box_size + margin_axis_sum;
+        let clamped_size = match self.clamp {
+            MinimumContributionClamp::FixedTrackMaximum { border_padding_floor } => fixed_track_maximum()
+                .map(|maximum| outer_size.min(maximum.max(margin_axis_sum + border_padding_floor)))
+                .unwrap_or(outer_size),
+            MinimumContributionClamp::None => outer_size,
+        };
+        clamped_size.max(0.0)
+    }
+}
+
 /// Represents a single grid item
 #[derive(Debug)]
 pub(in super::super) struct GridItem {
@@ -109,7 +165,7 @@ pub(in super::super) struct GridItem {
     /// Cache for the min-content size
     pub min_content_contribution_cache: Size<Option<f32>>,
     /// Cache for the minimum contribution
-    pub minimum_contribution_cache: Size<Option<f32>>,
+    pub minimum_contribution_cache: Size<Option<GridItemMinimumContribution>>,
     /// Cache for the max-content size
     pub max_content_contribution_cache: Size<Option<f32>>,
     /// Whether an intrinsic item contribution observed a dependency on the
@@ -165,7 +221,7 @@ impl GridItem {
             grid_area_size_cache: None,
             min_content_contribution_cache: Size::NONE,
             max_content_contribution_cache: Size::NONE,
-            minimum_contribution_cache: Size::NONE,
+            minimum_contribution_cache: Size { width: None, height: None },
             depends_on_block_constraints: false,
             y_position: 0.0,
             height: 0.0,
@@ -333,7 +389,7 @@ impl GridItem {
     /// For an item spanning multiple tracks, the upper limit used to calculate its limited min-/max-content contribution is the
     /// sum of the fixed max track sizing functions of any tracks it spans, and is applied if it only spans such tracks.
     pub fn spanned_track_limit(
-        &mut self,
+        &self,
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         axis_parent_size: Option<f32>,
@@ -359,7 +415,7 @@ impl GridItem {
     /// Similar to the spanned_track_limit, but excludes FitContent arguments from the limit.
     /// Used to clamp the automatic minimum contributions of an item
     pub fn spanned_fixed_track_limit(
-        &mut self,
+        &self,
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         axis_parent_size: Option<f32>,
@@ -634,14 +690,23 @@ impl GridItem {
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         grid_area_size: Size<Option<f32>>,
-        inner_node_size: Size<Option<f32>>,
-    ) -> f32 {
+    ) -> GridItemMinimumContribution {
         match self.minimum_contribution_source(axis) {
             MinimumContributionSource::MinContent => {
-                return self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
+                return GridItemMinimumContribution::unclamped(self.min_content_contribution_cached(
+                    axis,
+                    tree,
+                    grid_area_size,
+                    grid_area_size,
+                ));
             }
             MinimumContributionSource::MaxContent => {
-                return self.max_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
+                return GridItemMinimumContribution::unclamped(self.max_content_contribution_cached(
+                    axis,
+                    tree,
+                    grid_area_size,
+                    grid_area_size,
+                ));
             }
             MinimumContributionSource::UsedMinimum => {}
         }
@@ -688,7 +753,7 @@ impl GridItem {
             padding_border: padding_border_size,
         });
         if let Some(minimum) = resolved.min_size.get_abs(physical_axis) {
-            return minimum;
+            return GridItemMinimumContribution::unclamped(minimum);
         }
 
         let overflow = match physical_axis {
@@ -696,12 +761,12 @@ impl GridItem {
             crate::AbsoluteAxis::Vertical => self.overflow.y,
         };
         if let Some(minimum) = overflow.maybe_into_automatic_min_size() {
-            return minimum;
+            return GridItemMinimumContribution::unclamped(minimum);
         }
 
         // Automatic minimum size. See https://www.w3.org/TR/css-grid-1/#min-size-auto
         if !self.uses_content_based_automatic_minimum(axis, axis_tracks) {
-            return 0.0;
+            return GridItemMinimumContribution::unclamped(0.0);
         }
 
         let mut minimum_contribution = self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
@@ -716,15 +781,11 @@ impl GridItem {
             minimum_contribution = minimum_contribution.maybe_min(size).maybe_min(max_size);
         }
 
-        // The content-based minimum size is additionally clamped by the sum of any fixed max track sizing
-        // functions of the tracks the item spans. Note that this clamp does not apply to explicitly specified
-        // preferred or minimum sizes, and that the argument to fit-content() does not clamp the content-based
-        // minimum size in the same way as a fixed max track sizing function.
-        let limit =
-            self.spanned_fixed_track_limit(axis, axis_tracks, inner_node_size.get_abs(physical_axis), &|val, basis| {
-                tree.resolve_calc_value(val, basis)
-            });
-        minimum_contribution.maybe_min(limit)
+        // The content-based automatic minimum is the only contribution that
+        // may be clamped by a fixed maximum on the spanned tracks. The clamp
+        // is resolved later, once the outer margins and baseline shim are
+        // available; its floor is this border and padding sum.
+        GridItemMinimumContribution::content_based(minimum_contribution, padding_border_size.get_abs(physical_axis))
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters
@@ -735,10 +796,9 @@ impl GridItem {
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         grid_area_size: Size<Option<f32>>,
-        inner_node_size: Size<Option<f32>>,
-    ) -> f32 {
+    ) -> GridItemMinimumContribution {
         self.minimum_contribution_cache.get(axis).unwrap_or_else(|| {
-            let size = self.minimum_contribution(tree, axis, axis_tracks, grid_area_size, inner_node_size);
+            let size = self.minimum_contribution(tree, axis, axis_tracks, grid_area_size);
             self.minimum_contribution_cache.set(axis, Some(size));
             size
         })

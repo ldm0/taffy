@@ -70,6 +70,85 @@ fn unrelated_auto_min_track_does_not_enable_a_spanning_items_automatic_minimum()
     assert_eq!(unrelated_track_item.location.x, 100.0);
 }
 
+#[test]
+fn intrinsic_minimum_floors_a_smaller_fixed_track_maximum() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let contributor = tree
+        .new_leaf(Style {
+            box_sizing: BoxSizing::ContentBox,
+            size: Size { width: length(60.0), height: auto() },
+            margin: Rect { left: length(5.0), right: length(10.0), top: zero(), bottom: zero() },
+            padding: Rect { left: length(6.0), right: length(3.0), ..Rect::zero() },
+            border: Rect { left: length(2.0), right: length(4.0), ..Rect::zero() },
+            ..Default::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                grid_template_columns: vec![minmax(auto(), length(0.0))],
+                ..Default::default()
+            },
+            &[contributor],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    assert_eq!(info.columns.sizes, vec![90.0]);
+    assert_eq!(tree.layout(contributor).unwrap().size.width, 75.0);
+}
+
+fn automatic_minimum_with_fixed_track_maximum(track_maximum: f32) -> f32 {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                margin: Rect { left: length(5.0), right: length(10.0), top: zero(), bottom: zero() },
+                border: Rect { left: length(2.0), right: length(2.0), ..Rect::zero() },
+                justify_self: Some(AlignSelf::START),
+                ..Default::default()
+            },
+            TestNodeContext::fixed(100.0, 10.0),
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(200.0), height: auto() },
+                grid_template_columns: vec![minmax(auto(), length(track_maximum))],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    info.columns.sizes[0]
+}
+
+#[test]
+fn automatic_minimum_fixed_maximum_clamp_preserves_outer_border_floor() {
+    // The 15px outer margins and 4px border floor the fixed zero maximum.
+    assert_eq!(automatic_minimum_with_fixed_track_maximum(0.0), 19.0);
+    // A larger fixed maximum clamps the complete outer contribution rather
+    // than the border box before margins are added.
+    assert_eq!(automatic_minimum_with_fixed_track_maximum(20.0), 20.0);
+}
+
 #[derive(Clone, Copy)]
 enum TrackAxis {
     Columns,
