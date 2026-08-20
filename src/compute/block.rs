@@ -2,7 +2,7 @@
 use crate::geometry::{
     Line, LogicalBoxStrut, LogicalOffset, LogicalSize, LogicalStaticPosition, Point, Rect, Size, WritingDirection,
 };
-use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
+use crate::style::{AlignContentKeyword, AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
 use crate::tree::{
     AutoSizeBehavior, ChildLayoutInput, CollapsibleMarginSet, Layout, LayoutInput, LayoutOutput, RunMode, SizingMode,
@@ -576,7 +576,7 @@ fn compute_inner(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node_id);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { available_space, run_mode, block_margins_are_collapsible, .. } = inputs;
+    let LayoutInput { available_space, run_mode, block_margins_are_collapsible, table_cell, .. } = inputs;
 
     let style = tree.get_block_container_style(node_id);
     let raw_margin = style.margin();
@@ -785,6 +785,21 @@ fn compute_inner(
         && definite_logical_size.block_size.is_none()
         && container_outer_block_size == intrinsic_outer_block_size;
 
+    // A baseline-aligned table cell always exposes a baseline at its
+    // block-end content edge when none of its descendants supplies one. The
+    // external table formatter consumes this during row measurement and may
+    // feed the resolved shared row baseline back through `table_cell` for the
+    // final layout. This mirrors Blink's `FinalizeTableCellLayout` rather than
+    // synthesizing a generic block baseline at the table adapter boundary.
+    if table_cell.is_some()
+        && align_content.is_some_and(|alignment| alignment.keyword() == AlignContentKeyword::Baseline)
+        && first_baseline.is_none()
+    {
+        let fallback_baseline = (intrinsic_outer_block_size - logical_content_box_inset.block_end).max(0.0);
+        first_baseline = Some(fallback_baseline);
+        last_baseline = Some(fallback_baseline);
+    }
+
     // Apply `align-content` to in-flow items if requested. Pending fragments
     // remain logical until this group offset and the final outer size are known.
     //
@@ -802,44 +817,59 @@ fn compute_inner(
             .any(|item| item.pending_layout.as_ref().is_some_and(|pending| pending.participates_in_align_content));
         let any_out_of_flow = items.iter().any(|item| item.position == Position::Absolute);
         if any_in_flow || any_out_of_flow {
-            let keyword = apply_alignment_fallback(free_space, 1, align_content);
-            let group_offset = compute_alignment_offset(free_space, 1, 0.0, keyword, false, true);
-            first_baseline = first_baseline.map(|baseline| baseline + group_offset);
-            last_baseline = last_baseline.map(|baseline| baseline + group_offset);
-            for item in items.iter_mut() {
-                if let Some(pending) = item.pending_layout.as_mut() {
-                    if pending.participates_in_align_content {
-                        pending.logical_offset.block_offset += group_offset;
-                    }
-                }
-                if item.position == Position::Absolute {
-                    item.static_position.offset.block_offset += group_offset;
-                    if run_mode == RunMode::PerformLayout {
-                        tree.set_out_of_flow_static_position(node_id, item.node_id, item.static_position);
-                    }
-                }
-            }
-
-            #[cfg(feature = "content_size")]
-            {
-                inflow_content_size = LogicalSize::ZERO;
-                for item in items.iter() {
-                    if let Some(pending) = item.pending_layout.as_ref() {
-                        if !pending.participates_in_align_content {
-                            continue;
+            // Table baseline alignment is a row-provided constraint, not a
+            // distribution fallback. Only a cell with in-flow content moves;
+            // an OOF-only cell keeps its static-position candidate at the
+            // cell's block start, matching CSS Tables. When in-flow content
+            // does move, its OOF candidates move with the same fragment group.
+            let row_baseline = table_cell
+                .and_then(|cell| cell.alignment_baseline)
+                .filter(|_| align_content.keyword() == AlignContentKeyword::Baseline);
+            let group_offset = if let Some(row_baseline) = row_baseline {
+                any_in_flow.then(|| row_baseline - first_baseline.expect("table cells synthesize a first baseline"))
+            } else {
+                let keyword = apply_alignment_fallback(free_space, 1, align_content);
+                Some(compute_alignment_offset(free_space, 1, 0.0, keyword, false, true))
+            };
+            if let Some(group_offset) = group_offset {
+                first_baseline = first_baseline.map(|baseline| baseline + group_offset);
+                last_baseline = last_baseline.map(|baseline| baseline + group_offset);
+                for item in items.iter_mut() {
+                    if let Some(pending) = item.pending_layout.as_mut() {
+                        if pending.participates_in_align_content {
+                            pending.logical_offset.block_offset += group_offset;
                         }
-                        let logical_size = writing_mode.to_logical(pending.layout.size);
-                        let logical_content_size = writing_mode.to_logical(pending.layout.content_size);
-                        let contribution_location = LogicalOffset {
-                            inline_offset: pending.logical_offset.inline_offset - logical_border.inline_start,
-                            block_offset: pending.logical_offset.block_offset - logical_border.block_start,
-                        };
-                        inflow_content_size = inflow_content_size.f32_max(compute_logical_content_size_contribution(
-                            contribution_location,
-                            logical_size,
-                            logical_content_size,
-                            logical_overflow(item.overflow, writing_mode),
-                        ));
+                    }
+                    if item.position == Position::Absolute {
+                        item.static_position.offset.block_offset += group_offset;
+                        if run_mode == RunMode::PerformLayout {
+                            tree.set_out_of_flow_static_position(node_id, item.node_id, item.static_position);
+                        }
+                    }
+                }
+
+                #[cfg(feature = "content_size")]
+                {
+                    inflow_content_size = LogicalSize::ZERO;
+                    for item in items.iter() {
+                        if let Some(pending) = item.pending_layout.as_ref() {
+                            if !pending.participates_in_align_content {
+                                continue;
+                            }
+                            let logical_size = writing_mode.to_logical(pending.layout.size);
+                            let logical_content_size = writing_mode.to_logical(pending.layout.content_size);
+                            let contribution_location = LogicalOffset {
+                                inline_offset: pending.logical_offset.inline_offset - logical_border.inline_start,
+                                block_offset: pending.logical_offset.block_offset - logical_border.block_start,
+                            };
+                            inflow_content_size =
+                                inflow_content_size.f32_max(compute_logical_content_size_contribution(
+                                    contribution_location,
+                                    logical_size,
+                                    logical_content_size,
+                                    logical_overflow(item.overflow, writing_mode),
+                                ));
+                        }
                     }
                 }
             }
@@ -1155,6 +1185,7 @@ fn generate_item_list(
                     parent_writing_mode: writing_mode,
                     available_space: child_available_space,
                     block_margins_are_collapsible: Line::TRUE,
+                    table_cell: None,
                 };
                 let intrinsic_available_size = child_available_space.get_abs(intrinsic_axis);
                 let has_cyclic_replaced_inline_contribution = is_replaced
@@ -1709,6 +1740,7 @@ fn perform_final_layout_on_in_flow_children(
                     parent_writing_mode: writing_mode,
                     available_space: child_available_space,
                     block_margins_are_collapsible: Line::FALSE,
+                    table_cell: None,
                 }
             };
             let (stretch_inline_size, float_avoiding_position, independent_layout) = if item.is_in_same_bfc {

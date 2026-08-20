@@ -253,6 +253,35 @@ impl Default for LayoutEnvironment {
     }
 }
 
+/// Table-cell state supplied by an external table formatting context.
+///
+/// Taffy does not implement CSS table layout itself, but its block algorithm
+/// lays out the contents of table cells for browser integrations. Presence of
+/// this input marks the fragment as a table cell so it can expose the
+/// content-edge fallback baseline required by CSS Tables. A final row layout
+/// may additionally supply the shared row baseline that baseline-aligned cell
+/// contents must use.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct TableCellLayoutInput {
+    /// Shared row baseline, measured from the cell's logical block-start edge.
+    ///
+    /// This is absent while the table formatting context is measuring the row
+    /// and present during the final cell layout.
+    pub alignment_baseline: Option<f32>,
+}
+
+impl TableCellLayoutInput {
+    /// A table-cell measurement before its row baseline has been resolved.
+    pub const MEASURE: Self = Self { alignment_baseline: None };
+
+    /// A final table-cell layout aligned to the supplied row baseline.
+    #[inline(always)]
+    pub const fn aligned_to(alignment_baseline: f32) -> Self {
+        Self { alignment_baseline: Some(alignment_baseline) }
+    }
+}
+
 /// A struct containing the inputs constraints/hints for laying out a node, which are passed in by the parent
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -306,6 +335,11 @@ pub struct LayoutInput {
     /// Whether this box's block-start/end margins may collapse through the
     /// parent-child boundary. Non-block formatting contexts use `Line::FALSE`.
     pub block_margins_are_collapsible: Line<bool>,
+    /// Table-cell baseline state supplied by an external table formatter.
+    ///
+    /// This state applies only to this node and is never inherited by its
+    /// ordinary block/flex/grid children.
+    pub table_cell: Option<TableCellLayoutInput>,
 }
 
 impl LayoutInput {
@@ -325,6 +359,7 @@ impl LayoutInput {
         inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: AutoSizeBehavior::FitContent,
         block_margins_are_collapsible: Line::FALSE,
+        table_cell: None,
     };
 
     /// Project the physical tree-boundary inputs into `writing_mode`'s logical
@@ -345,6 +380,7 @@ impl LayoutInput {
             available_size: writing_mode.to_logical(self.available_space),
             requested_axis: self.axis,
             block_margins_are_collapsible: self.block_margins_are_collapsible,
+            table_cell: self.table_cell,
         }
     }
 
@@ -488,6 +524,7 @@ impl ChildLayoutInput {
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
             block_margins_are_collapsible: self.block_margins_are_collapsible,
+            table_cell: None,
         }
     }
 
@@ -507,6 +544,7 @@ impl ChildLayoutInput {
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
             block_margins_are_collapsible: self.block_margins_are_collapsible,
+            table_cell: None,
         }
     }
 }
@@ -546,6 +584,8 @@ pub struct ConstraintSpace {
     requested_axis: RequestedAxis,
     /// Block-start/end margin-collapse permissions for block layout.
     pub block_margins_are_collapsible: Line<bool>,
+    /// Table-cell baseline state for this node.
+    pub table_cell: Option<TableCellLayoutInput>,
 }
 
 impl ConstraintSpace {
@@ -566,6 +606,7 @@ impl ConstraintSpace {
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.writing_mode.to_physical(self.available_size),
             block_margins_are_collapsible: self.block_margins_are_collapsible,
+            table_cell: self.table_cell,
         }
     }
 
@@ -655,6 +696,7 @@ mod constraint_space_tests {
             parent_writing_mode: WritingMode::VerticalRl,
             available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
             block_margins_are_collapsible: Line { start: true, end: false },
+            table_cell: None,
         };
 
         let space = input.constraint_space(WritingMode::HorizontalTb);
@@ -699,6 +741,7 @@ mod constraint_space_tests {
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MinContent },
             block_margins_are_collapsible: Line::FALSE,
+            table_cell: None,
         };
         let environment =
             LayoutEnvironment { initial_containing_block_size: Size { width: Some(800.0), height: Some(600.0) } };

@@ -1371,6 +1371,7 @@ fn generate_anonymous_flex_items(
                 parent_writing_mode: constants.writing_mode,
                 available_space: child_available_space,
                 block_margins_are_collapsible: Line::FALSE,
+                table_cell: None,
             };
             let content_size_override = if is_replaced {
                 IntrinsicAxisValue::default()

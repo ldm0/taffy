@@ -4,7 +4,7 @@ use crate::geometry::{Line, LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
     AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RunMode, SizingMode,
-    SizingPurpose,
+    SizingPurpose, TableCellLayoutInput,
 };
 use crate::RequestedAxis;
 
@@ -36,6 +36,25 @@ enum AvailableSpaceCacheKey {
     MinContent,
     /// An intrinsic maximum-content constraint.
     MaxContent,
+}
+
+/// Lossless table-cell state retained by the layout cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+enum TableCellLayoutCacheKey {
+    /// The row is being measured before its shared baseline is known.
+    Measure,
+    /// Final content alignment to an exact row baseline.
+    AlignTo(u32),
+}
+
+impl From<TableCellLayoutInput> for TableCellLayoutCacheKey {
+    fn from(input: TableCellLayoutInput) -> Self {
+        match input.alignment_baseline {
+            Some(baseline) => Self::AlignTo(baseline.to_bits()),
+            None => Self::Measure,
+        }
+    }
 }
 
 /// Convert an optional float to a tagged, exact-bit cache component.
@@ -103,6 +122,8 @@ struct CacheKey {
     block_auto_behavior: AutoSizeBehavior,
     /// Whether block-start/end margins may collapse through this boundary.
     block_margins_are_collapsible: Line<bool>,
+    /// Table-cell measurement/final-alignment state for this node.
+    table_cell: Option<TableCellLayoutCacheKey>,
 }
 
 impl CacheKey {
@@ -122,6 +143,7 @@ impl CacheKey {
             inline_auto_behavior: input.inline_auto_behavior,
             block_auto_behavior: input.block_auto_behavior,
             block_margins_are_collapsible: input.block_margins_are_collapsible,
+            table_cell: input.table_cell.map(Into::into),
         }
     }
 
@@ -142,6 +164,7 @@ impl CacheKey {
             && self.inline_auto_behavior == other.inline_auto_behavior
             && self.block_auto_behavior == other.block_auto_behavior
             && self.block_margins_are_collapsible == other.block_margins_are_collapsible
+            && self.table_cell == other.table_cell
     }
 }
 
@@ -511,6 +534,7 @@ mod tests {
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
             block_margins_are_collapsible: Line::FALSE,
+            table_cell: None,
         }
     }
 

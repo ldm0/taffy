@@ -1286,6 +1286,7 @@ mod tests {
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
             block_margins_are_collapsible: Line::FALSE,
+            table_cell: None,
         };
 
         let mut layout_tree = taffy.as_layout_tree();
@@ -1323,6 +1324,7 @@ mod tests {
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
             block_margins_are_collapsible: Line::FALSE,
+            table_cell: None,
         };
 
         let mut layout_tree = taffy.as_layout_tree();
@@ -1372,6 +1374,7 @@ mod tests {
                 parent_writing_mode: crate::WritingMode::HorizontalTb,
                 available_space: Size::MAX_CONTENT,
                 block_margins_are_collapsible: Line::FALSE,
+                table_cell: None,
             };
 
             let mut layout_tree = taffy.as_layout_tree();
@@ -1447,6 +1450,7 @@ mod tests {
                     height: AvailableSpace::Definite(200.0),
                 },
                 block_margins_are_collapsible: Line::FALSE,
+                table_cell: None,
             };
             let height = taffy.as_layout_tree().compute_child_layout(node, input).size.height;
             height
@@ -1530,6 +1534,7 @@ mod tests {
                     height: AvailableSpace::Definite(200.0),
                 },
                 block_margins_are_collapsible: Line::FALSE,
+                table_cell: None,
             };
             let output = taffy.as_layout_tree().compute_child_layout(node, input);
             (output.size.height, taffy.unrounded_layout(child).size.height)
@@ -1851,6 +1856,69 @@ mod tests {
 
         assert_eq!(output.first_baselines.y, None);
         assert_eq!(output.last_baselines.y, Some(45.0));
+    }
+
+    #[cfg(feature = "block_layout")]
+    #[test]
+    fn table_cell_row_baseline_aligns_content_and_out_of_flow_candidates() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let in_flow = taffy
+            .new_leaf(Style { display: Display::Block, size: Size::from_lengths(20.0, 20.0), ..Style::default() })
+            .unwrap();
+        let absolute = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                position: crate::Position::Absolute,
+                size: Size::from_lengths(10.0, 10.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let cell = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size::from_lengths(100.0, 100.0),
+                    padding: Rect { top: length(5.0), bottom: length(5.0), ..Rect::zero() },
+                    align_content: Some(crate::AlignContent::BASELINE),
+                    ..Style::default()
+                },
+                &[in_flow, absolute],
+            )
+            .unwrap();
+
+        let measured = {
+            let mut tree = taffy.as_layout_tree();
+            tree.compute_child_layout(
+                cell,
+                LayoutInput {
+                    run_mode: RunMode::PerformLayout,
+                    table_cell: Some(crate::TableCellLayoutInput::MEASURE),
+                    ..LayoutInput::HIDDEN
+                },
+            )
+        };
+        assert_eq!(measured.first_baselines.y, Some(25.0));
+        assert_eq!(measured.last_baselines.y, Some(25.0));
+        assert_eq!(taffy.unrounded_layout(in_flow).location.y, 5.0);
+        assert_eq!(taffy.unrounded_layout(absolute).location.y, 25.0);
+
+        // The second request deliberately differs only in table-cell
+        // constraint state. It must not reuse the measurement cache entry.
+        let aligned = {
+            let mut tree = taffy.as_layout_tree();
+            tree.compute_child_layout(
+                cell,
+                LayoutInput {
+                    run_mode: RunMode::PerformLayout,
+                    table_cell: Some(crate::TableCellLayoutInput::aligned_to(40.0)),
+                    ..LayoutInput::HIDDEN
+                },
+            )
+        };
+        assert_eq!(aligned.first_baselines.y, Some(40.0));
+        assert_eq!(aligned.last_baselines.y, Some(40.0));
+        assert_eq!(taffy.unrounded_layout(in_flow).location.y, 20.0);
+        assert_eq!(taffy.unrounded_layout(absolute).location.y, 40.0);
     }
 
     #[cfg(all(feature = "grid", feature = "flexbox"))]

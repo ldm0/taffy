@@ -122,6 +122,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         parent_writing_mode: root_writing_mode,
         available_space,
         block_margins_are_collapsible: Line::FALSE,
+        table_cell: None,
     };
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
     let (root_padding, root_border) = {

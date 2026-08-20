@@ -618,6 +618,7 @@ pub(crate) fn layout_out_of_flow_item(
             height: AvailableSpace::Definite(available_height),
         },
         block_margins_are_collapsible: Line::FALSE,
+        table_cell: None,
     };
     let sizing = NodeSizeConstraintInput {
         raw_size,
@@ -849,6 +850,7 @@ pub(crate) fn layout_out_of_flow_item(
             block_auto_behavior,
             run_mode: RunMode::PerformLayout,
             block_margins_are_collapsible: Line::FALSE,
+            table_cell: None,
         },
     );
 
