@@ -800,7 +800,8 @@ fn compute_inner(
         let any_in_flow = items
             .iter()
             .any(|item| item.pending_layout.as_ref().is_some_and(|pending| pending.participates_in_align_content));
-        if any_in_flow {
+        let any_out_of_flow = items.iter().any(|item| item.position == Position::Absolute);
+        if any_in_flow || any_out_of_flow {
             let keyword = apply_alignment_fallback(free_space, 1, align_content);
             let group_offset = compute_alignment_offset(free_space, 1, 0.0, keyword, false, true);
             first_baseline = first_baseline.map(|baseline| baseline + group_offset);
@@ -809,6 +810,12 @@ fn compute_inner(
                 if let Some(pending) = item.pending_layout.as_mut() {
                     if pending.participates_in_align_content {
                         pending.logical_offset.block_offset += group_offset;
+                    }
+                }
+                if item.position == Position::Absolute {
+                    item.static_position.offset.block_offset += group_offset;
+                    if run_mode == RunMode::PerformLayout {
+                        tree.set_out_of_flow_static_position(node_id, item.node_id, item.static_position);
                     }
                 }
             }

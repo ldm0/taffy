@@ -61,6 +61,57 @@ mod absolute_position {
 
     const WRAPPABLE_400: &str = "aaaaaaaaaa\u{200b}bbbbbbbbbb\u{200b}cccccccccc\u{200b}dddddddddd";
 
+    fn layout_block_alignment_with_static_position(
+        alignment: AlignContent,
+        include_in_flow_child: bool,
+    ) -> (Option<Layout>, Layout) {
+        let mut tree = TaffyTree::<()>::new();
+        let in_flow = include_in_flow_child.then(|| {
+            tree.new_leaf(Style { display: Display::Block, size: Size::from_lengths(20.0, 20.0), ..Default::default() })
+                .unwrap()
+        });
+        let absolute = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                size: Size::from_lengths(10.0, 10.0),
+                ..Default::default()
+            })
+            .unwrap();
+        let children = in_flow.into_iter().chain([absolute]).collect::<Vec<_>>();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    position: Position::Relative,
+                    size: Size::from_lengths(100.0, 100.0),
+                    align_content: Some(alignment),
+                    ..Default::default()
+                },
+                &children,
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        (in_flow.map(|node| *tree.layout(node).unwrap()), *tree.layout(absolute).unwrap())
+    }
+
+    #[test]
+    fn block_align_content_moves_out_of_flow_static_positions_with_the_subject() {
+        let (centered_flow, centered_absolute) =
+            layout_block_alignment_with_static_position(AlignContent::CENTER, true);
+        assert_eq!(centered_flow.unwrap().location.y, 40.0);
+        assert_eq!(centered_absolute.location.y, 60.0);
+
+        let (ended_flow, ended_absolute) = layout_block_alignment_with_static_position(AlignContent::END, true);
+        assert_eq!(ended_flow.unwrap().location.y, 80.0);
+        assert_eq!(ended_absolute.location.y, 100.0);
+
+        let (empty_flow, centered_absolute) = layout_block_alignment_with_static_position(AlignContent::CENTER, false);
+        assert!(empty_flow.is_none());
+        assert_eq!(centered_absolute.location.y, 50.0);
+    }
+
     #[test]
     fn auto_width_absolute_block_shrinks_nested_flex_content_to_available_width() {
         let fixture = layout_fixture(Display::Block, 236.0, Style::default(), WRAPPABLE_400);
