@@ -14,7 +14,7 @@ use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
-use crate::compute::common::content_size::compute_content_size_contribution;
+use crate::compute::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 use crate::{BoxSizing, Direction, LayoutGridContainer, RequestedAxis};
 
 /// Final block-axis geometry and baseline data for a positioned grid item.
@@ -107,6 +107,7 @@ pub(super) fn align_and_position_item(
     direction: Direction,
     container_border_box_width: f32,
     container_border: Rect<f32>,
+    container_scrollbar_insets: Rect<f32>,
 ) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
 
@@ -368,13 +369,14 @@ pub(super) fn align_and_position_item(
 
     #[cfg(feature = "content_size")]
     let contribution = {
-        // Contributions to the container's content size are measured from the container's
-        // padding-box origin (mirrored for RTL), matching the scrollable overflow region.
-        let contribution_location = if direction.is_rtl() {
-            Point { x: container_border_box_width - (x + width) - container_border.right, y: y - container_border.top }
-        } else {
-            Point { x: x - container_border.left, y: y - container_border.top }
-        };
+        let contribution_location = content_size_contribution_location(
+            Point { x, y },
+            Size { width, height },
+            container_border_box_width,
+            container_border,
+            container_scrollbar_insets,
+            direction,
+        );
         compute_content_size_contribution(
             contribution_location,
             Size { width, height },
