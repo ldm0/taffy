@@ -1,7 +1,7 @@
 //! Computes size using styles and measure functions
 
-use crate::geometry::{Point, Size};
-use crate::style::{AvailableSpace, Overflow, Position};
+use crate::geometry::{Point, Rect, Size};
+use crate::style::{resolve_scrollbar_insets, AvailableSpace, Position};
 use crate::tree::{CollapsibleMarginSet, RunMode};
 use crate::tree::{LayoutInput, LayoutOutput, SizingMode};
 use crate::util::debug::debug_log;
@@ -15,6 +15,31 @@ use core::unreachable;
 pub fn compute_leaf_layout<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    compute_leaf_layout_with_scrollbar_insets(
+        inputs,
+        style,
+        resolve_scrollbar_insets(style),
+        resolve_calc_value,
+        measure_function,
+    )
+}
+
+/// Compute the size of a leaf node using scrollbar gutters that have already
+/// been resolved to physical edges by the embedding.
+///
+/// This is the axis-independent counterpart to [`compute_leaf_layout`]. The
+/// legacy entry point remains available and derives conventional end-edge
+/// gutters from the style's scalar scrollbar width.
+pub fn compute_leaf_layout_with_scrollbar_insets<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    scrollbar_insets: Rect<f32>,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
@@ -61,17 +86,7 @@ where
         }
     };
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axis are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar
-    let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    // TODO: make side configurable based on the `direction` property
-    let mut content_box_inset = padding_border;
-    content_box_inset.right += scrollbar_gutter.x;
-    content_box_inset.bottom += scrollbar_gutter.y;
+    let content_box_inset = padding_border + scrollbar_insets;
 
     let has_styles_preventing_being_collapsed_through = !style.is_block()
         || style.overflow().x.is_scroll_container()

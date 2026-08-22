@@ -129,8 +129,8 @@
 use super::{Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode, SizingPurpose};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Line, Size};
-use crate::style::{AvailableSpace, CoreStyle};
+use crate::geometry::{AbsoluteAxis, Line, Rect, Size};
+use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -184,6 +184,19 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Get core style
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
+
+    /// Get the resolved physical space occupied by scrollbar gutters.
+    ///
+    /// The default derives the traditional end-edge gutters from
+    /// [`CoreStyle::overflow`] and the scalar [`CoreStyle::scrollbar_width`].
+    /// Embeddings that resolve independent axes, leading-edge gutters, or
+    /// writing-mode-specific placement should override this method. Layout
+    /// algorithms consume these insets as part of the numeric content-box
+    /// model; they do not interpret higher-level CSS gutter policy.
+    #[inline]
+    fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
+        resolve_scrollbar_insets(&self.get_core_container_style(node_id))
+    }
 
     /// Resolve calc value
     #[inline(always)]

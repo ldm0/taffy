@@ -6,8 +6,7 @@ use crate::compute::common::alignment::{
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
-    Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
 };
 use crate::tree::{Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode, SizingPurpose};
 use crate::util::sys::f32_max;
@@ -24,10 +23,15 @@ use crate::{BoxSizing, Direction, LayoutGridContainer, RequestedAxis};
 /// the grid container propagate distinct first and last baselines to its own
 /// parent formatting context.
 pub(super) struct GridItemPlacement {
+    /// Scrollable content contributed by the positioned item.
     pub(super) content_size_contribution: Size<f32>,
+    /// Item border-box start in the container's block axis.
     pub(super) block_start: f32,
+    /// Final item border-box size in the container's block axis.
     pub(super) block_size: f32,
+    /// First baseline reported by the item's final layout.
     pub(super) first_baseline: Option<f32>,
+    /// Last baseline reported by the item's final layout.
     pub(super) last_baseline: Option<f32>,
 }
 
@@ -105,10 +109,10 @@ pub(super) fn align_and_position_item(
 ) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
 
+    let scrollbar_size = tree.get_scrollbar_insets(node).sum_axes();
     let style = tree.get_grid_child_style(node);
 
     let overflow = style.overflow();
-    let scrollbar_width = style.scrollbar_width();
     let aspect_ratio = style.aspect_ratio();
     // Resolve writing-mode-relative self-start/self-end keywords against the item's own
     // direction. The horizontal axis is the inline axis (Taffy only supports horizontal-tb);
@@ -335,11 +339,6 @@ pub(super) fn align_and_position_item(
         baseline_shim,
         Direction::Ltr,
     );
-
-    let scrollbar_size = Size {
-        width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
-        height: if overflow.x == Overflow::Scroll { scrollbar_width } else { 0.0 },
-    };
 
     let resolved_margin = Rect { left: x_margin.start, right: x_margin.end, top: y_margin.start, bottom: y_margin.end };
 

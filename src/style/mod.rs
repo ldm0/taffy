@@ -189,6 +189,34 @@ pub trait CoreStyle {
     }
 }
 
+/// Resolve Taffy's legacy scalar scrollbar thickness into physical gutter
+/// insets.
+///
+/// Low-level layout trees can override
+/// [`LayoutPartialTree::get_scrollbar_insets`](crate::LayoutPartialTree::get_scrollbar_insets)
+/// when their embedding has already resolved axis-specific, leading-edge, or
+/// `both-edges` gutters. This helper preserves the historical behavior for
+/// existing trees and direct leaf-layout callers.
+#[inline]
+pub fn resolve_scrollbar_insets(style: &impl CoreStyle) -> Rect<f32> {
+    let overflow = style.overflow();
+    let thickness = style.scrollbar_width();
+    let mut insets = Rect::ZERO;
+
+    if overflow.x == Overflow::Scroll {
+        insets.bottom = thickness;
+    }
+    if overflow.y == Overflow::Scroll {
+        if style.direction().is_rtl() {
+            insets.left = thickness;
+        } else {
+            insets.right = thickness;
+        }
+    }
+
+    insets
+}
+
 /// Sets the layout used for the children of this node
 ///
 /// The default values depends on on which feature flags are enabled. The order of precedence is: Flex, Grid, Block, None.
