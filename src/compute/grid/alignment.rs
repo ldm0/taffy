@@ -140,6 +140,7 @@ pub(super) fn align_and_position_item(
     parent_writing_mode: WritingMode,
     container_border_box_size: Size<f32>,
     container_border: Rect<f32>,
+    container_scrollbar_insets: Rect<f32>,
 ) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
     let flow = GridFlow::new(parent_writing_mode, direction);
@@ -480,7 +481,8 @@ pub(super) fn align_and_position_item(
     let contribution = {
         // Scrollable overflow is accumulated in logical coordinates so that
         // inline/block-end contributions behave identically in every writing direction.
-        let logical_container_border = flow.writing_direction().to_logical_box_strut(container_border);
+        let logical_container_border =
+            flow.writing_direction().to_logical_box_strut(container_border + container_scrollbar_insets);
         let contribution_location = Point {
             x: logical_location.inline_offset - logical_container_border.inline_start,
             y: logical_location.block_offset - logical_container_border.block_start,

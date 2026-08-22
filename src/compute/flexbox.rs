@@ -30,7 +30,7 @@ use super::common::aspect_ratio::{
     resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
 };
 #[cfg(feature = "content_size")]
-use super::common::content_size::compute_content_size_contribution;
+use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 use super::common::intrinsic_size::{
     fit_content_inline_size_with_metadata, intrinsic_content_size_from_initial_geometry,
     measure_aspect_ratio_automatic_minimum, measure_child_intrinsic_contribution,
@@ -568,6 +568,23 @@ struct AlgoConstants {
     inner_container_size: Size<f32>,
 }
 
+/// Container-owned inputs resolved before the style borrow enters the
+/// reusable Flexbox constant builder.
+struct FlexContainerContext {
+    /// Per-pass constraint space and requested layout mode.
+    inputs: LayoutInput,
+    /// Container constraints resolved by the shared sizing pipeline.
+    node_sizing: ResolvedNodeSizing,
+    /// Used writing mode that owns the Flexbox logical axes.
+    writing_mode: WritingMode,
+    /// Dominant baseline selected by computed text orientation.
+    font_baseline: FontBaseline,
+    /// Deferred content-based block-size resolver.
+    content_based_block_size: ContentBasedBlockSize,
+    /// Used physical scrollbar space on all four edges.
+    scrollbar_insets: Rect<f32>,
+}
+
 impl AlgoConstants {
     /// The flow-relative coordinate system established by this container.
     #[inline(always)]
@@ -805,12 +822,14 @@ fn compute_preliminary(
     let mut constants = compute_constants(
         tree,
         tree.get_flexbox_container_style(node),
-        scrollbar_insets,
-        inputs,
-        node_sizing,
-        writing_mode,
-        font_baseline,
-        content_based_block_size,
+        FlexContainerContext {
+            inputs,
+            node_sizing,
+            writing_mode,
+            font_baseline,
+            content_based_block_size,
+            scrollbar_insets,
+        },
     );
     let LayoutInput { available_space, run_mode, .. } = inputs;
     let node_outer_size = node_sizing.outer_size;
@@ -1056,13 +1075,16 @@ fn compute_preliminary(
 fn compute_constants(
     tree: &impl LayoutFlexboxContainer,
     style: impl FlexboxContainerStyle,
-    scrollbar_insets: Rect<f32>,
-    inputs: LayoutInput,
-    node_sizing: ResolvedNodeSizing,
-    writing_mode: WritingMode,
-    font_baseline: FontBaseline,
-    content_based_block_size: ContentBasedBlockSize,
+    context: FlexContainerContext,
 ) -> AlgoConstants {
+    let FlexContainerContext {
+        inputs,
+        node_sizing,
+        writing_mode,
+        font_baseline,
+        content_based_block_size,
+        scrollbar_insets,
+    } = context;
     let LayoutInput { sizing_mode, .. } = inputs;
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let authored_direction = style.flex_direction();
@@ -3680,14 +3702,14 @@ fn calculate_flex_item(
 
     #[cfg(feature = "content_size")]
     {
-        let contribution_location = if horizontal_direction.is_rtl() {
-            Point {
-                x: constants.container_size.width - (location.x + size.width) - constants.border.right,
-                y: location.y - constants.border.top,
-            }
-        } else {
-            Point { x: location.x - constants.border.left, y: location.y - constants.border.top }
-        };
+        let contribution_location = content_size_contribution_location(
+            location,
+            size,
+            constants.container_size.width,
+            constants.border,
+            constants.scrollbar_insets,
+            horizontal_direction,
+        );
         *total_content_size = total_content_size.f32_max(compute_content_size_contribution(
             contribution_location,
             size,

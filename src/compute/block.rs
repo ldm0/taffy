@@ -587,6 +587,7 @@ fn compute_inner(
     let content_box_inset = padding_border + scrollbar_gutter;
     let logical_padding = writing_direction.to_logical_box_strut(padding);
     let logical_border = writing_direction.to_logical_box_strut(border);
+    let logical_scroll_origin_inset = logical_border + writing_direction.to_logical_box_strut(scrollbar_gutter);
     let logical_padding_border = logical_padding + logical_border;
     let logical_padding_border_size = logical_padding_border.sum_axes();
     let logical_content_box_inset = writing_direction.to_logical_box_strut(content_box_inset);
@@ -729,7 +730,7 @@ fn compute_inner(
             percentage_resolution_block_size: container_percentage_resolution_block_size,
             relative_inset_percentage_resolution_block_size,
             content_box_inset: logical_content_box_inset,
-            border: logical_border,
+            scroll_origin_inset: logical_scroll_origin_inset,
             text_align,
             writing_direction,
             own_margins_collapse_with_children,
@@ -844,8 +845,10 @@ fn compute_inner(
                             let logical_size = writing_mode.to_logical(pending.layout.size);
                             let logical_content_size = writing_mode.to_logical(pending.layout.content_size);
                             let contribution_location = LogicalOffset {
-                                inline_offset: pending.logical_offset.inline_offset - logical_border.inline_start,
-                                block_offset: pending.logical_offset.block_offset - logical_border.block_start,
+                                inline_offset: pending.logical_offset.inline_offset
+                                    - logical_scroll_origin_inset.inline_start,
+                                block_offset: pending.logical_offset.block_offset
+                                    - logical_scroll_origin_inset.block_start,
                             };
                             inflow_content_size =
                                 inflow_content_size.f32_max(compute_logical_content_size_contribution(
@@ -1436,8 +1439,8 @@ struct BlockContainerLayoutContext {
     relative_inset_percentage_resolution_block_size: Option<f32>,
     /// Padding, border, and scrollbar inset around the content box.
     content_box_inset: LogicalBoxStrut<f32>,
-    /// Used logical border widths.
-    border: LogicalBoxStrut<f32>,
+    /// Leading border and scrollbar inset excluded from scrollable overflow.
+    scroll_origin_inset: LogicalBoxStrut<f32>,
     /// Inline alignment inherited by anonymous block content.
     text_align: TextAlign,
     /// Writing mode and inline direction that own this formatting context.
@@ -1486,7 +1489,7 @@ fn perform_final_layout_on_in_flow_children(
         percentage_resolution_block_size: container_percentage_resolution_block_size,
         relative_inset_percentage_resolution_block_size,
         content_box_inset,
-        border,
+        scroll_origin_inset,
         text_align,
         writing_direction,
         own_margins_collapse_with_children,
@@ -1678,8 +1681,8 @@ fn perform_final_layout_on_in_flow_children(
                     // TODO: Should content size of floated boxes count as "inflow_content_size"
                     // or should it be counted separately?
                     let contribution_location = LogicalOffset {
-                        inline_offset: logical_location.inline_offset - border.inline_start,
-                        block_offset: logical_location.block_offset - border.block_start,
+                        inline_offset: logical_location.inline_offset - scroll_origin_inset.inline_start,
+                        block_offset: logical_location.block_offset - scroll_origin_inset.block_start,
                     };
                     let logical_content_size = writing_mode.to_logical(item_layout.content_size);
                     inflow_content_size = inflow_content_size.f32_max(compute_logical_content_size_contribution(
@@ -2070,8 +2073,8 @@ fn perform_final_layout_on_in_flow_children(
             #[cfg(feature = "content_size")]
             {
                 let contribution_location = LogicalOffset {
-                    inline_offset: logical_location.inline_offset - border.inline_start,
-                    block_offset: logical_location.block_offset - border.block_start,
+                    inline_offset: logical_location.inline_offset - scroll_origin_inset.inline_start,
+                    block_offset: logical_location.block_offset - scroll_origin_inset.block_start,
                 };
                 let logical_content_size = writing_mode.to_logical(item_layout.content_size);
                 inflow_content_size = inflow_content_size.f32_max(compute_logical_content_size_contribution(

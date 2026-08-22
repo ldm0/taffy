@@ -984,6 +984,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             writing_mode,
             physical_container_border_box,
             border,
+            scrollbar_insets,
         );
         item.block_offset = placement.block_offset;
         item.block_size = placement.block_size;
