@@ -628,6 +628,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             direction,
             container_border_box.width,
             border,
+            scrollbar_insets,
         );
         item.y_position = placement.block_start;
         item.height = placement.block_size;
@@ -747,6 +748,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 direction,
                 container_border_box.width,
                 border,
+                scrollbar_insets,
             );
             #[cfg(feature = "content_size")]
             {

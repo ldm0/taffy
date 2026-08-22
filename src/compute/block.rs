@@ -267,7 +267,7 @@ impl BlockContext<'_> {
 
 use super::common::alignment::{apply_alignment_fallback, compute_alignment_offset};
 #[cfg(feature = "content_size")]
-use super::common::content_size::compute_content_size_contribution;
+use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 
 /// Per-child data that is accumulated and modified over the course of the layout algorithm
 struct BlockItem {
@@ -585,6 +585,8 @@ fn compute_inner(
         content_box_inset,
         resolved_content_box_inset,
         resolved_border,
+        #[cfg(feature = "content_size")]
+        scrollbar_gutter,
         text_align,
         direction,
         own_margins_collapse_with_children,
@@ -632,19 +634,14 @@ fn compute_inner(
                 inflow_content_size = Size::ZERO;
                 for item in items.iter() {
                     if let Some(layout) = item.final_layout.as_ref() {
-                        let contribution_location = if direction.is_rtl() {
-                            Point {
-                                x: container_outer_width
-                                    - (layout.location.x + layout.size.width)
-                                    - resolved_border.right,
-                                y: layout.location.y - resolved_border.top,
-                            }
-                        } else {
-                            Point {
-                                x: layout.location.x - resolved_border.left,
-                                y: layout.location.y - resolved_border.top,
-                            }
-                        };
+                        let contribution_location = content_size_contribution_location(
+                            layout.location,
+                            layout.size,
+                            container_outer_width,
+                            resolved_border,
+                            scrollbar_gutter,
+                            direction,
+                        );
                         inflow_content_size = inflow_content_size.f32_max(compute_content_size_contribution(
                             contribution_location,
                             layout.size,
@@ -1009,6 +1006,7 @@ fn perform_final_layout_on_in_flow_children(
     content_box_inset: Rect<f32>,
     resolved_content_box_inset: Rect<f32>,
     resolved_border: Rect<f32>,
+    #[cfg(feature = "content_size")] scrollbar_gutter: Rect<f32>,
     text_align: TextAlign,
     direction: Direction,
     own_margins_collapse_with_children: Line<bool>,
@@ -1168,14 +1166,14 @@ fn perform_final_layout_on_in_flow_children(
                 {
                     // TODO: Should content size of floated boxes count as "inflow_content_size"
                     // or should it be counted separately?
-                    let contribution_location = if direction.is_rtl() {
-                        Point {
-                            x: container_outer_width - (location.x + item_layout.size.width) - resolved_border.right,
-                            y: location.y - resolved_border.top,
-                        }
-                    } else {
-                        Point { x: location.x - resolved_border.left, y: location.y - resolved_border.top }
-                    };
+                    let contribution_location = content_size_contribution_location(
+                        location,
+                        item_layout.size,
+                        container_outer_width,
+                        resolved_border,
+                        scrollbar_gutter,
+                        direction,
+                    );
                     inflow_content_size = inflow_content_size.f32_max(compute_content_size_contribution(
                         contribution_location,
                         item_layout.size,
@@ -1541,14 +1539,14 @@ fn perform_final_layout_on_in_flow_children(
 
             #[cfg(feature = "content_size")]
             {
-                let contribution_location = if direction.is_rtl() {
-                    Point {
-                        x: container_outer_width - (location.x + final_size.width) - resolved_border.right,
-                        y: location.y - resolved_border.top,
-                    }
-                } else {
-                    Point { x: location.x - resolved_border.left, y: location.y - resolved_border.top }
-                };
+                let contribution_location = content_size_contribution_location(
+                    location,
+                    final_size,
+                    container_outer_width,
+                    resolved_border,
+                    scrollbar_gutter,
+                    direction,
+                );
                 inflow_content_size = inflow_content_size.f32_max(compute_content_size_contribution(
                     contribution_location,
                     final_size,
