@@ -3,13 +3,13 @@
 use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Point, Size};
-use crate::style::{AlignItems, AvailableSpace, Overflow, Position};
+use crate::style::{AlignItems, AvailableSpace, Position};
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RunMode,
     SizingMode,
 };
 use crate::util::debug::debug_log;
-use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
+use crate::util::sys::{f32_max, GridTrackVec, Vec};
 use crate::util::MaybeMath;
 use crate::util::ResolveOrZero;
 use crate::{
@@ -120,6 +120,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let size_containment = tree.get_size_containment(node);
+    let scrollbar_insets = tree.get_scrollbar_insets(node);
     let style = tree.get_grid_container_style(node);
     let direction = style.direction();
     let flow = GridFlow::new(writing_mode, direction);
@@ -136,11 +137,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let padding_border_size = (padding + border).sum_axes();
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    let content_box_inset_size = padding_border_size + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+    let content_box_inset_size = padding_border_size + scrollbar_insets.sum_axes();
     let explicit_contained_outer_size = size_containment.resolve_explicit_outer_size(content_box_inset_size);
     let explicit_contained_outer_block_size = flow.to_logical_size(explicit_contained_outer_size).block_size;
     let box_sizing = style.box_sizing();
@@ -202,11 +199,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     let style = tree.get_grid_container_style(node);
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axis are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar
     let logical_padding_border_size = flow.to_logical_size(padding_border_size);
-    let logical_scrollbar_gutter = flow.to_logical_size(Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y });
+    let logical_scrollbar_gutter = flow.to_logical_size(scrollbar_insets.sum_axes());
     let logical_content_box_inset = LogicalSize {
         inline_size: logical_padding_border_size.inline_size + logical_scrollbar_gutter.inline_size,
         block_size: logical_padding_border_size.block_size + logical_scrollbar_gutter.block_size,
@@ -931,15 +925,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // 8. Track Alignment
 
-    let inline_size_without_scrollbar =
-        f32_max(container_border_box.inline_size - logical_padding_border_size.inline_size, 0.0);
-    let inline_scrollbar_gutter_for_alignment =
-        f32_min(logical_scrollbar_gutter.inline_size, inline_size_without_scrollbar);
-    let inline_padding = flow.add_to_axis_end(
-        flow.physical_axis_line(padding, AbstractAxis::Inline),
-        AbstractAxis::Inline,
-        inline_scrollbar_gutter_for_alignment,
-    );
+    let padding_with_scrollbars = padding + scrollbar_insets;
+    let inline_padding = flow.physical_axis_line(padding_with_scrollbars, AbstractAxis::Inline);
     align_tracks(
         container_content_box.get(AbstractAxis::Inline),
         inline_padding,
@@ -948,15 +935,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         justify_content,
         flow.axis_is_reversed(AbstractAxis::Inline),
     );
-    let block_size_without_scrollbar =
-        f32_max(container_border_box.block_size - logical_padding_border_size.block_size, 0.0);
-    let block_scrollbar_gutter_for_alignment =
-        f32_min(logical_scrollbar_gutter.block_size, block_size_without_scrollbar);
-    let block_padding = flow.add_to_axis_end(
-        flow.physical_axis_line(padding, AbstractAxis::Block),
-        AbstractAxis::Block,
-        block_scrollbar_gutter_for_alignment,
-    );
+    let block_padding = flow.physical_axis_line(padding_with_scrollbars, AbstractAxis::Block);
     align_tracks(
         container_content_box.get(AbstractAxis::Block),
         block_padding,
@@ -1126,17 +1105,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
             let inline_border = flow.physical_axis_line(border, AbstractAxis::Inline);
             let block_border = flow.physical_axis_line(border, AbstractAxis::Block);
+            let inline_scrollbar = flow.physical_axis_line(scrollbar_insets, AbstractAxis::Inline);
+            let block_scrollbar = flow.physical_axis_line(scrollbar_insets, AbstractAxis::Block);
             let inline_containing_bounds = Line {
-                start: inline_border.start + if inline_reversed { logical_scrollbar_gutter.inline_size } else { 0.0 },
-                end: container_border_box.inline_size
-                    - inline_border.end
-                    - if inline_reversed { 0.0 } else { logical_scrollbar_gutter.inline_size },
+                start: inline_border.start + inline_scrollbar.start,
+                end: container_border_box.inline_size - inline_border.end - inline_scrollbar.end,
             };
             let block_containing_bounds = Line {
-                start: block_border.start + if block_reversed { logical_scrollbar_gutter.block_size } else { 0.0 },
-                end: container_border_box.block_size
-                    - block_border.end
-                    - if block_reversed { 0.0 } else { logical_scrollbar_gutter.block_size },
+                start: block_border.start + block_scrollbar.start,
+                end: container_border_box.block_size - block_border.end - block_scrollbar.end,
             };
             let inline_grid_bounds = Line {
                 start: maybe_col_indexes

@@ -52,17 +52,6 @@ impl GridFlow {
         }
     }
 
-    /// Add reserved space at the logical end edge of an axis while retaining
-    /// the low/high physical line representation used by track offsets.
-    pub(super) fn add_to_axis_end(self, mut line: Line<f32>, axis: AbstractAxis, amount: f32) -> Line<f32> {
-        if self.axis_is_reversed(axis) {
-            line.start += amount;
-        } else {
-            line.end += amount;
-        }
-        line
-    }
-
     /// Build a physical rectangle from low-to-high coordinates in the grid's
     /// inline and block track axes.
     pub(super) fn to_physical_rect<T: Copy>(self, inline: Line<T>, block: Line<T>) -> Rect<T> {

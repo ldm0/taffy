@@ -37,6 +37,7 @@ mod hand_written {
     mod rounding;
     mod safe_alignment;
     mod scroll_size;
+    mod scrollbar_insets;
     mod serde;
     mod size_containment;
     mod stretch_sizing;

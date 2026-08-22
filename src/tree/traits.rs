@@ -133,8 +133,8 @@ use super::{
 use crate::compute::FontBaseline;
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{LogicalStaticPosition, Size, WritingDirection, WritingMode};
-use crate::style::{CoreStyle, ResolvedAspectRatio, SizeContainment};
+use crate::geometry::{LogicalStaticPosition, Rect, Size, WritingDirection, WritingMode};
+use crate::style::{resolve_scrollbar_insets, CoreStyle, ResolvedAspectRatio, SizeContainment};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -273,6 +273,19 @@ pub trait LayoutPartialTree: TraversePartialTree {
     #[inline(always)]
     fn prepare_child_layout_input(&self, node_id: NodeId, inputs: LayoutInput) -> LayoutInput {
         inputs.for_child_writing_mode(self.get_writing_mode(node_id), self.get_layout_environment())
+    }
+
+    /// Get the resolved physical space occupied by scrollbar gutters.
+    ///
+    /// The default derives the traditional end-edge gutters from
+    /// [`CoreStyle::overflow`] and the scalar [`CoreStyle::scrollbar_width`].
+    /// Embeddings that resolve independent axes, leading-edge gutters, or
+    /// writing-mode-specific placement should override this method. Layout
+    /// algorithms consume these insets as part of the numeric content-box
+    /// model; they do not interpret higher-level CSS gutter policy.
+    #[inline]
+    fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
+        resolve_scrollbar_insets(&self.get_core_container_style(node_id))
     }
 
     /// Resolve calc value

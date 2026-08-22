@@ -305,8 +305,8 @@ struct FlexItem {
 
     /// The overflow style of the item
     overflow: Point<Overflow>,
-    /// The width of the scrollbars (if it has any)
-    scrollbar_width: f32,
+    /// Total physical space occupied by the item's scrollbar gutters.
+    scrollbar_size: Size<f32>,
     /// The flex shrink style of the item
     flex_shrink: f32,
     /// The flex grow style of the item
@@ -533,10 +533,10 @@ struct AlgoConstants {
     /// The border of this section
     border: Rect<f32>,
     /// The space between the content box and the border box.
-    /// This consists of padding + border + scrollbar_gutter.
+    /// This consists of padding + border + physical scrollbar insets.
     content_box_inset: Rect<f32>,
-    /// The size reserved for scrollbar gutters in each axis
-    scrollbar_gutter: Point<f32>,
+    /// Physical space reserved for scrollbar gutters on each edge.
+    scrollbar_insets: Rect<f32>,
     /// Authored logical column/row gaps. Keeping the unresolved values lets
     /// the inline-axis percentage basis become final without manufacturing a
     /// definite block-axis basis.
@@ -697,6 +697,7 @@ pub fn compute_flexbox_layout(
     let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let size_containment = tree.get_size_containment(node);
+    let scrollbar_insets = tree.get_scrollbar_insets(node);
     let style = tree.get_flexbox_container_style(node);
 
     // Pull these out earlier to avoid borrowing issues
@@ -710,11 +711,7 @@ pub fn compute_flexbox_layout(
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    let content_box_inset_size = padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+    let content_box_inset_size = padding_border_sum + scrollbar_insets.sum_axes();
     let contained_outer_size = size_containment.resolve_outer_size(Size::ZERO, content_box_inset_size);
     let contained_outer_block_size = writing_mode.to_logical(contained_outer_size).block_size;
     let box_sizing = style.box_sizing();
@@ -802,11 +799,13 @@ fn compute_preliminary(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let font_baseline = tree.get_font_baseline(node);
+    let scrollbar_insets = tree.get_scrollbar_insets(node);
 
     // Define some general constants we will need for the remainder of the algorithm.
     let mut constants = compute_constants(
         tree,
         tree.get_flexbox_container_style(node),
+        scrollbar_insets,
         inputs,
         node_sizing,
         writing_mode,
@@ -1057,6 +1056,7 @@ fn compute_preliminary(
 fn compute_constants(
     tree: &impl LayoutFlexboxContainer,
     style: impl FlexboxContainerStyle,
+    scrollbar_insets: Rect<f32>,
     inputs: LayoutInput,
     node_sizing: ResolvedNodeSizing,
     writing_mode: WritingMode,
@@ -1087,21 +1087,7 @@ fn compute_constants(
     let justify_content = style.justify_content();
     let horizontal_direction = flow.horizontal_direction;
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axis are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar
-    let overflow = style.overflow();
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    let mut content_box_inset = padding + border;
-    content_box_inset.bottom += scrollbar_gutter.y;
-
-    match horizontal_direction {
-        Direction::Ltr => content_box_inset.right += scrollbar_gutter.x,
-        Direction::Rtl => content_box_inset.left += scrollbar_gutter.x,
-    };
+    let content_box_inset = padding + border + scrollbar_insets;
 
     let node_outer_size = node_sizing.outer_size;
     let node_inner_size = node_outer_size.maybe_sub(content_box_inset.sum_axes());
@@ -1164,7 +1150,7 @@ fn compute_constants(
         raw_gap,
         gap,
         content_box_inset,
-        scrollbar_gutter,
+        scrollbar_insets,
         align_items,
         align_content,
         justify_content,
@@ -1196,6 +1182,7 @@ fn generate_anonymous_flex_items(
         .filter_map(|(index, child)| {
             let aspect_ratio = tree.get_resolved_aspect_ratio(child);
             let child_writing_mode = tree.get_writing_mode(child);
+            let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
             let main_axis_is_inline = child_writing_mode.inline_axis() == constants.dir.main_axis();
             let child_style = tree.get_flexbox_child_style(child);
             if child_style.position() == Position::Absolute
@@ -1343,7 +1330,6 @@ fn generate_anonymous_flex_items(
                 constants.wrap_reverse,
             );
             let overflow = child_style.overflow();
-            let scrollbar_width = child_style.scrollbar_width();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
             let is_replaced = child_style.is_compressible_replaced();
@@ -1575,7 +1561,7 @@ fn generate_anonymous_flex_items(
                 baseline_writing_mode,
                 baseline_group,
                 overflow,
-                scrollbar_width,
+                scrollbar_size,
                 flex_grow,
                 flex_shrink,
                 flex_basis: 0.0,
@@ -2616,7 +2602,7 @@ fn determine_container_main_size(
         .or(intrinsic_outer_main_size)
         .unwrap_or(0.0)
         .maybe_clamp(intrinsic_constraints.min, intrinsic_constraints.max)
-        .max(main_content_box_inset - constants.scrollbar_gutter.main(constants.dir));
+        .max(main_content_box_inset - constants.scrollbar_insets.main_axis_sum(constants.dir));
 
     // let outer_main_size = inner_main_size + constants.padding_border.main_axis_sum(constants.dir);
     let inner_main_size = f32_max(outer_main_size - main_content_box_inset, 0.0);
@@ -3514,7 +3500,7 @@ fn determine_container_cross_size(
     let total_cross_axis_gap = sum_axis_gaps(constants.gap.cross(constants.dir), flex_lines.len());
 
     let padding_border_sum = constants.content_box_inset.cross_axis_sum(constants.dir);
-    let cross_scrollbar_gutter = constants.scrollbar_gutter.cross(constants.dir);
+    let cross_scrollbar_gutter = constants.scrollbar_insets.cross_axis_sum(constants.dir);
     let intrinsic_outer_cross_size = intrinsic_line_cross_size + total_cross_axis_gap + padding_border_sum;
     let intrinsic_constraints = if constants.main_axis_is_inline && constants.resolve_content_based_block_size {
         constants.content_based_block_size.resolve(
@@ -3669,10 +3655,7 @@ fn calculate_flex_item(
     item.first_block_baseline = logical_block_offset + inner_first_baseline;
     item.last_block_baseline = logical_block_offset + inner_last_baseline;
 
-    let scrollbar_size = Size {
-        width: if item.overflow.y == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-        height: if item.overflow.x == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-    };
+    let scrollbar_size = item.scrollbar_size;
 
     tree.set_unrounded_layout(
         item.node,
@@ -3810,11 +3793,12 @@ fn final_layout_pass(
     }
 
     content_size.width += if constants.horizontal_direction.is_rtl() {
-        constants.content_box_inset.left - constants.border.left - constants.scrollbar_gutter.x
+        constants.content_box_inset.left - constants.border.left - constants.scrollbar_insets.left
     } else {
-        constants.content_box_inset.right - constants.border.right - constants.scrollbar_gutter.x
+        constants.content_box_inset.right - constants.border.right - constants.scrollbar_insets.right
     };
-    content_size.height += constants.content_box_inset.bottom - constants.border.bottom - constants.scrollbar_gutter.y;
+    content_size.height +=
+        constants.content_box_inset.bottom - constants.border.bottom - constants.scrollbar_insets.bottom;
 
     content_size
 }
@@ -3926,11 +3910,10 @@ fn perform_absolute_layout_on_absolute_children(
     node: NodeId,
     constants: &AlgoConstants,
 ) -> Size<f32> {
-    let area_size = constants.container_size - constants.border.sum_axes() - constants.scrollbar_gutter.into();
+    let area_size = constants.container_size - constants.border.sum_axes() - constants.scrollbar_insets.sum_axes();
     let area_offset = Point {
-        x: constants.border.left
-            + if constants.horizontal_direction.is_rtl() { constants.scrollbar_gutter.x } else { 0.0 },
-        y: constants.border.top,
+        x: constants.border.left + constants.scrollbar_insets.left,
+        y: constants.border.top + constants.scrollbar_insets.top,
     };
     let containing_block = OutOfFlowContainingBlock {
         outer_size: constants.container_size,

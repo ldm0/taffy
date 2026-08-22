@@ -4,7 +4,7 @@ use crate::geometry::{
 };
 use crate::style::{
     AlignItemsKeyword, AlignSelf, AlignmentSafety, AvailableSpace, BoxGenerationMode, BoxSizing, CoreStyle, Dimension,
-    Overflow, Position,
+    Position,
 };
 use crate::tree::{
     AutoSizeBehavior, ChildLayoutInput, Layout, LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId,
@@ -532,6 +532,7 @@ pub(crate) fn layout_out_of_flow_item(
     let percentage_basis = writing_mode.to_logical(area_size).inline_size;
     let aspect_ratio = tree.get_resolved_aspect_ratio(item.node);
     let child_writing_mode = tree.get_writing_mode(item.node);
+    let scrollbar_insets = tree.get_scrollbar_insets(item.node);
     let child_style = tree.get_core_container_style(item.node);
 
     if child_style.box_generation_mode() == BoxGenerationMode::None || child_style.position() != Position::Absolute {
@@ -543,12 +544,7 @@ pub(crate) fn layout_out_of_flow_item(
     let child_writing_direction = WritingDirection::new(child_writing_mode, child_direction);
     let align_self = child_style.align_self();
     let justify_self = child_style.justify_self();
-    let scrollbar_width = child_style.scrollbar_width();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => scrollbar_width,
-        _ => 0.0,
-    });
     let margin =
         child_style.margin().map(|value| value.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
     let padding = child_style.padding().resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis));
@@ -631,9 +627,9 @@ pub(crate) fn layout_out_of_flow_item(
         // ordinary boxes use zero while Grid derives a size from tracks
         // without item contributions. The out-of-flow wrapper cannot
         // choose that fallback before dispatching the child algorithm.
-        contained_outer_size: tree.get_size_containment(item.node).resolve_explicit_outer_size(
-            padding_border_sum + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y },
-        ),
+        contained_outer_size: tree
+            .get_size_containment(item.node)
+            .resolve_explicit_outer_size(padding_border_sum + scrollbar_insets.sum_axes()),
     };
     let mut node_sizing = resolve_node_size_constraints(tree, item.node, sizing_inputs, sizing);
 
@@ -897,10 +893,7 @@ pub(crate) fn layout_out_of_flow_item(
     };
     let location_in_area = child_writing_direction.converter(area_size).to_physical_point(logical_location, final_size);
     let location = Point { x: location_in_area.x + area_offset.x, y: location_in_area.y + area_offset.y };
-    let scrollbar_size = Size {
-        width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
-        height: if overflow.x == Overflow::Scroll { scrollbar_width } else { 0.0 },
-    };
+    let scrollbar_size = scrollbar_insets.sum_axes();
     tree.set_unrounded_layout(
         item.node,
         &Layout {

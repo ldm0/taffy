@@ -41,7 +41,8 @@ pub(crate) mod grid;
 
 pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
-    compute_leaf_layout_with_sizing_context, compute_leaf_layout_with_tree, LeafSizingContext,
+    compute_leaf_layout_with_scrollbar_insets, compute_leaf_layout_with_sizing_context, compute_leaf_layout_with_tree,
+    LeafSizingContext,
 };
 
 pub use replaced::{compute_replaced_layout, ReplacedNaturalSizing, ReplacedSizingContext};
@@ -68,7 +69,7 @@ pub use self::grid::compute_grid_layout;
 pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
 use crate::geometry::{Line, LogicalStaticPosition, Point, Size};
-use crate::style::{AvailableSpace, CoreStyle, Overflow};
+use crate::style::{AvailableSpace, CoreStyle};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt,
     NodeId, OutOfFlowContainingBlock, RoundTree, RunMode, SizingMode, SizingPurpose,
@@ -167,12 +168,9 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         )
         .with_inline_auto_behavior(root_inline_auto_behavior),
     );
+    let scrollbar_size = tree.get_scrollbar_insets(root).sum_axes();
     let style = tree.get_core_container_style(root);
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-    let scrollbar_size = Size {
-        width: if style.overflow().y == Overflow::Scroll { style.scrollbar_width() } else { 0.0 },
-        height: if style.overflow().x == Overflow::Scroll { style.scrollbar_width() } else { 0.0 },
-    };
     let location = Point {
         x: if style.direction().is_rtl() {
             available_space.width.into_option().map_or(0.0, |available_width| available_width - output.size.width)

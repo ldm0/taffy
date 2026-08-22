@@ -1,7 +1,7 @@
 //! Computes size using styles and measure functions
 
-use crate::geometry::Size;
-use crate::style::{AvailableSpace, Overflow, Position, SizeContainment};
+use crate::geometry::{Rect, Size};
+use crate::style::{resolve_scrollbar_insets, AvailableSpace, Position, SizeContainment};
 use crate::tree::RunMode;
 use crate::tree::{LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, SizingMode};
 use crate::util::debug::debug_log;
@@ -78,14 +78,46 @@ where
         tree.get_resolved_aspect_ratio(node_id),
         tree.get_size_containment(node_id),
     );
+    let scrollbar_insets = tree.get_scrollbar_insets(node_id);
     let node_sizing = resolve_leaf_node_sizing(tree, node_id, inputs);
     compute_leaf_layout_with_resolved_node_sizing(
         inputs,
         style,
         sizing_context,
         Some(node_sizing),
+        scrollbar_insets,
         resolve_calc_value,
         |known_dimensions, available_space| measure_function(tree, known_dimensions, available_space),
+    )
+}
+
+/// Compute a leaf node with scrollbar gutters resolved to physical edges.
+///
+/// Embeddings with independent axes or leading-edge gutters use this entry
+/// point; the ordinary leaf entry points derive conventional insets from the
+/// scalar style value.
+pub fn compute_leaf_layout_with_scrollbar_insets<MeasureFunction>(
+    inputs: LayoutInput,
+    style: &impl CoreStyle,
+    scrollbar_insets: Rect<f32>,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    measure_function: MeasureFunction,
+) -> LayoutOutput
+where
+    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
+{
+    compute_leaf_layout_with_resolved_node_sizing(
+        inputs,
+        style,
+        LeafSizingContext::new(
+            style.writing_mode(),
+            ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+            SizeContainment::NONE,
+        ),
+        None,
+        scrollbar_insets,
+        resolve_calc_value,
+        measure_function,
     )
 }
 
@@ -180,6 +212,7 @@ where
         style,
         sizing_context,
         None,
+        resolve_scrollbar_insets(style),
         resolve_calc_value,
         measure_function,
     )
@@ -191,6 +224,7 @@ fn compute_leaf_layout_with_resolved_node_sizing<MeasureFunction>(
     style: &impl CoreStyle,
     sizing_context: LeafSizingContext,
     node_sizing: Option<ResolvedNodeSizing>,
+    scrollbar_insets: Rect<f32>,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
@@ -208,17 +242,7 @@ where
     let pb_sum = padding_border.sum_axes();
     let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axes are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar.
-    let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    // TODO: make side configurable based on the `direction` property
-    let mut content_box_inset = padding_border;
-    content_box_inset.right += scrollbar_gutter.x;
-    content_box_inset.bottom += scrollbar_gutter.y;
+    let content_box_inset = padding_border + scrollbar_insets;
     let contained_outer_size = size_containment.resolve_outer_size(Size::ZERO, content_box_inset.sum_axes());
 
     let raw_size = style.size();

@@ -404,8 +404,8 @@ struct BlockItem {
     automatic_inline_minimum: Option<f32>,
     /// The overflow style of the item
     overflow: Point<Overflow>,
-    /// Physical thickness of the item's scrollbars (if it has scrollbars).
-    scrollbar_width: f32,
+    /// Total physical space occupied by the item's scrollbar gutters.
+    scrollbar_size: Size<f32>,
 
     /// The position style of the item
     position: Position,
@@ -458,6 +458,7 @@ pub fn compute_block_layout(
     let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
     let size_containment = tree.get_size_containment(node_id);
+    let scrollbar_insets = tree.get_scrollbar_insets(node_id);
     let style = tree.get_block_container_style(node_id);
 
     // Pull these out earlier to avoid borrowing issues
@@ -471,11 +472,7 @@ pub fn compute_block_layout(
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border_size = (padding + border).sum_axes();
-    let scrollbar_gutter = overflow.transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    let content_box_inset_size = padding_border_size + Size { width: scrollbar_gutter.x, height: scrollbar_gutter.y };
+    let content_box_inset_size = padding_border_size + scrollbar_insets.sum_axes();
     let contained_outer_size = size_containment.resolve_outer_size(Size::ZERO, content_box_inset_size);
     let contained_outer_block_size = writing_mode.to_logical(contained_outer_size).block_size;
     let box_sizing = style.box_sizing();
@@ -578,6 +575,7 @@ fn compute_inner(
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { available_space, run_mode, block_margins_are_collapsible, table_cell, .. } = inputs;
 
+    let scrollbar_gutter = tree.get_scrollbar_insets(node_id);
     let style = tree.get_block_container_style(node_id);
     let raw_margin = style.margin();
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -585,19 +583,6 @@ fn compute_inner(
     let direction = style.direction();
     let writing_direction = WritingDirection::new(writing_mode, direction);
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axis are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar
-    let scrollbar_gutter = {
-        let offsets = style.overflow().transpose().map(|overflow| match overflow {
-            Overflow::Scroll => style.scrollbar_width(),
-            _ => 0.0,
-        });
-        match direction {
-            Direction::Ltr => Rect { top: 0.0, left: 0.0, right: offsets.x, bottom: offsets.y },
-            Direction::Rtl => Rect { top: 0.0, left: offsets.x, right: 0.0, bottom: offsets.y },
-        }
-    };
     let padding_border = padding + border;
     let content_box_inset = padding_border + scrollbar_gutter;
     let logical_padding = writing_direction.to_logical_box_strut(padding);
@@ -1019,6 +1004,7 @@ fn generate_item_list(
         .filter_map(|child_node_id| {
             let aspect_ratio = tree.get_resolved_aspect_ratio(child_node_id);
             let child_writing_mode = tree.get_writing_mode(child_node_id);
+            let scrollbar_size = tree.get_scrollbar_insets(child_node_id).sum_axes();
             let child_style = tree.get_block_child_style(child_node_id);
             if child_style.box_generation_mode() == BoxGenerationMode::None {
                 return None;
@@ -1067,7 +1053,6 @@ fn generate_item_list(
                 .maybe_add(box_sizing_adjustment);
             let position = child_style.position();
             let overflow = child_style.overflow();
-            let scrollbar_width = child_style.scrollbar_width();
             let inset = child_style.inset();
             let margin = child_style.margin();
 
@@ -1279,7 +1264,7 @@ fn generate_item_list(
                 max_size,
                 automatic_inline_minimum,
                 overflow,
-                scrollbar_width,
+                scrollbar_size,
                 position,
                 inset,
                 margin,
@@ -1577,10 +1562,7 @@ fn perform_final_layout_on_in_flow_children(
                 .map(|size| AvailableSpace::Definite(f32_max(0.0, size - stretch_block_margin_sum)))
                 .unwrap_or(AvailableSpace::MaxContent);
 
-            let scrollbar_size = Size {
-                width: if item.overflow.y == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-                height: if item.overflow.x == Overflow::Scroll { item.scrollbar_width } else { 0.0 },
-            };
+            let scrollbar_size = item.scrollbar_size;
 
             // Handle floated boxes
             #[cfg(feature = "float_layout")]

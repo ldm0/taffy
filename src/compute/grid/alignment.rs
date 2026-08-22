@@ -14,8 +14,7 @@ use crate::geometry::{
     Rect, Size, StaticPositionEdge,
 };
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
-    Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
 };
 use crate::tree::{AutoSizeBehavior, ChildLayoutInput, Layout, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::sys::f32_max;
@@ -152,10 +151,10 @@ pub(super) fn align_and_position_item(
 
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let item_writing_mode = tree.get_writing_mode(node);
+    let scrollbar_size = tree.get_scrollbar_insets(node).sum_axes();
     let style = tree.get_grid_child_style(node);
 
     let overflow = style.overflow();
-    let scrollbar_width = style.scrollbar_width();
     let is_compressible_replaced = style.is_compressible_replaced();
     let item_direction = style.direction();
     let inline_self = GridItemStyle::justify_self(&style).map(|align| {
@@ -272,10 +271,6 @@ pub(super) fn align_and_position_item(
     .with_inline_auto_behavior(inline_auto_behavior)
     .with_block_auto_behavior(block_auto_behavior)
     .into_layout();
-    let scrollbar_size = Size {
-        width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
-        height: if overflow.x == Overflow::Scroll { scrollbar_width } else { 0.0 },
-    };
     let contained_outer_size =
         tree.get_size_containment(node).resolve_explicit_outer_size(padding_border_size + scrollbar_size);
     let node_sizing = resolve_node_size_constraints(
