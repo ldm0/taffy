@@ -18,5 +18,6 @@ mod hand_written {
     mod rounding;
     mod safe_alignment;
     mod scroll_size;
+    mod scrollbar_insets;
     mod serde;
 }

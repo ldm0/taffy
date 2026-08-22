@@ -2,15 +2,15 @@
 //! <https://www.w3.org/TR/css-grid-1>
 use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
-use crate::style::{AlignItems, AlignSelf, AvailableSpace, Overflow, Position};
+use crate::style::{AlignItems, AlignSelf, AvailableSpace, Position};
 use crate::tree::{Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode};
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{
-    style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, Direction, GridContainerStyle,
-    GridItemStyle, JustifyContent, LayoutGridContainer, RequestedAxis,
+    style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
+    JustifyContent, LayoutGridContainer, RequestedAxis,
 };
 use alignment::{align_and_position_item, align_tracks};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
@@ -50,6 +50,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
+    let scrollbar_insets = tree.get_scrollbar_insets(node);
     let style = tree.get_grid_container_style(node);
     let direction = style.direction();
 
@@ -94,20 +95,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let applied_aspect_ratio =
         run_mode == RunMode::ComputeSize && known_dimensions.width.is_none() && preferred_inline_from_aspect_ratio;
 
-    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
-    // However, the axis are switched (transposed) because a node that scrolls vertically needs
-    // *horizontal* space to be reserved for a scrollbar
-    let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
-        Overflow::Scroll => style.scrollbar_width(),
-        _ => 0.0,
-    });
-    let mut content_box_inset = padding_border;
-    content_box_inset.bottom += scrollbar_gutter.y;
-
-    match direction {
-        Direction::Ltr => content_box_inset.right += scrollbar_gutter.x,
-        Direction::Rtl => content_box_inset.left += scrollbar_gutter.x,
-    };
+    let content_box_inset = padding_border + scrollbar_insets;
 
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
     let justify_content = style.justify_content().unwrap_or(JustifyContent::STRETCH);
@@ -591,12 +579,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Align columns
     let inline_size_without_scrollbar = f32_max(container_border_box.width - padding_border_size.width, 0.0);
-    let inline_scrollbar_gutter_for_alignment = f32_min(scrollbar_gutter.x, inline_size_without_scrollbar);
+    let inline_scrollbar_scale = {
+        let total = scrollbar_insets.horizontal_axis_sum();
+        if total > 0.0 {
+            f32_min(1.0, inline_size_without_scrollbar / total)
+        } else {
+            1.0
+        }
+    };
     align_tracks(
         container_content_box.get(AbstractAxis::Inline),
         Line {
-            start: padding.left + if direction.is_rtl() { inline_scrollbar_gutter_for_alignment } else { 0.0 },
-            end: padding.right + if direction.is_rtl() { 0.0 } else { inline_scrollbar_gutter_for_alignment },
+            start: padding.left + scrollbar_insets.left * inline_scrollbar_scale,
+            end: padding.right + scrollbar_insets.right * inline_scrollbar_scale,
         },
         Line { start: border.left, end: border.right },
         &mut columns,
@@ -604,9 +599,21 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         direction.is_rtl(),
     );
     // Align rows
+    let block_size_without_scrollbar = f32_max(container_border_box.height - padding_border_size.height, 0.0);
+    let block_scrollbar_scale = {
+        let total = scrollbar_insets.vertical_axis_sum();
+        if total > 0.0 {
+            f32_min(1.0, block_size_without_scrollbar / total)
+        } else {
+            1.0
+        }
+    };
     align_tracks(
         container_content_box.get(AbstractAxis::Block),
-        Line { start: padding.top, end: padding.bottom },
+        Line {
+            start: padding.top + scrollbar_insets.top * block_scrollbar_scale,
+            end: padding.bottom + scrollbar_insets.bottom * block_scrollbar_scale,
+        },
         Line { start: border.top, end: border.bottom },
         &mut rows,
         align_content,
@@ -732,25 +739,22 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             }
 
             let grid_area = Rect {
-                top: maybe_row_indexes.start.map(|index| line_as_start_edge(&rows, index)).unwrap_or(border.top),
+                top: maybe_row_indexes
+                    .start
+                    .map(|index| line_as_start_edge(&rows, index))
+                    .unwrap_or(border.top + scrollbar_insets.top),
                 bottom: maybe_row_indexes
                     .end
                     .map(|index| line_as_end_edge(&rows, index))
-                    .unwrap_or(container_border_box.height - border.bottom - scrollbar_gutter.y),
-                left: maybe_col_indexes.start.map(|index| line_as_start_edge(&columns, index)).unwrap_or_else(|| {
-                    if direction.is_rtl() {
-                        border.left + scrollbar_gutter.x
-                    } else {
-                        border.left
-                    }
-                }),
-                right: maybe_col_indexes.end.map(|index| line_as_end_edge(&columns, index)).unwrap_or_else(|| {
-                    if direction.is_rtl() {
-                        container_border_box.width - border.right
-                    } else {
-                        container_border_box.width - border.right - scrollbar_gutter.x
-                    }
-                }),
+                    .unwrap_or(container_border_box.height - border.bottom - scrollbar_insets.bottom),
+                left: maybe_col_indexes
+                    .start
+                    .map(|index| line_as_start_edge(&columns, index))
+                    .unwrap_or(border.left + scrollbar_insets.left),
+                right: maybe_col_indexes
+                    .end
+                    .map(|index| line_as_end_edge(&columns, index))
+                    .unwrap_or(container_border_box.width - border.right - scrollbar_insets.right),
             };
             drop(child_style);
 
