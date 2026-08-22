@@ -1,7 +1,32 @@
 //! Generic CSS content size code that is shared between all CSS algorithms.
-use crate::geometry::{Point, Size};
+use crate::geometry::{Point, Rect, Size};
 use crate::style::Overflow;
 use crate::util::sys::{f32_max, f32_min};
+use crate::Direction;
+
+/// Convert a child's border-box location from the container's border-box
+/// coordinate space into the coordinate space used by `Layout::content_size`.
+///
+/// Scrollbar gutters sit between the border and the scrollable padding box. A
+/// leading gutter therefore shifts child layout without contributing to the
+/// scrollable overflow extent. Horizontal coordinates are mirrored for RTL so
+/// that the logical start edge remains the content-size origin.
+#[inline(always)]
+pub(crate) fn content_size_contribution_location(
+    location: Point<f32>,
+    size: Size<f32>,
+    container_width: f32,
+    border: Rect<f32>,
+    scrollbar_insets: Rect<f32>,
+    direction: Direction,
+) -> Point<f32> {
+    let x = if direction.is_rtl() {
+        container_width - (location.x + size.width) - border.right - scrollbar_insets.right
+    } else {
+        location.x - border.left - scrollbar_insets.left
+    };
+    Point { x, y: location.y - border.top - scrollbar_insets.top }
+}
 
 #[inline(always)]
 /// Determine how much width/height a given node contributes to it's parent's content size
