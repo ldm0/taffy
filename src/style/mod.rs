@@ -471,15 +471,49 @@ pub enum BoxSizing {
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct ResolvedAspectRatio {
     /// Width divided by height, or `None` when no preferred ratio applies.
-    pub ratio: Option<f32>,
+    ratio: Option<f32>,
     /// The box whose width and height must satisfy `ratio`.
-    pub box_sizing: BoxSizing,
+    sizing_box: BoxSizing,
 }
 
 impl ResolvedAspectRatio {
+    /// Creates a preferred aspect ratio from width divided by height.
+    ///
+    /// Invalid, non-finite, and non-positive ratios are represented by
+    /// [`Self::none`] rather than stored in this type.
+    pub fn new(ratio: f32, sizing_box: BoxSizing) -> Option<Self> {
+        (ratio.is_finite() && ratio > 0.0).then_some(Self { ratio: Some(ratio), sizing_box })
+    }
+
+    /// Creates a disabled preferred aspect ratio.
+    pub const fn none(sizing_box: BoxSizing) -> Self {
+        Self { ratio: None, sizing_box }
+    }
+
+    /// Resolves an optional numeric ratio while enforcing this type's validity
+    /// invariant at the style boundary.
+    pub fn from_option(ratio: Option<f32>, sizing_box: BoxSizing) -> Self {
+        ratio.and_then(|ratio| Self::new(ratio, sizing_box)).unwrap_or_else(|| Self::none(sizing_box))
+    }
+
+    /// Returns width divided by height when a preferred ratio applies.
+    pub const fn ratio(self) -> Option<f32> {
+        self.ratio
+    }
+
+    /// Returns whether a preferred ratio applies.
+    pub const fn has_ratio(self) -> bool {
+        self.ratio.is_some()
+    }
+
+    /// Returns the box whose width and height satisfy the ratio.
+    pub const fn sizing_box(self) -> BoxSizing {
+        self.sizing_box
+    }
+
     /// Removes the numeric ratio while retaining its sizing-box metadata.
     pub const fn disabled(self) -> Self {
-        Self { ratio: None, ..self }
+        Self::none(self.sizing_box)
     }
 }
 
@@ -1379,9 +1413,26 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
 mod tests {
     use std::sync::Arc;
 
-    use super::Style;
+    use super::{BoxSizing, ResolvedAspectRatio, Style};
     use crate::sys::DefaultCheapStr;
     use crate::{geometry::*, style_helpers::TaffyAuto as _};
+
+    #[test]
+    fn resolved_aspect_ratio_rejects_invalid_numeric_states() {
+        for ratio in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(ResolvedAspectRatio::new(ratio, BoxSizing::BorderBox), None);
+        }
+
+        let ratio = ResolvedAspectRatio::new(2.0, BoxSizing::ContentBox).expect("positive finite ratio");
+        assert_eq!(ratio.ratio(), Some(2.0));
+        assert_eq!(ratio.sizing_box(), BoxSizing::ContentBox);
+        assert!(ratio.has_ratio());
+
+        let disabled = ratio.disabled();
+        assert_eq!(disabled.ratio(), None);
+        assert_eq!(disabled.sizing_box(), BoxSizing::ContentBox);
+        assert!(!disabled.has_ratio());
+    }
 
     #[test]
     fn defaults_match() {

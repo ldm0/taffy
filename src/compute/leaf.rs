@@ -111,7 +111,7 @@ where
         style,
         LeafSizingContext::new(
             style.writing_mode(),
-            ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+            ResolvedAspectRatio::from_option(style.aspect_ratio(), style.box_sizing()),
             SizeContainment::NONE,
         ),
         None,
@@ -134,7 +134,7 @@ where
     compute_leaf_layout_with_aspect_ratio(
         inputs,
         style,
-        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+        ResolvedAspectRatio::from_option(style.aspect_ratio(), style.box_sizing()),
         resolve_calc_value,
         measure_function,
     )

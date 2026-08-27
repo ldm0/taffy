@@ -297,7 +297,7 @@ fn node_block_constraint_dependency(
     }
 
     let writing_mode = tree.get_writing_mode(node);
-    let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
+    let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).has_ratio();
     let style_depends_on_parent_block_size = {
         let style = tree.get_core_container_style(node);
         let size = writing_mode.to_logical(style.size());

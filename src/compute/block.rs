@@ -1041,7 +1041,7 @@ fn generate_item_list(
                 [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
                     .into_iter()
                     .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
-            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.has_ratio();
             let mut automatic_inline_minimum = None;
             let mut intrinsic_context = None;
             let mut cyclic_replaced_inline_contribution = false;

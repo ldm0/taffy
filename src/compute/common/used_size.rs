@@ -208,7 +208,7 @@ mod tests {
             min_size: Size::NONE,
             max_size,
             minimum_border_box_size: Size::ZERO,
-            aspect_ratio: ResolvedAspectRatio { ratio, box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(ratio, BoxSizing::BorderBox),
         })
     }
 

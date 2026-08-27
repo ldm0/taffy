@@ -218,7 +218,7 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// content box even when authored sizes use the border box.
     fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> ResolvedAspectRatio {
         let style = self.get_core_container_style(node_id);
-        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() }
+        ResolvedAspectRatio::from_option(style.aspect_ratio(), style.box_sizing())
     }
 
     /// Returns the node's used size-containment state.

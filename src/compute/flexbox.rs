@@ -1230,7 +1230,7 @@ fn generate_anonymous_flex_items(
                 [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
                     .into_iter()
                     .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
-            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.has_ratio();
             let flex_basis = child_style.flex_basis();
             let raw_margin = child_style.margin();
             let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -1807,7 +1807,7 @@ fn determine_flex_base_size(
             && content_ratio_size.is_none()
             && !child.main_axis_is_inline
             && !child.automatic_minimum.is_replaced
-            && aspect_ratio.ratio.is_some()
+            && aspect_ratio.has_ratio()
         {
             // Main-axis min/max constraints are ignored while resolving the
             // flex base size, so do not let constraints transferred out of the

@@ -189,7 +189,7 @@ impl GridItem {
             size: style.size(),
             min_size: style.min_size(),
             max_size: style.max_size(),
-            aspect_ratio: ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+            aspect_ratio: ResolvedAspectRatio::from_option(style.aspect_ratio(), style.box_sizing()),
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),

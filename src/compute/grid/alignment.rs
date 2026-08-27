@@ -297,7 +297,7 @@ pub(super) fn align_and_position_item(
     let item_inline_axis = item_writing_mode.inline_axis();
     if inherent_size.get_abs(item_inline_axis).is_none()
         && raw_logical_size.inline_size.is_auto()
-        && inline_auto_behavior.is_content_based(aspect_ratio.ratio.is_some())
+        && inline_auto_behavior.is_content_based(aspect_ratio.has_ratio())
     {
         let fitted_inline_size = fit_content_inline_size(
             tree,
@@ -328,9 +328,7 @@ pub(super) fn align_and_position_item(
     let mut definite_axes = node_sizing.definite_size.map(|size| size.is_some());
 
     let mut size_before_ratio = inherent_size;
-    if size_before_ratio.width.is_none()
-        && !physical_auto_size.horizontal.is_content_based(aspect_ratio.ratio.is_some())
-    {
+    if size_before_ratio.width.is_none() && !physical_auto_size.horizontal.is_content_based(aspect_ratio.has_ratio()) {
         size_before_ratio.width = Some(grid_area_minus_item_margins_size.width);
         definite_axes.width = true;
     }
@@ -387,8 +385,7 @@ pub(super) fn align_and_position_item(
         &mut max_size,
     );
     let mut size_before_ratio = resolved_size;
-    if size_before_ratio.height.is_none() && !physical_auto_size.vertical.is_content_based(aspect_ratio.ratio.is_some())
-    {
+    if size_before_ratio.height.is_none() && !physical_auto_size.vertical.is_content_based(aspect_ratio.has_ratio()) {
         size_before_ratio.height = Some(grid_area_minus_item_margins_size.height);
         definite_axes.height = true;
     }

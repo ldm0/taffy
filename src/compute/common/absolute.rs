@@ -644,7 +644,7 @@ pub(crate) fn layout_out_of_flow_item(
             raw_logical_size,
             raw_logical_min_size,
             raw_logical_max_size,
-            aspect_ratio.ratio.is_some(),
+            aspect_ratio.has_ratio(),
         )
     {
         // Match Blink's lazy OOF dependency ordering: when inline fit-content
@@ -703,7 +703,7 @@ pub(crate) fn layout_out_of_flow_item(
         // stretch is parent-owned state, not a natural-size measurement.
         let mut logical_known_dimensions = child_writing_mode.to_logical(known_dimensions);
         let logical_measured_size = child_writing_mode.to_logical(measured_size);
-        let has_preferred_aspect_ratio = aspect_ratio.ratio.is_some();
+        let has_preferred_aspect_ratio = aspect_ratio.has_ratio();
         if inline_auto_behavior.is_content_based(has_preferred_aspect_ratio) {
             logical_known_dimensions.inline_size =
                 logical_known_dimensions.inline_size.or(Some(logical_measured_size.inline_size));
@@ -794,8 +794,7 @@ pub(crate) fn layout_out_of_flow_item(
         &mut max_size,
     );
 
-    if known_dimensions.get_abs(block_axis).is_none()
-        && !block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some())
+    if known_dimensions.get_abs(block_axis).is_none() && !block_auto_behavior.is_content_based(aspect_ratio.has_ratio())
     {
         let stretched_block_size = inset_modified_size.get_abs(block_axis);
         match block_axis {

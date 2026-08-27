@@ -202,7 +202,7 @@ pub fn compute_replaced_layout(
     // This is the same boundary as Blink's ReplacedSizeMode axis modes.
     let intrinsic_basis = content_known.or(preferred_size);
     let intrinsic_fallback = natural_size.or_else(|| {
-        context.aspect_ratio.ratio.map(|_| {
+        context.aspect_ratio.ratio().map(|_| {
             ratio_only_stretch_size(
                 available_space,
                 context.writing_mode,
@@ -300,7 +300,7 @@ pub fn compute_replaced_layout(
     };
     let size = unclamped.map(|value| value.max(0.0));
 
-    if context.aspect_ratio.ratio.is_none() {
+    if !context.aspect_ratio.has_ratio() {
         return replaced_output(size.maybe_clamp(min_size, max_size) + padding_border_sum);
     }
 
@@ -404,8 +404,8 @@ fn constrain_natural_replaced_size(
         (ConstraintViolation::Maximum, ConstraintViolation::Maximum) => {
             let width = max_size.width.expect("maximum width violation has a bound");
             let height = max_size.height.expect("maximum height violation has a bound");
-            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.box_sizing)
-                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.box_sizing)
+            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.sizing_box())
+                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.sizing_box())
             {
                 Size {
                     width,
@@ -425,8 +425,8 @@ fn constrain_natural_replaced_size(
         (ConstraintViolation::Minimum, ConstraintViolation::Minimum) => {
             let width = min_size.width.expect("minimum width violation has a bound");
             let height = min_size.height.expect("minimum height violation has a bound");
-            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.box_sizing)
-                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.box_sizing)
+            if ratio_basis_scale(width, size.width, padding_border.width, aspect_ratio.sizing_box())
+                <= ratio_basis_scale(height, size.height, padding_border.height, aspect_ratio.sizing_box())
             {
                 Size {
                     width: content_width_from_height(height, aspect_ratio, padding_border)
@@ -466,7 +466,7 @@ fn normalized_natural_size(
     writing_mode: WritingMode,
     padding_border: Size<f32>,
 ) -> Option<Size<f32>> {
-    if !aspect_ratio.ratio.is_some_and(|ratio| ratio.is_finite() && ratio > 0.0) {
+    if !aspect_ratio.has_ratio() {
         return Some(dimensions.unwrap_or(default_object_size));
     }
 
@@ -630,10 +630,10 @@ mod tests {
             inputs(Size::NONE),
             style,
             context(
-                ResolvedAspectRatio {
-                    ratio: style.aspect_ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0).or(Some(1.0)),
-                    box_sizing: style.box_sizing,
-                },
+                ResolvedAspectRatio::from_option(
+                    style.aspect_ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0).or(Some(1.0)),
+                    style.box_sizing,
+                ),
                 SizeContainment::NONE,
             ),
             |_, _| 0.0,
@@ -656,7 +656,7 @@ mod tests {
             compute_replaced_layout(
                 input,
                 style,
-                context(ResolvedAspectRatio { ratio: None, box_sizing: style.box_sizing }, SizeContainment::NONE),
+                context(ResolvedAspectRatio::none(style.box_sizing), SizeContainment::NONE),
                 |_, _| 0.0,
             )
             .size
@@ -674,7 +674,7 @@ mod tests {
             compute_replaced_layout(
                 inputs(Size::NONE),
                 &style,
-                context(ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::BorderBox }, containment),
+                context(ResolvedAspectRatio::none(BoxSizing::BorderBox), containment),
                 |_, _| 0.0,
             )
             .size
@@ -702,7 +702,7 @@ mod tests {
                 inputs(Size::NONE),
                 &explicit_width,
                 context(
-                    ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::BorderBox },
+                    ResolvedAspectRatio::none(BoxSizing::BorderBox),
                     SizeContainment::new(
                         Size { width: true, height: true },
                         Size { width: Some(50.0), height: Some(100.0) },
@@ -733,7 +733,7 @@ mod tests {
             compute_replaced_layout(
                 inputs(Size::NONE),
                 &style,
-                context(ResolvedAspectRatio { ratio: Some(2.0), box_sizing }, SizeContainment::NONE),
+                context(ResolvedAspectRatio::from_option(Some(2.0), box_sizing), SizeContainment::NONE),
                 |_, _| 0.0,
             )
             .size
@@ -803,7 +803,7 @@ mod tests {
                 &style,
                 ReplacedSizingContext::new(
                     WritingMode::HorizontalTb,
-                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::fixed(Size { width: 120.0, height: 60.0 }),
                 ),
@@ -896,7 +896,7 @@ mod tests {
             };
             let context = ReplacedSizingContext::new(
                 WritingMode::HorizontalTb,
-                ResolvedAspectRatio { ratio: Some(ratio), box_sizing: BoxSizing::BorderBox },
+                ResolvedAspectRatio::from_option(Some(ratio), BoxSizing::BorderBox),
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::fixed(Size { width: 20.0, height: 50.0 }),
             );
@@ -927,7 +927,7 @@ mod tests {
             &style,
             ReplacedSizingContext::new(
                 WritingMode::HorizontalTb,
-                ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+                ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox),
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::new(
                     Size { width: Some(50.0), height: None },
@@ -949,7 +949,7 @@ mod tests {
             &style,
             ReplacedSizingContext::new(
                 WritingMode::HorizontalTb,
-                ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::ContentBox },
+                ResolvedAspectRatio::none(BoxSizing::ContentBox),
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::new(
                     Size { width: Some(50.0), height: None },
@@ -972,7 +972,7 @@ mod tests {
                 &style,
                 ReplacedSizingContext::new(
                     writing_mode,
-                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::new(
                         Size { width: Some(50.0), height: Some(80.0) },
@@ -999,7 +999,7 @@ mod tests {
                 &style,
                 ReplacedSizingContext::new(
                     writing_mode,
-                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+                    ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
                 ),
@@ -1045,7 +1045,7 @@ mod tests {
             &style,
             ReplacedSizingContext::new(
                 WritingMode::VerticalRl,
-                ResolvedAspectRatio { ratio: None, box_sizing: BoxSizing::ContentBox },
+                ResolvedAspectRatio::none(BoxSizing::ContentBox),
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
             ),
@@ -1110,7 +1110,7 @@ mod tests {
                 style,
                 ReplacedSizingContext::new(
                     WritingMode::HorizontalTb,
-                    ResolvedAspectRatio { ratio, box_sizing: BoxSizing::ContentBox },
+                    ResolvedAspectRatio::from_option(ratio, BoxSizing::ContentBox),
                     SizeContainment::NONE,
                     ReplacedNaturalSizing::fixed(Size { width: 50.0, height: 50.0 }),
                 ),
@@ -1160,7 +1160,7 @@ mod tests {
             &style,
             ReplacedSizingContext::new(
                 WritingMode::HorizontalTb,
-                ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+                ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
                 SizeContainment::NONE,
                 ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
             ),
@@ -1186,10 +1186,7 @@ mod tests {
             compute_replaced_layout(
                 input,
                 &style,
-                context(
-                    ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
-                    SizeContainment::NONE,
-                ),
+                context(ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox), SizeContainment::NONE,),
                 |_, _| 0.0,
             )
             .size,
@@ -1214,7 +1211,7 @@ mod tests {
         };
         let context = ReplacedSizingContext::new(
             WritingMode::HorizontalTb,
-            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
         );
@@ -1252,7 +1249,7 @@ mod tests {
         };
         let context = ReplacedSizingContext::new(
             WritingMode::HorizontalTb,
-            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
         );
@@ -1281,7 +1278,7 @@ mod tests {
     fn percentage_dependent_min_content_honors_minimum_and_maximum_constraints() {
         let context = ReplacedSizingContext::new(
             WritingMode::HorizontalTb,
-            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
         );
@@ -1327,7 +1324,7 @@ mod tests {
         };
         let context = ReplacedSizingContext::new(
             WritingMode::VerticalRl,
-            ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
         );
@@ -1356,7 +1353,7 @@ mod tests {
 
         let natural_width = ReplacedSizingContext::new(
             WritingMode::HorizontalTb,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size { width: Some(100.0), height: None }, Size { width: 300.0, height: 150.0 }),
         );
@@ -1372,7 +1369,7 @@ mod tests {
         };
         let ratio_only = ReplacedSizingContext::new(
             WritingMode::HorizontalTb,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
             SizeContainment::NONE,
             ReplacedNaturalSizing::new(Size::NONE, Size { width: 300.0, height: 150.0 }),
         );
@@ -1396,10 +1393,7 @@ mod tests {
             compute_replaced_layout(
                 input,
                 &style,
-                context(
-                    ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
-                    SizeContainment::NONE,
-                ),
+                context(ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox), SizeContainment::NONE,),
                 |_, _| 0.0,
             )
             .size,

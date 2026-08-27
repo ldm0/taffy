@@ -712,7 +712,7 @@ impl ContentBasedBlockSize {
         is_scroll_container: bool,
         intrinsic_border_box_override: Option<f32>,
     ) -> Self {
-        let auto_size_is_content_based = block_auto_behavior.is_content_based(aspect_ratio.ratio.is_some());
+        let auto_size_is_content_based = block_auto_behavior.is_content_based(aspect_ratio.has_ratio());
         let intrinsic_block_size_floor = if properties.preferred.is_auto() {
             block_auto_behavior.intrinsic_size_floor(available_block_space)
         } else {
@@ -799,7 +799,7 @@ impl ContentBasedBlockSize {
     /// Whether content-based block-axis properties need to be resolved.
     #[inline(always)]
     pub(crate) fn requires_resolution(self) -> bool {
-        let has_preferred_aspect_ratio = self.aspect_ratio.ratio.is_some();
+        let has_preferred_aspect_ratio = self.aspect_ratio.has_ratio();
         self.properties.uses_intrinsic_size()
             || self.intrinsic_block_size_floor.is_some()
             || self
@@ -823,8 +823,7 @@ impl ContentBasedBlockSize {
     /// `IsInitialBlockSizeIndefinite()` additional-pass decision.
     #[inline(always)]
     pub(crate) fn resolves_auto_size_from_ratio(self) -> bool {
-        self.properties
-            .resolves_auto_size_from_ratio(self.aspect_ratio.ratio.is_some(), self.auto_size_is_content_based)
+        self.properties.resolves_auto_size_from_ratio(self.aspect_ratio.has_ratio(), self.auto_size_is_content_based)
     }
 
     /// Whether this pass needs the formatting context's real intrinsic block
@@ -836,7 +835,7 @@ impl ContentBasedBlockSize {
     /// `SizeType::kIntrinsic` callbacks in `ComputeBlockSizeForFragment`.
     #[inline(always)]
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
-        let has_preferred_aspect_ratio = self.aspect_ratio.ratio.is_some();
+        let has_preferred_aspect_ratio = self.aspect_ratio.has_ratio();
         self.intrinsic_border_box_override.is_none()
             && (self.properties.uses_intrinsic_size()
                 || self.intrinsic_block_size_floor.is_some()
@@ -1490,7 +1489,7 @@ mod initial_geometry_tests {
 
     #[test]
     fn preferred_ratio_content_override_uses_the_opposite_physical_axis() {
-        let ratio = ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox };
+        let ratio = ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox);
 
         assert_eq!(
             intrinsic_content_size_from_initial_geometry(

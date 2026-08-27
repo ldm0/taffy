@@ -479,7 +479,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(4.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(4.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn explicit_and_implicit_auto_stretch_preserve_ratio_order_per_logical_axis() {
-        let ratio = ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox };
+        let ratio = ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox);
         let auto_width = Size { width: true, height: false };
 
         let implicit_inline = apply_preferred_aspect_ratio(
@@ -551,7 +551,7 @@ mod tests {
                 inline_auto_behavior: behavior,
                 block_auto_behavior: behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+                aspect_ratio: ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
                 padding_border: Size::ZERO,
             });
 
@@ -574,7 +574,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::StretchExplicit,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -596,7 +596,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::StretchExplicit,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -615,7 +615,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
             padding_border: Size { width: 40.0, height: 40.0 },
         });
 
@@ -634,7 +634,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(0.5), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -657,7 +657,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -679,7 +679,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -699,7 +699,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -721,7 +721,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(1.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -742,7 +742,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Ignore,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 
@@ -786,7 +786,7 @@ mod tests {
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio: ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
+            aspect_ratio: ResolvedAspectRatio::from_option(Some(0.5), BoxSizing::BorderBox),
             padding_border: Size::ZERO,
         });
 

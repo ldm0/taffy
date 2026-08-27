@@ -945,7 +945,7 @@ impl Size<Option<f32>> {
         source_box_sizing: BoxSizing,
         padding_border: Size<f32>,
     ) -> Size<Option<f32>> {
-        let Some(ratio) = aspect_ratio.ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0) else {
+        let Some(ratio) = aspect_ratio.ratio() else {
             return self;
         };
         let convert = |value: f32, inset: f32, from: BoxSizing, to: BoxSizing| match (from, to) {
@@ -955,17 +955,17 @@ impl Size<Option<f32>> {
         };
         match (self.width, self.height) {
             (Some(width), None) => {
-                let ratio_width = convert(width, padding_border.width, source_box_sizing, aspect_ratio.box_sizing);
+                let ratio_width = convert(width, padding_border.width, source_box_sizing, aspect_ratio.sizing_box());
                 let ratio_height = ratio_width / ratio;
                 let source_height =
-                    convert(ratio_height, padding_border.height, aspect_ratio.box_sizing, source_box_sizing);
+                    convert(ratio_height, padding_border.height, aspect_ratio.sizing_box(), source_box_sizing);
                 Size { width: Some(width), height: source_height.is_finite().then_some(source_height.max(0.0)) }
             }
             (None, Some(height)) => {
-                let ratio_height = convert(height, padding_border.height, source_box_sizing, aspect_ratio.box_sizing);
+                let ratio_height = convert(height, padding_border.height, source_box_sizing, aspect_ratio.sizing_box());
                 let ratio_width = ratio_height * ratio;
                 let source_width =
-                    convert(ratio_width, padding_border.width, aspect_ratio.box_sizing, source_box_sizing);
+                    convert(ratio_width, padding_border.width, aspect_ratio.sizing_box(), source_box_sizing);
                 Size { width: source_width.is_finite().then_some(source_width.max(0.0)), height: Some(height) }
             }
             _ => self,
@@ -984,12 +984,12 @@ mod aspect_ratio_tests {
         let padding_border = Size { width: 20.0, height: 20.0 };
 
         let content_box_ratio = border_box_width.maybe_apply_aspect_ratio_with_box_sizing(
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::ContentBox },
+            ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::ContentBox),
             BoxSizing::BorderBox,
             padding_border,
         );
         let border_box_ratio = border_box_width.maybe_apply_aspect_ratio_with_box_sizing(
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            ResolvedAspectRatio::from_option(Some(2.0), BoxSizing::BorderBox),
             BoxSizing::BorderBox,
             padding_border,
         );
