@@ -787,8 +787,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     tree.set_detailed_grid_info(
         node,
         DetailedGridInfo {
-            rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
-            columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
+            rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(
+                final_row_counts,
+                row_auto_repetition_count,
+                rows,
+            ),
+            columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(
+                final_col_counts,
+                col_auto_repetition_count,
+                columns,
+            ),
             items: items.iter().map(DetailedGridItemsInfo::from_grid_item).collect(),
         },
     );
@@ -938,6 +946,13 @@ pub struct DetailedGridTracksInfo {
     pub explicit_tracks: u16,
     /// Number of trailing implicit grid tracks
     pub positive_implicit_tracks: u16,
+    /// Number of expansions of the axis' `repeat(auto-fill, ...)` or
+    /// `repeat(auto-fit, ...)` component.
+    ///
+    /// This is retained separately because `explicit_tracks` can also be
+    /// enlarged by `grid-template-areas`, so the final track count cannot be
+    /// used to reconstruct the auto-repeat expansion unambiguously.
+    pub auto_repetitions: u16,
 
     /// Gutters between tracks
     pub gutters: Vec<f32>,
@@ -970,11 +985,16 @@ impl DetailedGridTracksInfo {
     }
 
     /// Construct DetailedGridTracksInfo from TrackCounts and GridTracks
-    fn from_grid_tracks_and_track_count(track_count: TrackCounts, grid_tracks: Vec<GridTrack>) -> Self {
+    fn from_grid_tracks_and_track_count(
+        track_count: TrackCounts,
+        auto_repetitions: u16,
+        grid_tracks: Vec<GridTrack>,
+    ) -> Self {
         DetailedGridTracksInfo {
             negative_implicit_tracks: track_count.negative_implicit,
             explicit_tracks: track_count.explicit,
             positive_implicit_tracks: track_count.positive_implicit,
+            auto_repetitions,
             gutters: DetailedGridTracksInfo::gutters_from_grid_track_layout(&grid_tracks),
             sizes: DetailedGridTracksInfo::sizes_from_grid_track_layout(&grid_tracks),
         }
