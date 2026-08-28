@@ -48,3 +48,37 @@ fn resolved_aspect_ratio_sizing_box_flows_through_block_flex_and_grid_items() {
         assert_eq!(tree.layout(2).size, Size { width: 100.0, height: 50.0 }, "{display:?} border-box ratio");
     }
 }
+
+#[test]
+fn authored_maximum_caps_a_minimum_transferred_through_aspect_ratio() {
+    let child = || {
+        TestNode::leaf(
+            Style {
+                size: Size { width: length(50.0), height: auto() },
+                min_size: Size { width: length(100.0), height: auto() },
+                max_size: Size { width: auto(), height: length(100.0) },
+                aspect_ratio: Some(0.5),
+                align_self: Some(AlignSelf::FLEX_START),
+                justify_self: Some(AlignSelf::FLEX_START),
+                ..Style::default()
+            },
+            Size::ZERO,
+        )
+    };
+
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let root = TestNode::container(
+            display,
+            Style { size: Size { width: length(400.0), height: length(400.0) }, ..Style::default() },
+            Rect::ZERO,
+        );
+        let mut tree = TestTree::new(root, child());
+        tree.compute(Size::MAX_CONTENT);
+
+        assert_eq!(
+            tree.layout(1).size,
+            Size { width: 100.0, height: 100.0 },
+            "{display:?} must apply the authored max-height after the transferred min-height",
+        );
+    }
+}

@@ -21,6 +21,8 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
+use super::common::aspect_ratio::resolve_size_constraints;
+
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
 
@@ -65,22 +67,24 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let (min_size, max_size, preferred_size) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE),
         SizingMode::InherentSize => {
-            let min_size = style
-                .min_size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_resolved_aspect_ratio(aspect_ratio, padding_border_size);
-            let max_size = style
-                .max_size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_resolved_aspect_ratio(aspect_ratio, padding_border_size);
-            let preferred_size = style
-                .size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_resolved_aspect_ratio(aspect_ratio, padding_border_size);
-            (min_size, max_size, preferred_size)
+            let raw_size = style.size();
+            let resolved = resolve_size_constraints(
+                raw_size
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                style
+                    .min_size()
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                style
+                    .max_size()
+                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                    .maybe_add(box_sizing_adjustment),
+                raw_size.map(|dimension| dimension.is_auto()),
+                aspect_ratio,
+                padding_border_size,
+            );
+            (resolved.min_size, resolved.max_size, resolved.size)
         }
     };
 

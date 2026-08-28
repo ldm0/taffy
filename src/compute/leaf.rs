@@ -11,6 +11,8 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio};
 use core::unreachable;
 
+use super::common::aspect_ratio::resolve_size_constraints;
+
 /// Node-level values resolved by the embedding before leaf layout begins.
 ///
 /// Keeping these values together avoids adding one public leaf-layout entry
@@ -120,18 +122,24 @@ where
             (node_size, node_min_size, node_max_size, None)
         }
         SizingMode::InherentSize => {
-            let style_size = style
-                .size()
-                .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_resolved_aspect_ratio(resolved_aspect_ratio, pb_sum);
-            let style_min_size = style
-                .min_size()
-                .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_resolved_aspect_ratio(resolved_aspect_ratio, pb_sum);
-            let style_max_size =
+            let raw_size = style.size();
+            let authored_max_size =
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
+            let resolved = resolve_size_constraints(
+                raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                style.min_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                authored_max_size,
+                raw_size.map(|dimension| dimension.is_auto()),
+                resolved_aspect_ratio,
+                pb_sum,
+            );
+            let style_size = resolved.size;
+            let style_min_size = resolved.min_size;
+            // A leaf's intrinsic block-size may grow beyond the height
+            // projected from a max-width. Parent formatting contexts consume
+            // the transferred maximum when their sizing step calls for it;
+            // the content measurement boundary retains the authored maximum.
+            let style_max_size = authored_max_size;
 
             let node_size = known_dimensions.or(style_size);
             (node_size, style_min_size, style_max_size, resolved_aspect_ratio)
@@ -212,11 +220,16 @@ where
         .or(node_size)
         .unwrap_or(measured_size + content_box_inset.sum_axes())
         .maybe_clamp(node_min_size, node_max_size);
-    let ratio_height = Size { width: Some(clamped_size.width), height: None }
-        .maybe_apply_resolved_aspect_ratio(aspect_ratio, pb_sum)
-        .height
-        .unwrap_or(0.0);
-    let size = Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) };
+    let size = if node_size.height.is_none() {
+        let ratio_height = Size { width: Some(clamped_size.width), height: None }
+            .maybe_apply_resolved_aspect_ratio(aspect_ratio, pb_sum)
+            .height
+            .unwrap_or(0.0);
+        Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) }
+            .maybe_clamp(node_min_size, node_max_size)
+    } else {
+        clamped_size
+    };
     let size = size.maybe_max(padding_border.sum_axes().map(Some));
 
     LayoutOutput {
