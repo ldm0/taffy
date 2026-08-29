@@ -553,6 +553,43 @@ fn replaced_automatic_minimum_uses_the_smaller_content_and_transferred_suggestio
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
 
+/// Regression for WPT
+/// css/css-flexbox/flex-minimum-width-flex-items-013.html.
+///
+/// The authored main size supplies the specified-size suggestion, but it does
+/// not replace the content-size suggestion. A replaced item first chooses the
+/// smaller content/transferred suggestion, then caps that result by its
+/// specified-size suggestion.
+#[test]
+fn replaced_stretched_cross_size_limits_the_automatic_minimum_before_authored_main_size() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::length(999.0), height: Dimension::auto() },
+                aspect_ratio: Some(2.0),
+                item_is_replaced: true,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(300.0, 150.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(0.0), height: Dimension::length(50.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 50.0 });
+}
+
 #[test]
 fn definite_main_maximum_caps_the_flex_content_based_automatic_minimum() {
     let mut tree = TaffyTree::<()>::new();

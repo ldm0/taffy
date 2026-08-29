@@ -199,6 +199,49 @@ struct FlexAutomaticMinimum {
     transferred_size_suggestion: Option<f32>,
 }
 
+/// A definite cross size supplied by single-line flex stretch.
+///
+/// The value and its `auto`-size ordering are one piece of constraint-space
+/// state. Keeping them together prevents a caller from exposing the stretched
+/// size to Flexbox's transferred-size suggestion while still allowing the
+/// preferred aspect ratio to synthesize a competing cross size first.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FlexAutomaticCrossSize(Option<f32>);
+
+impl FlexAutomaticCrossSize {
+    /// Construct the constraint from the definite stretched border-box size.
+    #[inline(always)]
+    const fn new(size: Option<f32>) -> Self {
+        Self(size)
+    }
+
+    /// Return the definite border-box size supplied by stretch.
+    #[inline(always)]
+    const fn definite_size(self) -> Option<f32> {
+        self.0
+    }
+
+    /// Return the logical auto-size behavior carried by the child constraint
+    /// space.
+    ///
+    /// Blink represents this with `kStretchExplicit` on the child's inline or
+    /// block auto behavior. The physical flex cross axis can map to either
+    /// logical axis in an orthogonal writing mode, so project it through the
+    /// child's writing mode here.
+    #[inline(always)]
+    fn logical_auto_size_behaviors(
+        self,
+        direction: FlexDirection,
+        writing_mode: WritingMode,
+    ) -> LogicalSize<AutoSizeBehavior> {
+        let mut physical = Size { width: AutoSizeBehavior::FitContent, height: AutoSizeBehavior::FitContent };
+        if self.0.is_some() {
+            physical.set_cross(direction, AutoSizeBehavior::StretchExplicit);
+        }
+        writing_mode.to_logical(physical)
+    }
+}
+
 impl FlexAutomaticMinimum {
     /// Combine the three Flexbox sizing suggestions and apply the remaining
     /// direct main-axis caps. Every value at this boundary is a border-box
@@ -1286,22 +1329,26 @@ fn generate_anonymous_flex_items(
             }
             .maybe_add(box_sizing_adjustment);
             // Flexbox gives a stretched item in a definite single-line cross
-            // axis an automatic preferred outer cross size and treats it as
-            // definite. Retain the corresponding border-box size here so the
-            // flex basis and automatic minimum consume the same geometry.
-            let automatic_preferred_cross_size = if !constants.is_wrap
-                && align_self == AlignSelf::STRETCH
-                && raw_size.cross(constants.dir).is_auto()
-                && !margin_is_auto.cross_start(constants.dir)
-                && !margin_is_auto.cross_end(constants.dir)
-            {
-                constants
-                    .node_definite_inner_size
-                    .cross(constants.dir)
-                    .map(|cross_size| f32_max(cross_size - margin.cross_axis_sum(constants.dir), 0.0))
-            } else {
-                None
-            };
+            // axis an explicit stretch constraint. Retain both its border-box
+            // size and auto-size ordering so the flex basis and automatic
+            // minimum consume the same constraint space.
+            let automatic_cross_size = FlexAutomaticCrossSize::new(
+                if !constants.is_wrap
+                    && align_self == AlignSelf::STRETCH
+                    && raw_size.cross(constants.dir).is_auto()
+                    && !margin_is_auto.cross_start(constants.dir)
+                    && !margin_is_auto.cross_end(constants.dir)
+                {
+                    constants
+                        .node_definite_inner_size
+                        .cross(constants.dir)
+                        .map(|cross_size| f32_max(cross_size - margin.cross_axis_sum(constants.dir), 0.0))
+                } else {
+                    None
+                },
+            );
+            let logical_auto_size_behaviors =
+                automatic_cross_size.logical_auto_size_behaviors(constants.dir, child_writing_mode);
             let mut min_size =
                 resolve_minimum_size(raw_min_size, constants.node_percentage_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment)
@@ -1318,7 +1365,7 @@ fn generate_anonymous_flex_items(
             };
             let initial_preferred_size = initial_preferred_size.with_cross(
                 constants.dir,
-                initial_preferred_size.cross(constants.dir).or(automatic_preferred_cross_size),
+                initial_preferred_size.cross(constants.dir).or(automatic_cross_size.definite_size()),
             );
             let initial_constraints = resolve_size_constraints(SizeConstraintInput {
                 size: initial_preferred_size,
@@ -1327,8 +1374,8 @@ fn generate_anonymous_flex_items(
                 max_size,
                 size_is_auto,
                 writing_mode: child_writing_mode,
-                inline_auto_behavior: AutoSizeBehavior::FitContent,
-                block_auto_behavior: AutoSizeBehavior::FitContent,
+                inline_auto_behavior: logical_auto_size_behaviors.inline_size,
+                block_auto_behavior: logical_auto_size_behaviors.block_size,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border: pb_sum,
@@ -1337,8 +1384,8 @@ fn generate_anonymous_flex_items(
             let inset = child_style.inset().zip_size(constants.node_percentage_size, |p, s| {
                 p.maybe_resolve(s, |val, basis| tree.calc(val, basis))
             });
-            let preferred_cross_size_is_definite =
-                direct_size_with_transfer.cross(constants.dir).is_some() || automatic_preferred_cross_size.is_some();
+            let preferred_cross_size_is_definite = direct_size_with_transfer.cross(constants.dir).is_some()
+                || automatic_cross_size.definite_size().is_some();
             let baseline_writing_mode = determine_baseline_writing_mode(
                 constants.writing_direction(),
                 child_writing_mode,
@@ -1371,8 +1418,8 @@ fn generate_anonymous_flex_items(
                 sizing_mode: SizingMode::InherentSize,
                 sizing_purpose: SizingPurpose::IntrinsicContribution,
                 axis: RequestedAxis::Horizontal,
-                inline_auto_behavior: AutoSizeBehavior::FitContent,
-                block_auto_behavior: AutoSizeBehavior::FitContent,
+                inline_auto_behavior: logical_auto_size_behaviors.inline_size,
+                block_auto_behavior: logical_auto_size_behaviors.block_size,
                 known_dimensions: Size::NONE,
                 definite_dimensions: Size::NONE,
                 parent_size: constants.node_percentage_size,
@@ -1430,8 +1477,8 @@ fn generate_anonymous_flex_items(
                 max_size,
                 size_is_auto,
                 writing_mode: child_writing_mode,
-                inline_auto_behavior: AutoSizeBehavior::FitContent,
-                block_auto_behavior: AutoSizeBehavior::FitContent,
+                inline_auto_behavior: logical_auto_size_behaviors.inline_size,
+                block_auto_behavior: logical_auto_size_behaviors.block_size,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border: pb_sum,
@@ -1454,7 +1501,7 @@ fn generate_anonymous_flex_items(
                 ),
                 aspect_ratio,
                 pb_sum,
-                AutoSizeBehavior::FitContent,
+                logical_auto_size_behaviors.block_size,
                 AvailableSpace::MaxContent,
                 overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
                 None,
@@ -1539,7 +1586,7 @@ fn generate_anonymous_flex_items(
             let transferred_size_suggestion = Size::NONE
                 .with_cross(
                     constants.dir,
-                    definite_preferred_size.cross(constants.dir).or(automatic_preferred_cross_size),
+                    definite_preferred_size.cross(constants.dir).or(automatic_cross_size.definite_size()),
                 )
                 .maybe_clamp(constraints_without_transfer.min_size, constraints_without_transfer.max_size)
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
