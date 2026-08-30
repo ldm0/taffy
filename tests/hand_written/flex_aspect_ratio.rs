@@ -696,3 +696,92 @@ fn definite_main_maximum_caps_the_flex_content_based_automatic_minimum() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 80.0, height: 100.0 });
 }
+
+/// Model a ratio-only replaced object: it has no natural dimensions, so its
+/// logical inline size stretch-fits the finite space offered by the formatting
+/// context and its block size follows the preferred ratio.
+fn measure_ratio_only_square(
+    known_dimensions: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+    _node_id: NodeId,
+    _context: Option<&mut TestNodeContext>,
+    _style: &Style,
+) -> Size<f32> {
+    let width = known_dimensions.width.or(available_space.width.into_option()).unwrap_or(0.0);
+    let height = known_dimensions.height.unwrap_or(width);
+    Size { width, height }
+}
+
+/// Regression for WPT css/css-flexbox/svg-root-as-flex-item-002.html.
+///
+/// Flexbox part E treats an automatic basis as max-content, but that sizing
+/// function must not erase the finite space offered to a ratio-only replaced
+/// object. The SVG stretch-fits the 100px flex content box.
+#[test]
+fn ratio_only_replaced_flex_basis_preserves_finite_available_inline_size() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style { item_is_replaced: true, aspect_ratio: Some(1.0), flex_shrink: 0.0, ..Style::default() },
+            TestNodeContext::zero(),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, measure_ratio_only_square).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-flexbox/svg-root-as-flex-item-005.html.
+///
+/// The available inline size belongs to the item's margin box. Only inline
+/// margins are removed before a ratio-only replaced child stretch-fits that
+/// size; the block-end margin does not participate in the ratio basis.
+#[test]
+fn ratio_only_replaced_column_basis_excludes_inline_margins() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                item_is_replaced: true,
+                aspect_ratio: Some(1.0),
+                flex_grow: 1.0,
+                flex_shrink: 0.0,
+                margin: Rect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(50.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    bottom: LengthPercentageAuto::length(70.0),
+                },
+                ..Style::default()
+            },
+            TestNodeContext::zero(),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: Some(AlignItems::START),
+                size: Size { width: Dimension::length(150.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, measure_ratio_only_square).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}

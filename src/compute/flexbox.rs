@@ -185,13 +185,35 @@ impl FlexFlow {
     }
 }
 
+/// The content model used by a flex item at sizing boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlexItemKind {
+    /// An ordinary CSS box whose content contribution comes from descendants.
+    Normal,
+    /// A replaced box whose natural sizing may consume finite available space.
+    Replaced,
+}
+
+impl FlexItemKind {
+    #[inline(always)]
+    const fn from_is_replaced(is_replaced: bool) -> Self {
+        if is_replaced {
+            Self::Replaced
+        } else {
+            Self::Normal
+        }
+    }
+
+    #[inline(always)]
+    const fn is_replaced(self) -> bool {
+        matches!(self, Self::Replaced)
+    }
+}
+
 /// Inputs that Flexbox section 4.5 combines with the item's content-size
 /// suggestion to obtain its content-based automatic minimum.
 #[derive(Clone, Copy, Debug)]
 struct FlexAutomaticMinimum {
-    /// Whether content and transferred suggestions use replaced-element
-    /// ordering (smaller) or non-replaced ordering (larger).
-    is_replaced: bool,
     /// Definite preferred main size before aspect-ratio transfer.
     specified_size_suggestion: Option<f32>,
     /// Definite preferred cross size, clamped in the cross axis and converted
@@ -389,8 +411,8 @@ impl FlexAutomaticMinimum {
     /// direct main-axis caps. Every value at this boundary is a border-box
     /// size.
     #[inline]
-    fn resolve(self, content_size_suggestion: f32, padding_border: f32) -> f32 {
-        let content_and_transferred = if self.is_replaced {
+    fn resolve(self, item_kind: FlexItemKind, content_size_suggestion: f32, padding_border: f32) -> f32 {
+        let content_and_transferred = if item_kind.is_replaced() {
             content_size_suggestion.maybe_min(self.transferred_size_suggestion)
         } else {
             content_size_suggestion.maybe_max(self.transferred_size_suggestion)
@@ -410,6 +432,10 @@ struct FlexItem {
 
     /// The order of the node relative to it's siblings
     order: u32,
+
+    /// Whether this item uses descendant content or replaced natural sizing
+    /// at Flexbox-owned measurement boundaries.
+    kind: FlexItemKind,
 
     /// The base size of this item
     size: Size<Option<f32>>,
@@ -878,16 +904,37 @@ fn resolve_cross_axis_available_space(
     container_cross_size: Option<f32>,
     min_size: Option<f32>,
     max_size: Option<f32>,
+    margin_sum: f32,
 ) -> AvailableSpace {
-    if let Some(container_cross_size) = container_cross_size {
-        return AvailableSpace::Definite(container_cross_size.maybe_clamp(min_size, max_size));
-    }
+    // The container offers space to the item's margin box while every child
+    // layout algorithm consumes border-box space. Clamp the outer constraint
+    // against outer min/max sizes first, then cross the child boundary exactly
+    // once by removing that item's margins.
+    let outer_min_size = min_size.maybe_add(margin_sum);
+    let outer_max_size = max_size.maybe_add(margin_sum);
+    let outer_space = if let Some(container_cross_size) = container_cross_size {
+        AvailableSpace::Definite(container_cross_size.maybe_clamp(outer_min_size, outer_max_size))
+    } else {
+        match available_space {
+            AvailableSpace::Definite(value) => {
+                AvailableSpace::Definite(value.maybe_clamp(outer_min_size, outer_max_size))
+            }
+            AvailableSpace::MinContent => {
+                outer_min_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MinContent)
+            }
+            AvailableSpace::MaxContent => {
+                outer_max_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent)
+            }
+        }
+    };
+    outer_space.maybe_sub(margin_sum).maybe_max(0.0)
+}
 
-    match available_space {
-        AvailableSpace::Definite(value) => AvailableSpace::Definite(value.maybe_clamp(min_size, max_size)),
-        AvailableSpace::MinContent => min_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MinContent),
-        AvailableSpace::MaxContent => max_size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent),
-    }
+/// Convert one axis of container-owned margin-box space into the border-box
+/// space consumed by a child layout operation.
+#[inline(always)]
+fn margin_excluded_available_space(available_space: AvailableSpace, margin_sum: f32) -> AvailableSpace {
+    available_space.maybe_sub(margin_sum).maybe_max(0.0)
 }
 
 /// Computes the layout of a box according to the flexbox algorithm
@@ -1545,7 +1592,7 @@ fn generate_anonymous_flex_items(
             let overflow = child_style.overflow();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
-            let is_replaced = child_style.is_compressible_replaced();
+            let kind = FlexItemKind::from_is_replaced(child_style.is_compressible_replaced());
             drop(child_style);
 
             let child_available_space = Size {
@@ -1573,7 +1620,7 @@ fn generate_anonymous_flex_items(
                 block_margins_are_collapsible: Line::FALSE,
                 table_cell: None,
             };
-            let content_size_override = if is_replaced {
+            let content_size_override = if kind.is_replaced() {
                 IntrinsicAxisValue::default()
             } else {
                 intrinsic_content_size_from_initial_geometry(
@@ -1678,7 +1725,7 @@ fn generate_anonymous_flex_items(
                     max: raw_logical_max_size.block_size,
                     available_space: child_available_space.get_abs(block_axis),
                     axis: block_axis,
-                    content_size_override: if is_replaced {
+                    content_size_override: if kind.is_replaced() {
                         IntrinsicAxisValue::default()
                     } else {
                         intrinsic_content_size_from_initial_geometry(
@@ -1729,14 +1776,14 @@ fn generate_anonymous_flex_items(
             let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
             let main_axis = constants.dir.main_axis();
             let specified_size_suggestion = flex_automatic_minimum_sizing_suggestion(
-                is_replaced,
+                kind.is_replaced(),
                 raw_size.get_abs(main_axis),
                 definite_preferred_size.get_abs(main_axis),
                 box_sizing_adjustment.get_abs(main_axis),
                 |val, basis| tree.calc(val, basis),
             );
             let maximum_size_suggestion = flex_automatic_minimum_sizing_suggestion(
-                is_replaced,
+                kind.is_replaced(),
                 raw_max_size.get_abs(main_axis),
                 constraints_without_transfer.max_size.get_abs(main_axis),
                 box_sizing_adjustment.get_abs(main_axis),
@@ -1760,11 +1807,11 @@ fn generate_anonymous_flex_items(
             Some(FlexItem {
                 node: child,
                 order: index as u32,
+                kind,
                 size,
                 preferred_size_aspect_ratio_applied,
                 preferred_size,
                 automatic_minimum: FlexAutomaticMinimum {
-                    is_replaced,
                     specified_size_suggestion,
                     transferred_size_suggestion,
                     maximum_size_suggestion,
@@ -1896,12 +1943,12 @@ fn resolve_flex_content_based_automatic_minimum(
     // transferred inline min/max pair before it becomes the content-size
     // suggestion.
     let content_size_suggestion =
-        if !item.automatic_minimum.is_replaced && item.main_axis_is_inline && item.preferred_cross_size_is_definite {
+        if !item.kind.is_replaced() && item.main_axis_is_inline && item.preferred_cross_size_is_definite {
             ratio_aware_content_size.max(min_content_main_size)
         } else {
             ratio_aware_content_size
         };
-    item.automatic_minimum.resolve(content_size_suggestion, padding_border)
+    item.automatic_minimum.resolve(item.kind, content_size_suggestion, padding_border)
 }
 
 /// Determine the flex base size and hypothetical main size of each item.
@@ -1955,18 +2002,17 @@ fn determine_flex_base_size(
         // Available space for child sizing
         // Min/max sizes transferred through the aspect ratio are taken into account here
         // https://github.com/w3c/csswg-drafts/issues/10997
-        let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
+        let cross_axis_margin_sum = child.margin.cross_axis_sum(dir);
         let min_size_with_transfer = child.min_size_with_transfer;
         let max_size_with_transfer = child.max_size_with_transfer;
-        let child_min_cross = min_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
-        let child_max_cross = max_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
 
         // Clamp available space by min- and max- size
         let cross_axis_available_space = resolve_cross_axis_available_space(
             available_space.cross(dir),
             cross_axis_definite_size,
-            child_min_cross,
-            child_max_cross,
+            min_size_with_transfer.cross(dir),
+            max_size_with_transfer.cross(dir),
+            cross_axis_margin_sum,
         );
 
         // Known dimensions for child sizing
@@ -2008,7 +2054,7 @@ fn determine_flex_base_size(
         let fit_content_ratio_size = if used_flex_basis.is_unresolved()
             && content_ratio_size.is_none()
             && !child.main_axis_is_inline
-            && !child.automatic_minimum.is_replaced
+            && !child.kind.is_replaced()
             && aspect_ratio.has_ratio()
         {
             // Main-axis min/max constraints are ignored while resolving the
@@ -2019,10 +2065,10 @@ fn determine_flex_base_size(
             let direct_cross_available_space = resolve_cross_axis_available_space(
                 available_space.cross(dir),
                 cross_axis_definite_size,
-                child.min_size.cross(dir).maybe_add(cross_margin_sum),
-                child.max_size.cross(dir).maybe_add(cross_margin_sum),
-            )
-            .maybe_sub(cross_margin_sum);
+                child.min_size.cross(dir),
+                child.max_size.cross(dir),
+                cross_margin_sum,
+            );
             let fit_content_known_dimensions = child_known_dimensions.with_cross(dir, None);
             let measurement_inputs = ChildLayoutInput::new(
                 fit_content_known_dimensions,
@@ -2172,8 +2218,19 @@ fn determine_flex_base_size(
                 _ => AvailableSpace::MaxContent,
             };
             let content_constraint = flex_item_content_main_constraint(child, inline_constraint);
-            let child_available_space =
-                Size::MAX_CONTENT.with_main(dir, content_constraint).with_cross(dir, cross_axis_available_space);
+            // A replaced object's max-content function still consumes the
+            // finite available inline size for its ratio-only stretch-fit
+            // fallback. Ordinary content instead receives the intrinsic
+            // constraint itself. This mirrors Blink's separate child
+            // constraint space and min/max-content callback.
+            let child_main_available_space = if child.kind.is_replaced() {
+                margin_excluded_available_space(available_space.main(dir), child.margin.main_axis_sum(dir))
+            } else {
+                content_constraint
+            };
+            let child_available_space = Size::MAX_CONTENT
+                .with_main(dir, child_main_available_space)
+                .with_cross(dir, cross_axis_available_space);
 
             debug_log!("COMPUTE CHILD BASE SIZE:");
             let measured = tree.measure_child_size_with_metadata(
@@ -2424,8 +2481,9 @@ fn measure_flex_item_content_main_size(
     let cross_available_space = resolve_cross_axis_available_space(
         available_space.cross(dir),
         cross_parent_size,
-        item.min_size_with_transfer.cross(dir).maybe_add(cross_margin_sum),
-        item.max_size_with_transfer.cross(dir).maybe_add(cross_margin_sum),
+        item.min_size_with_transfer.cross(dir),
+        item.max_size_with_transfer.cross(dir),
+        cross_margin_sum,
     );
     let mut known_dimensions = item.size.with_main(dir, None);
     known_dimensions.set_cross(
@@ -2677,14 +2735,13 @@ fn determine_container_main_size(
                                 let cross_axis_parent_size = constants.node_definite_inner_size.cross(dir);
 
                                 // Available space for child sizing
-                                let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
-                                let child_min_cross = item.min_size.cross(dir).maybe_add(cross_axis_margin_sum);
-                                let child_max_cross = item.max_size.cross(dir).maybe_add(cross_axis_margin_sum);
+                                let cross_axis_margin_sum = item.margin.cross_axis_sum(dir);
                                 let cross_axis_available_space = resolve_cross_axis_available_space(
                                     available_space.cross(dir),
                                     cross_axis_parent_size,
-                                    child_min_cross,
-                                    child_max_cross,
+                                    item.min_size.cross(dir),
+                                    item.max_size.cross(dir),
+                                    cross_axis_margin_sum,
                                 );
 
                                 let child_available_space = available_space.with_cross(dir, cross_axis_available_space);
