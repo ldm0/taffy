@@ -104,12 +104,21 @@ where
         )
     }
 
-    /// Compute the item's resolved margins for size contributions. Inline-axis percentage margins resolve
-    /// to zero if the container size is indefinite to avoid a cyclic dependency.
+    /// Add the item's ordinary margins and the baseline shim belonging to this
+    /// exact intrinsic contribution.
+    ///
+    /// The shared baseline target comes from the initial baseline pass, while
+    /// the contribution's synthesized baseline comes from `contribution`.
+    /// Keeping those two values separate allows the shim to become negative
+    /// for a larger max-content probe instead of inflating the track.
     #[inline(always)]
-    fn margins_axis_sums_with_baseline_shims(&self, item: &GridItem, available_space: Size<Option<f32>>) -> Size<f32> {
+    fn outer_contribution(&self, item: &GridItem, available_space: Size<Option<f32>>, contribution: f32) -> f32 {
         let percentage_basis = item.parent_writing_direction.mode.to_logical(available_space).inline_size;
-        item.margins_axis_sums_with_baseline_shims(percentage_basis, self.tree)
+        let margin_size = item.margins_axis_sums(percentage_basis, self.tree);
+        let margin_axis_sum = item.parent_writing_direction.mode.to_logical(margin_size).get(self.axis);
+        let baseline_shim =
+            item.intrinsic_contribution_baseline_shim(self.axis, contribution, percentage_basis, self.tree);
+        contribution + margin_axis_sum + baseline_shim
     }
 
     /// Simple pass-through function to `LayoutPartialTreeExt::calc`
@@ -124,9 +133,8 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let writing_mode = item.parent_writing_direction.mode;
         let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.min_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
-        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
+        self.outer_contribution(item, available_space, contribution)
     }
 
     /// Retrieve the item's max content contribution from the cache or compute it using the provided parameters
@@ -135,9 +143,8 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let writing_mode = item.parent_writing_direction.mode;
         let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution = item.max_content_contribution_cached(self.axis, self.tree, grid_area_size, available_space);
-        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
+        self.outer_contribution(item, available_space, contribution)
     }
 
     /// The minimum contribution of an item is the smallest outer size it can have.
@@ -152,10 +159,9 @@ where
         let grid_area_size = self.grid_area_size(item, axis_tracks);
         let writing_mode = item.parent_writing_direction.mode;
         let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
-        let margin_axis_sums = self.margins_axis_sums_with_baseline_shims(item, available_space);
         let contribution =
             item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
-        contribution + writing_mode.to_logical(margin_axis_sums).get(self.axis)
+        self.outer_contribution(item, available_space, contribution)
     }
 }
 

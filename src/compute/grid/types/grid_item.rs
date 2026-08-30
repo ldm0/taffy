@@ -3,7 +3,8 @@ use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::{
-    determine_baseline_group, determine_baseline_writing_mode, BaselineGroup, FontBaseline,
+    determine_baseline_group, determine_baseline_writing_mode, synthesized_logical_baseline, BaselineGroup,
+    FontBaseline,
 };
 use crate::compute::common::intrinsic_size::{measure_child_intrinsic_contribution, resolve_minimum_size};
 use crate::compute::grid::OriginZeroLine;
@@ -14,7 +15,7 @@ use crate::style::{
 };
 use crate::tree::{AutoSizeBehavior, ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, GridItemStyle, LengthPercentage, WritingDirection, WritingMode};
+use crate::{BoxSizing, Direction, GridItemStyle, LengthPercentage, WritingDirection, WritingMode};
 use core::ops::Range;
 
 /// The baseline coordinate system and sharing group for one grid axis.
@@ -596,14 +597,10 @@ impl GridItem {
     /// Compute the item's resolved margins for size contributions. Inline-axis percentage margins resolve
     /// to zero while sizing that axis, preventing a cyclic dependency in every writing mode.
     #[inline(always)]
-    pub fn margins_axis_sums_with_baseline_shims(
-        &self,
-        inner_node_inline_size: Option<f32>,
-        tree: &impl LayoutPartialTree,
-    ) -> Size<f32> {
+    pub fn margins_axis_sums(&self, inner_node_inline_size: Option<f32>, tree: &impl LayoutPartialTree) -> Size<f32> {
         let writing_direction = self.parent_writing_direction;
         let logical_margin = writing_direction.to_logical_box_strut(self.margin);
-        let mut resolved_logical_margin = crate::geometry::LogicalBoxStrut {
+        let resolved_logical_margin = crate::geometry::LogicalBoxStrut {
             inline_start: logical_margin.inline_start.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             inline_end: logical_margin.inline_end.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             block_start: logical_margin
@@ -613,15 +610,70 @@ impl GridItem {
                 .block_end
                 .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis)),
         };
-        match self.baseline_context.inline.group {
-            BaselineGroup::Major => resolved_logical_margin.inline_start += self.baseline_shim.inline,
-            BaselineGroup::Minor => resolved_logical_margin.inline_end += self.baseline_shim.inline,
-        }
-        match self.baseline_context.block.group {
-            BaselineGroup::Major => resolved_logical_margin.block_start += self.baseline_shim.block,
-            BaselineGroup::Minor => resolved_logical_margin.block_end += self.baseline_shim.block,
-        }
         writing_direction.to_physical_box_strut(resolved_logical_margin).sum_axes()
+    }
+
+    /// Resolve this item's margins plus the fixed shim selected from one
+    /// concrete fragment. Final placement uses that fragment-relative shim;
+    /// intrinsic contributions instead call
+    /// [`Self::intrinsic_contribution_baseline_shim`] because their synthesized
+    /// baseline changes with the probed size.
+    pub fn margins_axis_sums_with_baseline_shims(
+        &self,
+        inner_node_inline_size: Option<f32>,
+        tree: &impl LayoutPartialTree,
+    ) -> Size<f32> {
+        let margin_size = self.margins_axis_sums(inner_node_inline_size, tree);
+        self.parent_writing_direction.mode.to_physical(
+            self.parent_writing_direction.mode.to_logical(margin_size)
+                + LogicalSize { inline_size: self.baseline_shim.inline, block_size: self.baseline_shim.block },
+        )
+    }
+
+    /// Recompute the baseline shim for an intrinsic contribution whose
+    /// queried track axis is the child's inline axis.
+    ///
+    /// Grid establishes the shared baseline from an initial fragment, but a
+    /// min/max-content probe can synthesize its baseline from a different
+    /// border-box size. Reusing the initial positive delta would make that
+    /// larger probe grow the track even though its baseline still aligns to
+    /// the same target. Blink likewise derives a fresh (possibly negative)
+    /// shim from each synthesized contribution baseline.
+    pub fn intrinsic_contribution_baseline_shim(
+        &self,
+        axis: AbstractAxis,
+        contribution: f32,
+        inner_node_inline_size: Option<f32>,
+        tree: &impl LayoutPartialTree,
+    ) -> f32 {
+        if !self.used_alignment(axis).is_baseline() {
+            return 0.0;
+        }
+
+        let child_writing_mode = tree.get_writing_mode(self.node);
+        let physical_axis = axis.to_absolute(self.parent_writing_direction.mode);
+        if physical_axis != child_writing_mode.inline_axis() {
+            return self.baseline_shim.get(axis);
+        }
+
+        let Some(initial_baseline) = self.alignment_baseline.get(axis) else {
+            return 0.0;
+        };
+        let target_baseline = initial_baseline + self.baseline_shim.get(axis);
+        let baseline_context = self.baseline_context.get(axis);
+        let baseline_writing_direction = WritingDirection::new(baseline_context.writing_mode, Direction::Ltr);
+        let alignment = self.used_alignment(axis);
+        let baseline_from_start =
+            synthesized_logical_baseline(contribution, baseline_writing_direction, self.parent_font_baseline);
+        let contribution_baseline =
+            if alignment.is_last_baseline() { contribution - baseline_from_start } else { baseline_from_start };
+
+        let margin = self.margin.resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis));
+        let logical_margin = baseline_writing_direction.to_logical_box_strut(margin);
+        let baseline_margin =
+            if alignment.is_last_baseline() { logical_margin.block_end } else { logical_margin.block_start };
+
+        target_baseline - contribution_baseline - baseline_margin
     }
 
     /// Compute the item's min content contribution from the provided parameters

@@ -480,6 +480,67 @@ fn computed_font_baseline_controls_vertical_grid_synthesis() {
 }
 
 #[test]
+fn orthogonal_baseline_item_recomputes_its_max_content_shim() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+
+    let horizontal = tree
+        .new_leaf_with_context(
+            Style {
+                padding: Rect { bottom: length(25.0), ..Rect::zero() },
+                grid_column: Line { start: line(1), end: line(2) },
+                grid_row: Line { start: line(1), end: line(2) },
+                ..Style::default()
+            },
+            TestNodeContext::fixed(50.0, 50.0),
+        )
+        .unwrap();
+    let orthogonal = tree
+        .new_leaf_with_context(
+            Style {
+                grid_column: Line { start: line(2), end: line(3) },
+                grid_row: Line { start: line(1), end: line(2) },
+                ..Style::default()
+            },
+            TestNodeContext::ahem_text(
+                "AA\u{200b}A\u{200b}AA\u{200b}AAAA\u{200b}A\u{200b}AA\u{200b}AAA\u{200b}AA\u{200b}A".to_owned(),
+                TextWritingMode::Vertical,
+            ),
+        )
+        .unwrap();
+    tree.set_writing_mode(orthogonal, WritingMode::VerticalLr).unwrap();
+    let spanning = tree
+        .new_leaf(Style {
+            size: Size { width: auto(), height: length(25.0) },
+            grid_column: Line { start: line(1), end: line(3) },
+            grid_row: Line { start: line(2), end: line(3) },
+            ..Style::default()
+        })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                grid_template_columns: vec![length(100.0), length(100.0)],
+                grid_template_rows: vec![max_content()],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[horizontal, orthogonal, spanning],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.unrounded_layout(grid).size, Size { width: 200.0, height: 100.0 });
+    assert_eq!(tree.unrounded_layout(horizontal).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(horizontal).size, Size { width: 100.0, height: 75.0 });
+    assert_eq!(tree.unrounded_layout(orthogonal).location, Point { x: 100.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(orthogonal).size, Size { width: 100.0, height: 75.0 });
+    assert_eq!(tree.unrounded_layout(spanning).location, Point { x: 0.0, y: 75.0 });
+}
+
+#[test]
 fn grid_column_baseline_groups_align_in_the_inline_axis() {
     let mut tree = TaffyTree::<()>::new();
     let major =
