@@ -112,6 +112,43 @@ fn root_style(width: f32) -> Style {
     Style { display: Display::Block, size: Size { width: length(width), height: auto() }, ..Default::default() }
 }
 
+/// Regression for
+/// <https://wpt.live/css/css-flexbox/intrinsic-size/row-001.html>.
+///
+/// The outer block gives its floated flex child no available inline space, so
+/// shrink-to-fit selects the flex container's min-content width. The
+/// inflexible item can retain and overflow at its 200px max-content width,
+/// but it must not replace the container's 100px constrained contribution.
+#[test]
+fn shrink_to_fit_row_uses_its_constrained_intrinsic_contribution() {
+    let mut tree = new_test_tree();
+    let first = tree.new_leaf(float_block(100.0, 0.0, Float::Left)).unwrap();
+    let second = tree.new_leaf(float_block(100.0, 0.0, Float::Left)).unwrap();
+    let item = tree
+        .new_with_children(
+            Style { display: Display::Block, flex_grow: 0.0, flex_shrink: 0.0, ..Default::default() },
+            &[first, second],
+        )
+        .unwrap();
+    let flex = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                float: Float::Left,
+                size: Size { width: auto(), height: length(100.0) },
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    let outer = tree.new_with_children(root_style(0.0), &[flex]).unwrap();
+
+    tree.compute_layout(outer, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(flex).unwrap().size.width, 100.0);
+    assert_eq!(tree.layout(item).unwrap().size.width, 200.0);
+}
+
 /// Regression test for <https://wpt.live/css/CSS2/floats/floats-rule3-outside-left-001.xht>
 ///
 /// CSS2 float rule 7: a float that is wider than its containing block and has no other

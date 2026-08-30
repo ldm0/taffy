@@ -3,7 +3,7 @@ use taffy::WritingMode as LayoutWritingMode;
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
 #[test]
-fn inflexible_auto_basis_uses_its_max_content_size_in_a_min_content_row() {
+fn inflexible_content_derived_basis_does_not_clamp_a_min_content_row() {
     let mut tree = new_test_tree();
     let item = tree
         .new_leaf_with_context(
@@ -24,7 +24,11 @@ fn inflexible_auto_basis_uses_its_max_content_size_in_a_min_content_row() {
 
     tree.compute_layout_with_measure(flex, Size::MAX_CONTENT, test_measure_function).unwrap();
 
-    assert_eq!(tree.layout(flex).unwrap().size.width, 100.0);
+    // A content-derived flex basis is indefinite. It therefore cannot feed
+    // its 100px max-content result back into the row's min-content query as a
+    // fixed clamp merely because the item is inflexible. The item keeps that
+    // unshrinkable used width and overflows the 50px container.
+    assert_eq!(tree.layout(flex).unwrap().size.width, 50.0);
     assert_eq!(tree.layout(item).unwrap().size.width, 100.0);
 }
 

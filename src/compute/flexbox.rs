@@ -2465,9 +2465,11 @@ fn measure_flex_item_content_main_size(
 /// Resolve a flex item's intrinsic main-size contribution.
 ///
 /// The content size and non-automatic preferred size establish the initial
-/// contribution. Flexibility then caps/floors it by the flex base size before
-/// the used min/max constraints are applied. All intermediate values are
-/// border-box sizes; the outer margin is added exactly once at the end.
+/// contribution. A definite flex basis may then cap/floor it according to the
+/// item's flexibility before the used min/max constraints are applied. A
+/// content-derived basis remains part of the intrinsic query and cannot clamp
+/// that same query. All intermediate values are border-box sizes; the outer
+/// margin is added exactly once at the end.
 fn flex_item_intrinsic_main_contribution(
     tree: &mut impl LayoutFlexboxContainer,
     item: &mut FlexItem,
@@ -2482,11 +2484,18 @@ fn flex_item_intrinsic_main_contribution(
     let padding_border = (item.padding + item.border).main_axis_sum(dir);
     let mut contribution = content_size.maybe_max(preferred_size).max(padding_border);
 
-    if item.flex_grow == 0.0 {
-        contribution = contribution.min(item.flex_basis);
-    }
-    if item.flex_shrink == 0.0 {
-        contribution = contribution.max(item.flex_basis);
+    // A content-derived flex basis is part of the intrinsic query itself; it
+    // must not feed back into that query as a fixed clamp. Blink applies this
+    // compatibility clamp only when the used flex basis was definite before
+    // content layout. The final item can still keep its larger unshrinkable
+    // size and overflow the intrinsically-sized flex container.
+    if item.used_flex_basis_is_definite {
+        if item.flex_grow == 0.0 {
+            contribution = contribution.min(item.flex_basis);
+        }
+        if item.flex_shrink == 0.0 {
+            contribution = contribution.max(item.flex_basis);
+        }
     }
 
     let used_minimum =
