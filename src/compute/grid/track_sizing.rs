@@ -18,38 +18,57 @@ struct ItemBatcher {
     axis: AbstractAxis,
     /// The starting index of the current batch
     index_offset: usize,
-    /// The span of the items in the current batch
-    current_span: u16,
-    /// Whether the current batch of items cross a flexible track
-    current_is_flex: bool,
+}
+
+/// The track class shared by all items in one intrinsic-sizing batch.
+///
+/// Flexible-track items are processed after every non-flexible batch and use
+/// different automatic-minimum semantics. Keeping that distinction typed
+/// prevents a min-/max-content constraint from accidentally turning their
+/// zero automatic minimum back into a min-content contribution.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ItemBatchKind {
+    /// Items whose span contains no flexible track.
+    NonFlexible,
+    /// Items whose span contains at least one flexible track.
+    Flexible,
+}
+
+impl ItemBatchKind {
+    /// Whether this batch is the final flexible-track batch.
+    #[inline(always)]
+    fn is_flexible(self) -> bool {
+        self == Self::Flexible
+    }
 }
 
 impl ItemBatcher {
     /// Create a new ItemBatcher for the specified axis
     #[inline(always)]
     fn new(axis: AbstractAxis) -> Self {
-        ItemBatcher { index_offset: 0, axis, current_span: 1, current_is_flex: false }
+        ItemBatcher { index_offset: 0, axis }
     }
 
     /// This is basically a manual version of Iterator::next which passes `items`
     /// in as a parameter on each iteration to work around borrow checker rules
     #[inline]
-    fn next<'items>(&mut self, items: &'items mut [GridItem]) -> Option<(&'items mut [GridItem], bool)> {
-        if self.current_is_flex || self.index_offset >= items.len() {
+    fn next<'items>(&mut self, items: &'items mut [GridItem]) -> Option<(&'items mut [GridItem], ItemBatchKind)> {
+        if self.index_offset >= items.len() {
             return None;
         }
 
         let item = &items[self.index_offset];
-        self.current_span = item.span(self.axis);
-        self.current_is_flex = item.crosses_flexible_track(self.axis);
+        let current_span = item.span(self.axis);
+        let kind =
+            if item.crosses_flexible_track(self.axis) { ItemBatchKind::Flexible } else { ItemBatchKind::NonFlexible };
 
-        let next_index_offset = if self.current_is_flex {
+        let next_index_offset = if kind.is_flexible() {
             items.len()
         } else {
             items
                 .iter()
                 .position(|item: &GridItem| {
-                    item.crosses_flexible_track(self.axis) || item.span(self.axis) > self.current_span
+                    item.crosses_flexible_track(self.axis) || item.span(self.axis) > current_span
                 })
                 .unwrap_or(items.len())
         };
@@ -58,7 +77,7 @@ impl ItemBatcher {
         self.index_offset = next_index_offset;
 
         let batch = &mut items[batch_range];
-        Some((batch, self.current_is_flex))
+        Some((batch, kind))
     }
 }
 
@@ -152,6 +171,37 @@ where
         let contribution =
             item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
         contribution + margin_axis_sums.get(self.axis)
+    }
+
+    /// Resolve the contribution used by the intrinsic-minimum phase.
+    ///
+    /// A multi-track item crossing a flexible track has a zero automatic
+    /// minimum. Blink's `ContributionSizeForGridItem` keeps that intrinsic
+    /// minimum distinct from the later content-based-minimum phase. The
+    /// limited min-content substitution used while intrinsically sizing
+    /// ordinary content tracks must therefore not leak into the flexible
+    /// batch.
+    #[inline(always)]
+    fn intrinsic_minimum_contribution(
+        &mut self,
+        item: &mut GridItem,
+        axis_tracks: &[GridTrack],
+        batch_kind: ItemBatchKind,
+        available_grid_space: AvailableSpace,
+        axis_inner_node_size: Option<f32>,
+    ) -> f32 {
+        let minimum = self.minimum_contribution(item, axis_tracks);
+        if batch_kind.is_flexible()
+            || !matches!(available_grid_space, AvailableSpace::MinContent | AvailableSpace::MaxContent)
+            || item.overflow.get(self.axis).is_scroll_container()
+        {
+            return minimum;
+        }
+
+        let min_content = self.min_content_contribution(item, axis_tracks);
+        let limit =
+            item.spanned_track_limit(self.axis, axis_tracks, axis_inner_node_size, &|val, basis| self.calc(val, basis));
+        min_content.maybe_min(limit).max(minimum)
     }
 }
 
@@ -565,7 +615,8 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         IntrinsicSizeMeasurer { tree, other_axis_tracks, axis, inner_node_size, get_track_size_estimate };
 
     let mut batched_item_iterator = ItemBatcher::new(axis);
-    while let Some((batch, is_flex)) = batched_item_iterator.next(items) {
+    while let Some((batch, batch_kind)) = batched_item_iterator.next(items) {
+        let is_flex = batch_kind.is_flexible();
         // 2. Size tracks to fit non-spanning items: For each track with an intrinsic track sizing function and not a flexible sizing function,
         // consider the items in it with a span of 1:
         let batch_span = batch[0].placement(axis).span();
@@ -699,19 +750,13 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
             //
             // However, in practice browsers only seem to apply this rule if the item is not a scroll container (note that overflow:hidden counts as
             // a scroll container), giving the automatic minimum size of scroll containers (zero) precedence over the min-content contributions.
-            let space = match axis_available_grid_space {
-                AvailableSpace::MinContent | AvailableSpace::MaxContent
-                    if !item.overflow.get(axis).is_scroll_container() =>
-                {
-                    let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
-                    let axis_min_content_size = item_sizer.min_content_contribution(item, axis_tracks);
-                    let limit = item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
-                        item_sizer.calc(val, basis)
-                    });
-                    axis_min_content_size.maybe_min(limit).max(axis_minimum_size)
-                }
-                _ => item_sizer.minimum_contribution(item, axis_tracks),
-            };
+            let space = item_sizer.intrinsic_minimum_contribution(
+                item,
+                axis_tracks,
+                batch_kind,
+                axis_available_grid_space,
+                axis_inner_node_size,
+            );
             let tracks = &mut axis_tracks[item.track_range_excluding_lines(axis)];
             if space > 0.0 {
                 let has_intrinsic_min_track_sizing_function = |track: &GridTrack| {
