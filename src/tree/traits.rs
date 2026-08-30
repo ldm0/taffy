@@ -512,6 +512,17 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
     /// Get the child's styles
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
 
+    /// Whether this child fragment contributes first/last baselines to its
+    /// block container.
+    ///
+    /// Most block children participate. Formatting-context adapters may
+    /// exclude structural children whose baselines are not part of the
+    /// container's content baseline set (for example a fieldset legend).
+    #[inline(always)]
+    fn block_child_contributes_baselines(&self, _container_node_id: NodeId, _child_node_id: NodeId) -> bool {
+        true
+    }
+
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
     fn compute_block_child_layout(

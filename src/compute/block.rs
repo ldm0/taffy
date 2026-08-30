@@ -379,6 +379,10 @@ struct BlockItem {
     /// while other formatting contexts contribute their first baseline.
     uses_block_layout: bool,
 
+    /// Whether this fragment participates in the container's exported first
+    /// and last baseline sets.
+    contributes_baselines: bool,
+
     /// Whether the child is a non-independent block or inline node
     is_in_same_bfc: bool,
 
@@ -1008,6 +1012,7 @@ fn generate_item_list(
             let aspect_ratio = tree.get_resolved_aspect_ratio(child_node_id);
             let child_writing_mode = tree.get_writing_mode(child_node_id);
             let scrollbar_size = tree.get_scrollbar_insets(child_node_id).sum_axes();
+            let contributes_baselines = tree.block_child_contributes_baselines(node, child_node_id);
             let child_style = tree.get_block_child_style(child_node_id);
             if child_style.box_generation_mode() == BoxGenerationMode::None {
                 return None;
@@ -1257,6 +1262,7 @@ fn generate_item_list(
                 is_replaced,
                 has_cyclic_replaced_inline_contribution: cyclic_replaced_inline_contribution,
                 uses_block_layout,
+                contributes_baselines,
                 is_in_same_bfc,
                 inline_auto_behavior,
                 #[cfg(feature = "float_layout")]
@@ -2035,30 +2041,33 @@ fn perform_final_layout_on_in_flow_children(
                 item_layout
             };
 
-            // A block container's first baseline is the first baseline of its first in-flow child
-            // that has one.
-            if first_baseline.is_none() {
-                first_baseline = logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
-                    .map(|baseline| logical_location.block_offset + baseline);
-            }
+            if item.contributes_baselines {
+                // A block container's first baseline is the first baseline of
+                // its first participating in-flow child that has one.
+                if first_baseline.is_none() {
+                    first_baseline =
+                        logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
+                            .map(|baseline| logical_location.block_offset + baseline);
+                }
 
-            // CSS inline-block baseline propagation walks normal-flow block
-            // descendants. Block-layout children contribute their last
-            // baseline; other formatting contexts contribute their first.
-            // A scroll-container block instead forces synthesis at its
-            // block-end margin edge (CSS2 10.8 / CSS Inline 3).
-            if !item.is_table {
-                let child_baseline = if item.uses_block_layout && !item.is_replaced {
-                    if child_is_scroll_container {
-                        Some(final_logical_size.block_size + resolved_logical_margin.block_end)
+                // CSS inline-block baseline propagation walks normal-flow
+                // block descendants. Block-layout children contribute their
+                // last baseline; other formatting contexts contribute their
+                // first. A scroll-container block instead forces synthesis at
+                // its block-end margin edge (CSS2 10.8 / CSS Inline 3).
+                if !item.is_table {
+                    let child_baseline = if item.uses_block_layout && !item.is_replaced {
+                        if child_is_scroll_container {
+                            Some(final_logical_size.block_size + resolved_logical_margin.block_end)
+                        } else {
+                            logical_block_baseline(baseline_layout.last_baselines, final_size, writing_direction)
+                        }
                     } else {
-                        logical_block_baseline(baseline_layout.last_baselines, final_size, writing_direction)
+                        logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
+                    };
+                    if let Some(baseline) = child_baseline {
+                        last_baseline = Some(logical_location.block_offset + baseline);
                     }
-                } else {
-                    logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
-                };
-                if let Some(baseline) = child_baseline {
-                    last_baseline = Some(logical_location.block_offset + baseline);
                 }
             }
 

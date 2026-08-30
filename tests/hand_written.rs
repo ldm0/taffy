@@ -1,6 +1,7 @@
 mod hand_written {
     mod absolute_position;
     mod adversarial_styles;
+    mod block_baseline_participation;
     mod block_intrinsic_percentage;
     mod block_replaced;
     mod block_writing_modes;
