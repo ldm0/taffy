@@ -1362,24 +1362,60 @@ struct BlockContainerLayoutContext {
     own_margins_collapse_with_children: Line<bool>,
 }
 
-/// Project a child baseline into its parent's logical block axis.
-fn logical_block_baseline(
-    baseline: Point<Option<f32>>,
+/// A child fragment's baseline set viewed from its block container.
+///
+/// Baseline sets are tied to a writing mode, not just a physical axis. A
+/// fragment in a different writing mode therefore cannot export its stored
+/// first/last baselines into this block container. Keeping the compatibility
+/// check inside the projection object also prevents block-end baseline
+/// synthesis from bypassing the same rule.
+#[derive(Clone, Copy, Debug)]
+struct BlockChildBaselineProjection {
+    /// Writing direction that owns the destination baseline set.
+    container_writing_direction: WritingDirection,
+    /// Writing mode that owns the child fragment's stored baseline set.
+    child_writing_mode: WritingMode,
+    /// Physical child border-box size used to reverse block-axis offsets.
     child_size: Size<f32>,
-    writing_direction: WritingDirection,
-) -> Option<f32> {
-    if writing_direction.mode.is_horizontal() {
-        baseline.y
-    } else {
-        baseline.x.map(
-            |offset| {
-                if writing_direction.is_block_flow_reversed() {
-                    child_size.width - offset
+}
+
+impl BlockChildBaselineProjection {
+    /// Bind a child fragment's baseline data to one container projection.
+    #[inline(always)]
+    const fn new(
+        container_writing_direction: WritingDirection,
+        child_writing_mode: WritingMode,
+        child_size: Size<f32>,
+    ) -> Self {
+        Self { container_writing_direction, child_writing_mode, child_size }
+    }
+
+    /// Whether the child exposes a baseline set in the container's writing
+    /// mode. Parallel modes with opposite block flow are distinct sets.
+    #[inline(always)]
+    fn has_compatible_baseline_set(self) -> bool {
+        self.child_writing_mode == self.container_writing_direction.mode
+    }
+
+    /// Project a compatible physical fragment baseline into the container's
+    /// logical block axis.
+    #[inline(always)]
+    fn project(self, baseline: Point<Option<f32>>) -> Option<f32> {
+        if !self.has_compatible_baseline_set() {
+            return None;
+        }
+
+        if self.container_writing_direction.mode.is_horizontal() {
+            baseline.y
+        } else {
+            baseline.x.map(|offset| {
+                if self.container_writing_direction.is_block_flow_reversed() {
+                    self.child_size.width - offset
                 } else {
                     offset
                 }
-            },
-        )
+            })
+        }
     }
 }
 
@@ -1955,10 +1991,14 @@ fn perform_final_layout_on_in_flow_children(
                 }
             }
 
+            let child_baselines =
+                BlockChildBaselineProjection::new(writing_direction, tree.get_writing_mode(item.node_id), final_size);
+
             // A block container's first baseline is the first baseline of its first in-flow child
-            // that has one.
+            // that has one in this container's writing mode.
             if first_baseline.is_none() {
-                first_baseline = logical_block_baseline(item_layout.first_baselines, final_size, writing_direction)
+                first_baseline = child_baselines
+                    .project(item_layout.first_baselines)
                     .map(|baseline| logical_location.block_offset + baseline);
             }
 
@@ -1967,15 +2007,15 @@ fn perform_final_layout_on_in_flow_children(
             // baseline; other formatting contexts contribute their first.
             // A scroll-container block instead forces synthesis at its
             // block-end margin edge (CSS2 10.8 / CSS Inline 3).
-            if !item.is_table {
+            if child_baselines.has_compatible_baseline_set() && !item.is_table {
                 let child_baseline = if item.uses_block_layout && !item.is_replaced {
                     if item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container() {
                         Some(final_logical_size.block_size + resolved_logical_margin.block_end)
                     } else {
-                        logical_block_baseline(item_layout.last_baselines, final_size, writing_direction)
+                        child_baselines.project(item_layout.last_baselines)
                     }
                 } else {
-                    logical_block_baseline(item_layout.first_baselines, final_size, writing_direction)
+                    child_baselines.project(item_layout.first_baselines)
                 };
                 if let Some(baseline) = child_baseline {
                     last_baseline = Some(logical_location.block_offset + baseline);
@@ -2453,4 +2493,35 @@ fn perform_absolute_layout_on_absolute_children(
     }
 
     absolute_content_size
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_baseline_projection_requires_the_same_writing_mode() {
+        let size = Size { width: 40.0, height: 20.0 };
+
+        let horizontal = BlockChildBaselineProjection::new(
+            WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+            WritingMode::HorizontalTb,
+            size,
+        );
+        assert_eq!(horizontal.project(Point { x: None, y: Some(12.0) }), Some(12.0));
+
+        let orthogonal = BlockChildBaselineProjection::new(
+            WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+            WritingMode::VerticalRl,
+            size,
+        );
+        assert_eq!(orthogonal.project(Point { x: None, y: Some(12.0) }), None);
+
+        let opposite_block_flow = BlockChildBaselineProjection::new(
+            WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr),
+            WritingMode::VerticalLr,
+            size,
+        );
+        assert_eq!(opposite_block_flow.project(Point { x: Some(12.0), y: None }), None);
+    }
 }

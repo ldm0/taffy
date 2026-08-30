@@ -1587,6 +1587,48 @@ mod tests {
         assert_eq!(output.last_baselines.y, Some(45.0));
     }
 
+    #[cfg(feature = "block_layout")]
+    #[test]
+    fn block_layout_skips_orthogonal_scroll_child_when_exporting_last_baseline() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let horizontal_child = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: auto(), height: length(30.0) },
+                margin: Rect { left: zero(), right: zero(), top: zero(), bottom: length(10.0) },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                ..Style::default()
+            })
+            .unwrap();
+        let orthogonal_child = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: length(20.0), height: length(20.0) },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                ..Style::default()
+            })
+            .unwrap();
+        taffy.set_writing_mode(orthogonal_child, WritingMode::VerticalRl).unwrap();
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: Display::FlowRoot,
+                    size: Size { width: length(100.0), height: auto() },
+                    padding: Rect { left: zero(), right: zero(), top: length(5.0), bottom: length(5.0) },
+                    ..Style::default()
+                },
+                &[horizontal_child, orthogonal_child],
+            )
+            .unwrap();
+
+        let mut tree = taffy.as_layout_tree();
+        let output =
+            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
+
+        assert_eq!(output.first_baselines.y, None);
+        assert_eq!(output.last_baselines.y, Some(45.0));
+    }
+
     #[cfg(all(feature = "grid", feature = "flexbox"))]
     #[test]
     fn column_flex_propagates_first_and_last_item_baselines() {
