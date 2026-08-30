@@ -629,6 +629,42 @@ fn replaced_stretched_cross_size_limits_the_automatic_minimum_before_authored_ma
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 50.0 });
 }
 
+/// Regression for WPT css/css-flexbox/flex-aspect-ratio-img-column-011.html.
+///
+/// The preferred width supplies the specified-size suggestion, but a replaced
+/// item's content-size suggestion still comes from its natural content. The
+/// automatic minimum is therefore `min(100px, 10px)`, allowing the item to
+/// shrink to the 10px flex container.
+#[test]
+fn replaced_natural_content_suggestion_is_independent_of_the_preferred_main_size() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                aspect_ratio: Some(1.0),
+                item_is_replaced: true,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(10.0, 10.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(10.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size.width, 10.0);
+}
+
 #[test]
 fn definite_main_maximum_caps_the_flex_content_based_automatic_minimum() {
     let mut tree = TaffyTree::<()>::new();

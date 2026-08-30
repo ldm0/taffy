@@ -1886,6 +1886,16 @@ fn determine_flex_base_size(
             } else {
                 child.size.with_main(dir, None)
             };
+            // A cross size synthesized from the preferred main size is not an
+            // independent child constraint. In particular, feeding it into a
+            // replaced item's content-size probe would transfer the authored
+            // main size through the ratio and back again, collapsing the
+            // distinct specified- and content-size suggestions. The used
+            // cross size is transferred again from the flexed main size during
+            // hypothetical cross sizing.
+            if child.preferred_size_aspect_ratio_applied.cross(dir) {
+                ckd.set_cross(dir, None);
+            }
             // Clamp the definite cross size by the cross min/max sizes so that sizes
             // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
             // are based on the used cross size.
