@@ -2027,10 +2027,18 @@ fn perform_final_layout_on_in_flow_children(
                 }
             }
 
+            let child_is_scroll_container =
+                item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container();
+            let baseline_layout = if child_is_scroll_container {
+                item_layout.with_baselines_clamped_to_border_box()
+            } else {
+                item_layout
+            };
+
             // A block container's first baseline is the first baseline of its first in-flow child
             // that has one.
             if first_baseline.is_none() {
-                first_baseline = logical_block_baseline(item_layout.first_baselines, final_size, writing_direction)
+                first_baseline = logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
                     .map(|baseline| logical_location.block_offset + baseline);
             }
 
@@ -2041,13 +2049,13 @@ fn perform_final_layout_on_in_flow_children(
             // block-end margin edge (CSS2 10.8 / CSS Inline 3).
             if !item.is_table {
                 let child_baseline = if item.uses_block_layout && !item.is_replaced {
-                    if item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container() {
+                    if child_is_scroll_container {
                         Some(final_logical_size.block_size + resolved_logical_margin.block_end)
                     } else {
-                        logical_block_baseline(item_layout.last_baselines, final_size, writing_direction)
+                        logical_block_baseline(baseline_layout.last_baselines, final_size, writing_direction)
                     }
                 } else {
-                    logical_block_baseline(item_layout.first_baselines, final_size, writing_direction)
+                    logical_block_baseline(baseline_layout.first_baselines, final_size, writing_direction)
                 };
                 if let Some(baseline) = child_baseline {
                     last_baseline = Some(logical_location.block_offset + baseline);

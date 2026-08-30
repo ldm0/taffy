@@ -928,6 +928,26 @@ impl LayoutOutput {
         Self::from_sizes(size, Size::zero())
     }
 
+    /// Return this fragment with both baseline sets constrained to its border box.
+    ///
+    /// CSS baseline consumers apply this view when the fragment establishes a
+    /// scroll container. The baseline is still derived from the content at its
+    /// initial scroll position, but content outside the scrollport cannot move
+    /// the exposed baseline beyond either border edge.
+    ///
+    /// Keeping the operation on the fragment result mirrors browser engines'
+    /// logical-fragment boundary and lets flex, grid, block, and custom inline
+    /// formatting contexts share one overflow-baseline policy.
+    #[must_use]
+    pub fn with_baselines_clamped_to_border_box(mut self) -> Self {
+        let clamp = |baseline: Option<f32>, extent: f32| baseline.map(|value| value.min(extent.max(0.0)).max(0.0));
+        self.first_baselines.x = clamp(self.first_baselines.x, self.size.width);
+        self.first_baselines.y = clamp(self.first_baselines.y, self.size.height);
+        self.last_baselines.x = clamp(self.last_baselines.x, self.size.width);
+        self.last_baselines.y = clamp(self.last_baselines.y, self.size.height);
+        self
+    }
+
     /// Attach block-constraint dependency metadata to a rich measurement.
     ///
     /// Custom formatting-context adapters may return [`LayoutOutput`] from a
@@ -971,6 +991,25 @@ impl LayoutOutput {
             depends_on_block_constraints: self.depends_on_block_constraints,
             applied_aspect_ratio: self.applied_aspect_ratio,
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_output_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_fragment_baseline_view_clamps_both_physical_axes() {
+        let output = LayoutOutput::from_sizes_and_baseline_sets(
+            Size { width: 80.0, height: 40.0 },
+            Size::ZERO,
+            Point { x: Some(-20.0), y: Some(70.0) },
+            Point { x: Some(120.0), y: Some(10.0) },
+        )
+        .with_baselines_clamped_to_border_box();
+
+        assert_eq!(output.first_baselines, Point { x: Some(0.0), y: Some(40.0) });
+        assert_eq!(output.last_baselines, Point { x: Some(80.0), y: Some(10.0) });
     }
 }
 

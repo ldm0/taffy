@@ -85,11 +85,16 @@ impl FinalGridItemLayout {
     }
 
     /// Return the requested fragment baseline set.
-    pub(super) const fn baselines(&self, is_last: bool) -> Point<Option<f32>> {
-        if is_last {
-            self.layout_output.last_baselines
+    pub(super) fn baselines(&self, is_last: bool) -> Point<Option<f32>> {
+        let output = if self.overflow.x.is_scroll_container() || self.overflow.y.is_scroll_container() {
+            self.layout_output.with_baselines_clamped_to_border_box()
         } else {
-            self.layout_output.first_baselines
+            self.layout_output
+        };
+        if is_last {
+            output.last_baselines
+        } else {
+            output.first_baselines
         }
     }
 

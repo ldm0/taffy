@@ -521,6 +521,8 @@ fn resolve_item_baselines(
             )
             .without_orthogonal_fallback(),
         );
+        let measured =
+            if item.is_scroll_container() { measured.with_baselines_clamped_to_border_box() } else { measured };
 
         let child_writing_mode = tree.get_writing_mode(item.node);
         let baseline_block_size = baseline_context.writing_mode.to_logical(measured.size).block_size;

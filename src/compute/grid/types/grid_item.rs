@@ -181,6 +181,11 @@ pub(in super::super) struct GridItem {
 }
 
 impl GridItem {
+    /// Whether either overflow axis makes this item a scroll container.
+    pub(crate) fn is_scroll_container(&self) -> bool {
+        self.overflow.inline_size.is_scroll_container() || self.overflow.block_size.is_scroll_container()
+    }
+
     /// Create a new item given a concrete placement in both axes
     pub fn new_with_placement_style_and_order<S: GridItemStyle>(
         node: NodeId,

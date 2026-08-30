@@ -3299,6 +3299,11 @@ fn calculate_children_base_lines(
                     constants,
                 )),
             );
+            let measured_size_and_baselines = if child.is_scroll_container() {
+                measured_size_and_baselines.with_baselines_clamped_to_border_box()
+            } else {
+                measured_size_and_baselines
+            };
 
             let child_size = measured_size_and_baselines.size;
             let child_writing_mode = tree.get_writing_mode(child.node);
@@ -3317,11 +3322,6 @@ fn calculate_children_base_lines(
                 synthesized_logical_baseline(baseline_block_size, baseline_writing_direction, font_baseline)
             };
 
-            // Scroll containers' baselines are determined from their content as if scrolled to the
-            // initial position, but are additionally clamped to their border box.
-            // See https://github.com/w3c/csswg-drafts/issues/7660
-            let baseline =
-                if child.is_scroll_container() { baseline.min(baseline_block_size).max(0.0) } else { baseline };
             // Baseline metrics are measured from the sharing-group edge. First
             // baselines use cross-start (unless wrap-reverse), while last
             // baselines use cross-end.
@@ -3865,6 +3865,8 @@ fn calculate_flex_item(
         )
         .with_definite_dimensions(flex_item_definite_dimensions(item, known_dimensions, constants)),
     );
+    let layout_output =
+        if item.is_scroll_container() { layout_output.with_baselines_clamped_to_border_box() } else { layout_output };
     let LayoutOutput {
         size,
         #[cfg(feature = "content_size")]
@@ -3915,28 +3917,12 @@ fn calculate_flex_item(
     // positioning intentionally does not alter the in-flow baseline position.
     let writing_direction = constants.writing_direction();
     let font_baseline = constants.font_baseline;
-    let child_block_size = constants.writing_mode.to_logical(size).block_size;
     let logical_block_offset =
         writing_direction.converter(constants.container_size).to_logical_point(static_location, size).block_offset;
-    let clamp_baseline = |baseline: f32| {
-        if item.is_scroll_container() {
-            baseline.min(child_block_size).max(0.0)
-        } else {
-            baseline
-        }
-    };
-    let inner_first_baseline = clamp_baseline(logical_block_baseline_or_synthesize(
-        layout_output.first_baselines,
-        size,
-        writing_direction,
-        font_baseline,
-    ));
-    let inner_last_baseline = clamp_baseline(logical_block_baseline_or_synthesize(
-        layout_output.last_baselines,
-        size,
-        writing_direction,
-        font_baseline,
-    ));
+    let inner_first_baseline =
+        logical_block_baseline_or_synthesize(layout_output.first_baselines, size, writing_direction, font_baseline);
+    let inner_last_baseline =
+        logical_block_baseline_or_synthesize(layout_output.last_baselines, size, writing_direction, font_baseline);
     item.first_block_baseline = logical_block_offset + inner_first_baseline;
     item.last_block_baseline = logical_block_offset + inner_last_baseline;
 
