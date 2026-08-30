@@ -197,6 +197,64 @@ struct FlexAutomaticMinimum {
     /// Definite preferred cross size, clamped in the cross axis and converted
     /// into the main axis through the preferred aspect ratio.
     transferred_size_suggestion: Option<f32>,
+    /// Definite authored maximum in the main axis. For a compressible replaced
+    /// item, cyclic percentages are resolved against zero at this boundary.
+    maximum_size_suggestion: Option<f32>,
+}
+
+/// Resolve one preferred/maximum-size input for Flexbox's content-based
+/// automatic minimum.
+///
+/// CSS Sizing gives compressible replaced items a special zero percentage
+/// basis for these suggestions. This must not leak into either the item's
+/// ordinary intrinsic contribution or its final used size: Blink likewise
+/// applies it while building Flexbox's specified-size suggestion.
+#[inline]
+fn flex_automatic_minimum_sizing_suggestion(
+    is_replaced: bool,
+    authored_size: Dimension,
+    normally_resolved_size: Option<f32>,
+    box_sizing_adjustment: f32,
+    resolve_calc_value: impl Fn(*const (), f32) -> f32,
+) -> Option<f32> {
+    if is_replaced && authored_size.may_have_percentage_dependence() {
+        authored_size.maybe_resolve(Some(0.0), resolve_calc_value).map(|size| size + box_sizing_adjustment)
+    } else {
+        normally_resolved_size
+    }
+}
+
+#[cfg(test)]
+mod automatic_minimum_suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn replaced_percentage_uses_zero_only_for_the_automatic_minimum_suggestion() {
+        assert_eq!(
+            flex_automatic_minimum_sizing_suggestion(true, Dimension::percent(1.0), Some(300.0), 4.0, |_, basis| basis,),
+            Some(4.0)
+        );
+        assert_eq!(
+            flex_automatic_minimum_sizing_suggestion(false, Dimension::percent(1.0), Some(300.0), 4.0, |_, basis| {
+                basis
+            },),
+            Some(300.0)
+        );
+    }
+
+    #[cfg(feature = "calc")]
+    #[test]
+    fn replaced_calc_suggestion_keeps_its_absolute_term() {
+        #[repr(align(8))]
+        struct CalcToken;
+        static CALC_TOKEN: CalcToken = CalcToken;
+        let calc = Dimension::calc((&CALC_TOKEN as *const CalcToken).cast());
+
+        assert_eq!(
+            flex_automatic_minimum_sizing_suggestion(true, calc, Some(440.0), 4.0, |_, basis| { 140.0 + basis }),
+            Some(144.0)
+        );
+    }
 }
 
 /// A definite cross size supplied by single-line flex stretch.
@@ -247,7 +305,7 @@ impl FlexAutomaticMinimum {
     /// direct main-axis caps. Every value at this boundary is a border-box
     /// size.
     #[inline]
-    fn resolve(self, content_size_suggestion: f32, maximum_main_size: Option<f32>, padding_border: f32) -> f32 {
+    fn resolve(self, content_size_suggestion: f32, padding_border: f32) -> f32 {
         let content_and_transferred = if self.is_replaced {
             content_size_suggestion.maybe_min(self.transferred_size_suggestion)
         } else {
@@ -256,7 +314,7 @@ impl FlexAutomaticMinimum {
 
         content_and_transferred
             .maybe_min(self.specified_size_suggestion)
-            .maybe_min(maximum_main_size)
+            .maybe_min(self.maximum_size_suggestion)
             .max(padding_border)
     }
 }
@@ -1582,7 +1640,21 @@ fn generate_anonymous_flex_items(
             }
             size = constraints_with_transfer.size;
             let preferred_size_aspect_ratio_applied = constraints_with_transfer.aspect_ratio_applied;
-            let specified_size_suggestion = definite_preferred_size.main(constants.dir);
+            let main_axis = constants.dir.main_axis();
+            let specified_size_suggestion = flex_automatic_minimum_sizing_suggestion(
+                is_replaced,
+                raw_size.get_abs(main_axis),
+                definite_preferred_size.get_abs(main_axis),
+                box_sizing_adjustment.get_abs(main_axis),
+                |val, basis| tree.calc(val, basis),
+            );
+            let maximum_size_suggestion = flex_automatic_minimum_sizing_suggestion(
+                is_replaced,
+                raw_max_size.get_abs(main_axis),
+                constraints_without_transfer.max_size.get_abs(main_axis),
+                box_sizing_adjustment.get_abs(main_axis),
+                |val, basis| tree.calc(val, basis),
+            );
             let transferred_size_suggestion = Size::NONE
                 .with_cross(
                     constants.dir,
@@ -1602,6 +1674,7 @@ fn generate_anonymous_flex_items(
                     is_replaced,
                     specified_size_suggestion,
                     transferred_size_suggestion,
+                    maximum_size_suggestion,
                 },
                 untransferred_size,
                 min_size: constraints_without_transfer.min_size,
@@ -1738,7 +1811,7 @@ fn resolve_flex_content_based_automatic_minimum(
         } else {
             ratio_aware_content_size
         };
-    item.automatic_minimum.resolve(content_size_suggestion, item.max_size.main(dir), padding_border.main(dir))
+    item.automatic_minimum.resolve(content_size_suggestion, padding_border.main(dir))
 }
 
 /// Determine the flex base size and hypothetical main size of each item.

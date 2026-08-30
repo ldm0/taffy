@@ -553,6 +553,45 @@ fn replaced_automatic_minimum_uses_the_smaller_content_and_transferred_suggestio
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
 
+/// Regression for WPT css/css-flexbox/flex-item-compressible-001.html.
+///
+/// The percentage preferred width is definite for final layout, but its
+/// percentage part resolves against zero while Flexbox builds the replaced
+/// item's specified-size suggestion. The item's 240px natural width therefore
+/// does not prevent it from shrinking into the remaining 100px.
+#[test]
+fn replaced_percentage_size_is_compressible_in_a_flex_automatic_minimum() {
+    let mut tree = new_test_tree();
+    let spacer = tree
+        .new_leaf(Style { flex_basis: Dimension::length(200.0), flex_grow: 0.0, flex_shrink: 0.0, ..Style::default() })
+        .unwrap();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                item_is_replaced: true,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(240.0, 20.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(300.0), height: Dimension::length(40.0) },
+                ..Style::default()
+            },
+            &[spacer, item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(spacer).unwrap().size.width, 200.0);
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 40.0 });
+}
+
 /// Regression for WPT
 /// css/css-flexbox/flex-minimum-width-flex-items-013.html.
 ///

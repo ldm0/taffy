@@ -147,9 +147,6 @@ pub fn compute_replaced_layout(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
-    let cyclic_min_content_preferred_axis =
-        replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size)
-            .then(|| context.writing_mode.inline_axis());
     let logical_raw_size = context.writing_mode.to_logical(raw_size);
     let logical_default_object_size = context.writing_mode.to_logical(default_object_size);
     let ratio_only_max_content_inline_size = logical_raw_size
@@ -172,6 +169,16 @@ pub fn compute_replaced_layout(
         box_sizing,
         padding_border_sum,
     );
+
+    // Blink's replaced min-content contribution is the used minimum when a
+    // preferred or maximum inline size contains a cyclic percentage. This is
+    // deliberately distinct from Flexbox's specified-size suggestion, which
+    // resolves the percentage against zero while retaining a calc() length.
+    if replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size) {
+        let mut logical_preferred_size = context.writing_mode.to_logical(preferred_size);
+        logical_preferred_size.inline_size = Some(0.0);
+        preferred_size = context.writing_mode.to_physical(logical_preferred_size);
+    }
 
     for (raw, resolved, contained) in [
         (raw_size, &mut preferred_size, contained_content_size),
@@ -234,23 +241,17 @@ pub fn compute_replaced_layout(
     // those late constraints are present.
     max_size = max_size.maybe_max(min_size);
 
-    // A content-size probe normally ignores preferred and minimum constraints
-    // in the requested axis. A replaced min-content contribution is the
-    // exception: its cyclic preferred percentage resolves against zero and
-    // remains the contribution (including any absolute calc term).
-    // Opposite-axis constraints remain available for ratio transfer.
+    // A content-size probe ignores preferred and minimum constraints in the
+    // requested axis. Opposite-axis constraints remain available for ratio
+    // transfer.
     if sizing_mode == SizingMode::ContentSize {
         match requested_axis {
             RequestedAxis::Horizontal => {
-                if cyclic_min_content_preferred_axis != Some(AbsoluteAxis::Horizontal) {
-                    preferred_size.width = None;
-                }
+                preferred_size.width = None;
                 min_size.width = None;
             }
             RequestedAxis::Vertical => {
-                if cyclic_min_content_preferred_axis != Some(AbsoluteAxis::Vertical) {
-                    preferred_size.height = None;
-                }
+                preferred_size.height = None;
                 min_size.height = None;
             }
             RequestedAxis::Both => {}
@@ -264,10 +265,9 @@ pub fn compute_replaced_layout(
             padding_border_sum,
         )
         .maybe_max(min_size);
-        let parent_resolved_or_preferred = content_known.or(preferred_size);
         let transferred = complete_replaced_size(
             apply_aspect_ratio_to_content_size(
-                parent_resolved_or_preferred.maybe_clamp(min_size, style_max_size),
+                content_known.maybe_clamp(min_size, style_max_size),
                 context.aspect_ratio,
                 padding_border_sum,
             ),
@@ -621,42 +621,6 @@ mod tests {
             size_containment,
             ReplacedNaturalSizing::fixed(Size { width: 60.0, height: 60.0 }),
         )
-    }
-
-    fn compressible_replaced_min_content(
-        writing_mode: WritingMode,
-        preferred_inline_size: Dimension,
-        resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    ) -> Size<f32> {
-        let style: TestStyle = Style {
-            size: writing_mode.to_physical(crate::geometry::LogicalSize {
-                inline_size: preferred_inline_size,
-                block_size: Dimension::auto(),
-            }),
-            ..Style::default()
-        };
-        let context = ReplacedSizingContext::new(
-            writing_mode,
-            ResolvedAspectRatio::from_option(None, BoxSizing::ContentBox),
-            SizeContainment::NONE,
-            ReplacedNaturalSizing::fixed(
-                writing_mode.to_physical(crate::geometry::LogicalSize { inline_size: 240.0, block_size: 20.0 }),
-            ),
-        );
-        let mut input = inputs(Size::NONE);
-        input.parent_writing_mode = writing_mode;
-        input.sizing_mode = SizingMode::ContentSize;
-        input.sizing_purpose = SizingPurpose::IntrinsicContribution;
-        input.axis = writing_mode.inline_axis().into();
-        input.known_dimensions =
-            writing_mode.to_physical(crate::geometry::LogicalSize { inline_size: None, block_size: Some(40.0) });
-        input.definite_dimensions = input.known_dimensions;
-        input.available_space = writing_mode.to_physical(crate::geometry::LogicalSize {
-            inline_size: AvailableSpace::MinContent,
-            block_size: AvailableSpace::Definite(40.0),
-        });
-
-        compute_replaced_layout(input, &style, context, resolve_calc_value).size
     }
 
     fn measure(style: &TestStyle) -> Size<f32> {
@@ -1229,41 +1193,6 @@ mod tests {
     }
 
     /// Regression for
-    /// <https://wpt.live/css/css-flexbox/flex-item-compressible-001.html>.
-    ///
-    /// A flex container requests a content-size measurement while supplying
-    /// the stretched cross size as known geometry. The replaced element's
-    /// cyclic preferred percentage still participates in its min-content
-    /// contribution, resolved against zero, instead of falling back to the
-    /// natural inline size.
-    #[test]
-    fn content_size_probe_preserves_the_replaced_percentage_min_content_contribution() {
-        assert_eq!(
-            compressible_replaced_min_content(WritingMode::HorizontalTb, Dimension::percent(1.0), |_, _| 0.0),
-            Size { width: 0.0, height: 40.0 }
-        );
-        assert_eq!(
-            compressible_replaced_min_content(WritingMode::VerticalLr, Dimension::percent(1.0), |_, _| 0.0),
-            Size { width: 40.0, height: 0.0 }
-        );
-    }
-
-    #[cfg(feature = "calc")]
-    #[test]
-    fn replaced_calc_min_content_keeps_the_length_after_zeroing_its_percentage() {
-        let preferred_size = Dimension::calc((&REPLACED_CALC_TOKEN as *const ReplacedCalcToken).cast());
-
-        assert_eq!(
-            compressible_replaced_min_content(WritingMode::HorizontalTb, preferred_size, |_, basis| 140.0 + basis),
-            Size { width: 140.0, height: 40.0 }
-        );
-        assert_eq!(
-            compressible_replaced_min_content(WritingMode::VerticalLr, preferred_size, |_, basis| 140.0 + basis),
-            Size { width: 40.0, height: 140.0 }
-        );
-    }
-
-    /// Regression for
     /// <https://wpt.live/css/css-sizing/svg-intrinsic-size-006.html>.
     ///
     /// A percentage-sized replaced box with only a natural ratio contributes
@@ -1331,9 +1260,7 @@ mod tests {
             compute_replaced_layout(input, &style, context, resolve_calc).size
         };
 
-        // Only the cyclic percentage is zeroed. The absolute 20px term in
-        // `calc(20px + 10%)` remains part of the min-content contribution.
-        assert_eq!(contribution(AvailableSpace::MinContent), Size { width: 20.0, height: 20.0 });
+        assert_eq!(contribution(AvailableSpace::MinContent), Size { width: 0.0, height: 0.0 });
         assert_eq!(contribution(AvailableSpace::MaxContent), Size { width: 300.0, height: 300.0 });
 
         let mut layout_input = inputs(Size { width: Some(200.0), height: None });
