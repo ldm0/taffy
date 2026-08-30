@@ -111,6 +111,7 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     available_space: AvailableSpace,
     axis: AbsoluteAxis,
 ) -> IntrinsicAxisValue {
+    debug_assert_eq!(axis, tree.get_writing_mode(node_id).inline_axis());
     resolve_intrinsic_axis_value(tree, node_id, inputs, value, available_space, axis)
 }
 

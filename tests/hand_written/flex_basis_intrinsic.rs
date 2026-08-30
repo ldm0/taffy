@@ -175,6 +175,78 @@ fn intrinsic_flex_basis_keywords_remain_distinct_across_logical_axes() {
 }
 
 #[test]
+fn intrinsic_flex_basis_in_the_item_block_axis_uses_block_layout() {
+    let cases = [
+        (WritingMode::HorizontalTb, [FlexDirection::Column, FlexDirection::ColumnReverse]),
+        (WritingMode::VerticalLr, [FlexDirection::Row, FlexDirection::RowReverse]),
+        (WritingMode::VerticalRl, [FlexDirection::Row, FlexDirection::RowReverse]),
+    ];
+
+    for (item_writing_mode, directions) in cases {
+        for direction in directions {
+            for basis in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content()] {
+                let mut tree = TaffyTree::<()>::new();
+                let item = tree
+                    .new_leaf_with_context(
+                        Style {
+                            min_size: Size::from_lengths(0.0, 0.0),
+                            flex_basis: basis,
+                            flex_grow: 0.0,
+                            flex_shrink: 0.0,
+                            ..Default::default()
+                        },
+                        (),
+                    )
+                    .unwrap();
+                tree.set_writing_mode(item, item_writing_mode).unwrap();
+                let flex = tree
+                    .new_with_children(
+                        Style {
+                            display: Display::Flex,
+                            flex_direction: direction,
+                            size: Size::from_lengths(75.0, 75.0),
+                            ..Default::default()
+                        },
+                        &[item],
+                    )
+                    .unwrap();
+                let item_block_axis = item_writing_mode.block_axis();
+
+                tree.compute_layout_with_measure(
+                    flex,
+                    Size::MAX_CONTENT,
+                    |known_dimensions, available_space, _, _, _| {
+                        // A physical-axis probe would return different values
+                        // for the three constraints. Intrinsic block layout
+                        // must use the content block-size for every keyword.
+                        let block_size = match available_space.get_abs(item_block_axis) {
+                            AvailableSpace::MinContent => 50.0,
+                            AvailableSpace::MaxContent => 100.0,
+                            AvailableSpace::Definite(value) => value,
+                        };
+                        let measured = match item_block_axis {
+                            AbsoluteAxis::Horizontal => Size { width: block_size, height: 20.0 },
+                            AbsoluteAxis::Vertical => Size { width: 20.0, height: block_size },
+                        };
+                        Size {
+                            width: known_dimensions.width.unwrap_or(measured.width),
+                            height: known_dimensions.height.unwrap_or(measured.height),
+                        }
+                    },
+                )
+                .unwrap();
+
+                assert_eq!(
+                    tree.layout(item).unwrap().size.get_abs(item_block_axis),
+                    100.0,
+                    "item={item_writing_mode:?} direction={direction:?} basis={basis:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn intrinsic_flex_basis_ignores_the_authored_preferred_main_size() {
     for container_writing_mode in WRITING_MODES {
         for direction in FLEX_DIRECTIONS {

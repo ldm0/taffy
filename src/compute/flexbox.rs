@@ -1180,30 +1180,37 @@ fn determine_flex_base_size(
             // child's fit-content cross constraint from its ConstraintSpace.
 
             // Intrinsic flex-basis keywords are sizing functions, not aliases
-            // for `content`. Resolve them through the shared intrinsic-axis
-            // protocol so min-content, max-content, and fit-content retain
-            // distinct constraints in parallel and orthogonal flows.
+            // for `content`. When the flex main axis is the item's inline
+            // axis, resolve them through the shared intrinsic-axis protocol so
+            // min-content, max-content, and fit-content retain distinct
+            // constraints. In the item's block axis they all resolve through
+            // an intrinsic block layout (the ordinary E path below), matching
+            // ResolveMainBlockLength rather than probing a physical axis as if
+            // it were an inline-size contribution.
             if let UsedFlexBasis::Intrinsic(value) = used_flex_basis {
-                let basis_available_space = available_space.main(dir).maybe_sub(child.margin.main_axis_sum(dir));
-                let measurement_input = ChildLayoutInput::new(
-                    child_known_dimensions,
-                    child_parent_size,
-                    constants.writing_mode,
-                    Size::MAX_CONTENT.with_cross(dir, cross_axis_available_space),
-                    SizingMode::ContentSize,
-                    Line::FALSE,
-                );
-                let resolved = resolve_intrinsic_preferred_axis_size(
-                    tree,
-                    child.node,
-                    measurement_input,
-                    value,
-                    basis_available_space,
-                    dir.main_axis(),
-                );
-                child.depends_on_block_constraints |= resolved.depends_on_block_constraints;
-                if let Some(size) = resolved.value {
-                    break 'flex_basis size;
+                let child_writing_mode = tree.get_writing_mode(child.node);
+                if dir.main_axis() == child_writing_mode.inline_axis() {
+                    let basis_available_space = available_space.main(dir).maybe_sub(child.margin.main_axis_sum(dir));
+                    let measurement_input = ChildLayoutInput::new(
+                        child_known_dimensions,
+                        child_parent_size,
+                        constants.writing_mode,
+                        Size::MAX_CONTENT.with_cross(dir, cross_axis_available_space),
+                        SizingMode::ContentSize,
+                        Line::FALSE,
+                    );
+                    let resolved = resolve_intrinsic_preferred_axis_size(
+                        tree,
+                        child.node,
+                        measurement_input,
+                        value,
+                        basis_available_space,
+                        dir.main_axis(),
+                    );
+                    child.depends_on_block_constraints |= resolved.depends_on_block_constraints;
+                    if let Some(size) = resolved.value {
+                        break 'flex_basis size;
+                    }
                 }
             }
 
