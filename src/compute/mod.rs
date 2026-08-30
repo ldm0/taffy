@@ -45,7 +45,7 @@ pub use leaf::{
     LeafSizingContext,
 };
 
-pub use replaced::{compute_replaced_layout, ReplacedNaturalSizing, ReplacedSizingContext};
+pub use replaced::{compute_replaced_layout, ReplacedMinContentKind, ReplacedNaturalSizing, ReplacedSizingContext};
 
 pub use self::common::alignment::{
     apply_alignment_fallback as resolve_content_alignment_fallback,

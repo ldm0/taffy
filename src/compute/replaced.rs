@@ -44,6 +44,25 @@ impl ReplacedNaturalSizing {
     }
 }
 
+/// Which layout-object model supplies a replaced sizing operation's
+/// min-content contribution.
+///
+/// Blink's actual `LayoutReplaced` objects (images, SVG, canvas, frames, ...)
+/// drop a cyclic preferred/max inline size to their used minimum. HTML form
+/// controls such as text and range inputs are only treated as replaced for
+/// the compressible-percentage rule: their percentage resolves against zero,
+/// while an absolute `calc()` term remains in the contribution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplacedMinContentKind {
+    /// Natural/external replaced content represented by a replaced layout
+    /// object.
+    #[default]
+    NaturalObject,
+    /// A content-bearing control treated as replaced by CSS Sizing's
+    /// compressible-percentage rule.
+    CompressibleControl,
+}
+
 /// Node-level content metrics and used values for replaced sizing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReplacedSizingContext {
@@ -55,6 +74,8 @@ pub struct ReplacedSizingContext {
     pub size_containment: SizeContainment,
     /// Natural dimensions and the embedding category's default object size.
     pub natural_sizing: ReplacedNaturalSizing,
+    /// Layout-object model used for cyclic min-content contributions.
+    pub min_content_kind: ReplacedMinContentKind,
 }
 
 impl ReplacedSizingContext {
@@ -65,7 +86,20 @@ impl ReplacedSizingContext {
         size_containment: SizeContainment,
         natural_sizing: ReplacedNaturalSizing,
     ) -> Self {
-        Self { writing_mode, aspect_ratio, size_containment, natural_sizing }
+        Self {
+            writing_mode,
+            aspect_ratio,
+            size_containment,
+            natural_sizing,
+            min_content_kind: ReplacedMinContentKind::NaturalObject,
+        }
+    }
+
+    /// Select the layout-object model used for min-content contributions.
+    #[inline(always)]
+    pub const fn with_min_content_kind(mut self, min_content_kind: ReplacedMinContentKind) -> Self {
+        self.min_content_kind = min_content_kind;
+        self
     }
 }
 
@@ -147,6 +181,9 @@ pub fn compute_replaced_layout(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
+    let cyclic_min_content_axis =
+        replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size)
+            .then(|| context.writing_mode.inline_axis());
     let logical_raw_size = context.writing_mode.to_logical(raw_size);
     let logical_default_object_size = context.writing_mode.to_logical(default_object_size);
     let ratio_only_max_content_inline_size = logical_raw_size
@@ -174,7 +211,9 @@ pub fn compute_replaced_layout(
     // preferred or maximum inline size contains a cyclic percentage. This is
     // deliberately distinct from Flexbox's specified-size suggestion, which
     // resolves the percentage against zero while retaining a calc() length.
-    if replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size) {
+    if context.min_content_kind == ReplacedMinContentKind::NaturalObject
+        && replaced_min_content_contribution_is_cyclic(inputs, context.writing_mode, raw_size, raw_max_size)
+    {
         let mut logical_preferred_size = context.writing_mode.to_logical(preferred_size);
         logical_preferred_size.inline_size = Some(0.0);
         preferred_size = context.writing_mode.to_physical(logical_preferred_size);
@@ -247,11 +286,15 @@ pub fn compute_replaced_layout(
     if sizing_mode == SizingMode::ContentSize {
         match requested_axis {
             RequestedAxis::Horizontal => {
-                preferred_size.width = None;
+                if cyclic_min_content_axis != Some(AbsoluteAxis::Horizontal) {
+                    preferred_size.width = None;
+                }
                 min_size.width = None;
             }
             RequestedAxis::Vertical => {
-                preferred_size.height = None;
+                if cyclic_min_content_axis != Some(AbsoluteAxis::Vertical) {
+                    preferred_size.height = None;
+                }
                 min_size.height = None;
             }
             RequestedAxis::Both => {}
@@ -265,9 +308,11 @@ pub fn compute_replaced_layout(
             padding_border_sum,
         )
         .maybe_max(min_size);
+        let known_or_cyclic_preferred =
+            if cyclic_min_content_axis.is_some() { content_known.or(preferred_size) } else { content_known };
         let transferred = complete_replaced_size(
             apply_aspect_ratio_to_content_size(
-                content_known.maybe_clamp(min_size, style_max_size),
+                known_or_cyclic_preferred.maybe_clamp(min_size, style_max_size),
                 context.aspect_ratio,
                 padding_border_sum,
             ),
@@ -623,6 +668,44 @@ mod tests {
         )
     }
 
+    fn min_content_contribution(
+        writing_mode: WritingMode,
+        preferred_inline_size: Dimension,
+        min_content_kind: ReplacedMinContentKind,
+        resolve_calc_value: impl Fn(*const (), f32) -> f32,
+    ) -> Size<f32> {
+        let style: TestStyle = Style {
+            size: writing_mode.to_physical(crate::geometry::LogicalSize {
+                inline_size: preferred_inline_size,
+                block_size: Dimension::auto(),
+            }),
+            ..Style::default()
+        };
+        let context = ReplacedSizingContext::new(
+            writing_mode,
+            ResolvedAspectRatio::from_option(None, BoxSizing::ContentBox),
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::fixed(
+                writing_mode.to_physical(crate::geometry::LogicalSize { inline_size: 240.0, block_size: 20.0 }),
+            ),
+        )
+        .with_min_content_kind(min_content_kind);
+        let mut input = inputs(Size::NONE);
+        input.parent_writing_mode = writing_mode;
+        input.sizing_mode = SizingMode::ContentSize;
+        input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+        input.axis = writing_mode.inline_axis().into();
+        input.known_dimensions =
+            writing_mode.to_physical(crate::geometry::LogicalSize { inline_size: None, block_size: Some(40.0) });
+        input.definite_dimensions = input.known_dimensions;
+        input.available_space = writing_mode.to_physical(crate::geometry::LogicalSize {
+            inline_size: AvailableSpace::MinContent,
+            block_size: AvailableSpace::Definite(40.0),
+        });
+
+        compute_replaced_layout(input, &style, context, resolve_calc_value).size
+    }
+
     fn measure(style: &TestStyle) -> Size<f32> {
         compute_replaced_layout(
             inputs(Size::NONE),
@@ -710,6 +793,62 @@ mod tests {
             )
             .size,
             Size { width: 100.0, height: 100.0 }
+        );
+    }
+
+    #[test]
+    fn compressible_control_percentage_contribution_resolves_against_zero() {
+        assert_eq!(
+            min_content_contribution(
+                WritingMode::HorizontalTb,
+                Dimension::percent(1.0),
+                ReplacedMinContentKind::CompressibleControl,
+                |_, _| 0.0,
+            ),
+            Size { width: 0.0, height: 40.0 }
+        );
+        assert_eq!(
+            min_content_contribution(
+                WritingMode::VerticalLr,
+                Dimension::percent(1.0),
+                ReplacedMinContentKind::CompressibleControl,
+                |_, _| 0.0,
+            ),
+            Size { width: 40.0, height: 0.0 }
+        );
+    }
+
+    #[cfg(feature = "calc")]
+    #[test]
+    fn only_compressible_controls_keep_the_absolute_calc_contribution() {
+        let preferred_size = Dimension::calc((&REPLACED_CALC_TOKEN as *const ReplacedCalcToken).cast());
+
+        assert_eq!(
+            min_content_contribution(
+                WritingMode::HorizontalTb,
+                preferred_size,
+                ReplacedMinContentKind::CompressibleControl,
+                |_, basis| 140.0 + basis,
+            ),
+            Size { width: 140.0, height: 40.0 }
+        );
+        assert_eq!(
+            min_content_contribution(
+                WritingMode::VerticalLr,
+                preferred_size,
+                ReplacedMinContentKind::CompressibleControl,
+                |_, basis| 140.0 + basis,
+            ),
+            Size { width: 40.0, height: 140.0 }
+        );
+        assert_eq!(
+            min_content_contribution(
+                WritingMode::HorizontalTb,
+                preferred_size,
+                ReplacedMinContentKind::NaturalObject,
+                |_, basis| 140.0 + basis,
+            ),
+            Size { width: 0.0, height: 40.0 }
         );
     }
 
