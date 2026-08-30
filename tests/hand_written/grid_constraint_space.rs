@@ -475,3 +475,44 @@ fn orthogonal_grid_item_percentages_do_not_use_the_viewport_fallback() {
     assert_eq!(tree.layout(grid).unwrap().size, Size { width: 10.0, height: 10.0 });
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 30.0, height: 30.0 });
 }
+
+#[test]
+fn cyclic_percentage_minimums_do_not_enable_the_grid_automatic_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let content = tree.new_leaf(Style { size: Size::from_lengths(30.0, 30.0), ..Default::default() }).unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size::from_percent(1.0, 1.0),
+                min_size: Size::from_percent(1.0, 1.0),
+                grid_column: Line { start: line(2), end: line(3) },
+                grid_row: Line { start: line(2), end: line(3) },
+                justify_self: Some(JustifySelf::START),
+                align_self: Some(AlignSelf::START),
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(10.0, 10.0),
+                grid_template_columns: vec![length(3.0), auto(), length(4.0)],
+                grid_template_rows: vec![length(1.0), auto(), length(2.0)],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) })
+        .unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 10.0, height: 10.0 });
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 3.0, height: 7.0 });
+}

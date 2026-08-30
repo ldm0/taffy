@@ -5,7 +5,7 @@ use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstra
 use crate::compute::common::baseline::{
     determine_baseline_group, determine_baseline_writing_mode, BaselineGroup, FontBaseline,
 };
-use crate::compute::common::intrinsic_size::measure_child_intrinsic_contribution;
+use crate::compute::common::intrinsic_size::{measure_child_intrinsic_contribution, resolve_minimum_size};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbstractAxis, Line, LogicalSize, Rect, Size};
@@ -759,9 +759,7 @@ impl GridItem {
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: preferred_size,
             preferred_size_is_indefinite: preferred_size.map(|size| size.is_none()),
-            min_size: self
-                .min_size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            min_size: resolve_minimum_size(self.min_size, grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
             max_size: self
                 .max_size
