@@ -14,9 +14,10 @@ use crate::geometry::{
     Rect, Size, StaticPositionEdge,
 };
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
+    Position,
 };
-use crate::tree::{AutoSizeBehavior, ChildLayoutInput, Layout, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::tree::{AutoSizeBehavior, ChildLayoutInput, Layout, LayoutOutput, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, ResolveOrZero};
 
@@ -43,6 +44,64 @@ pub(super) struct GridItemPlacement {
     pub(super) first_baseline: Option<f32>,
     /// Last baseline relative to the item's border box.
     pub(super) last_baseline: Option<f32>,
+}
+
+/// A grid item's final fragment before alignment places it in its grid area.
+///
+/// Grid track sizing may use temporary intrinsic fragments to account for
+/// baseline shims. Final baseline alignment must instead inspect fragments
+/// laid out against the resolved grid area. Keeping this state separate from
+/// positioning makes that second baseline pass explicit and ensures baseline
+/// offsets cannot change the item's available size.
+pub(super) struct FinalGridItemLayout {
+    /// Final physical grid-area rectangle.
+    grid_area: Rect<f32>,
+    /// Container logical-to-physical coordinate mapping.
+    flow: GridFlow,
+    /// Writing mode used to produce the item fragment.
+    writing_mode: WritingMode,
+    /// Physical margins resolved against the grid-area inline size.
+    margin: Rect<Option<f32>>,
+    /// Used self-alignment in each container axis.
+    alignment_styles: InBothAbstractAxis<AlignSelf>,
+    /// Final item border-box size.
+    physical_size: Size<f32>,
+    /// Child fragment output, including both baseline sets.
+    layout_output: LayoutOutput,
+    /// Physical scrollbar-gutter size included in the item box.
+    scrollbar_size: Size<f32>,
+    /// Resolved physical padding.
+    padding: Rect<f32>,
+    /// Resolved physical border.
+    border: Rect<f32>,
+    /// Physical overflow behavior used for scrollable-overflow contribution.
+    overflow: Point<Overflow>,
+}
+
+impl FinalGridItemLayout {
+    /// Return the final border-box size used by baseline synthesis.
+    pub(super) const fn size(&self) -> Size<f32> {
+        self.physical_size
+    }
+
+    /// Return the requested fragment baseline set.
+    pub(super) const fn baselines(&self, is_last: bool) -> Point<Option<f32>> {
+        if is_last {
+            self.layout_output.last_baselines
+        } else {
+            self.layout_output.first_baselines
+        }
+    }
+
+    /// Return the physical margins resolved against this item's grid area.
+    pub(super) const fn margin(&self) -> Rect<Option<f32>> {
+        self.margin
+    }
+
+    /// Return the item's writing mode used for this fragment.
+    pub(super) const fn writing_mode(&self) -> WritingMode {
+        self.writing_mode
+    }
 }
 
 /// Keep the final numeric value only on axes whose sizing source is definite.
@@ -125,29 +184,25 @@ pub(super) fn align_tracks(
     });
 }
 
-/// Align and size a grid item into it's final position
+/// Lay out a grid item against its resolved grid area.
+///
+/// This deliberately does not apply a baseline shim. A shim contributes to
+/// intrinsic track sizing and final alignment, but it is not part of the
+/// child's containing-block size (matching Blink's separation between
+/// `CreateConstraintSpaceForLayout` and `ComputeBaselineOffset`).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn align_and_position_item(
+pub(super) fn layout_grid_item(
     tree: &mut impl LayoutGridContainer,
     node: NodeId,
-    order: u32,
     grid_area: Rect<f32>,
     container_alignment_styles: InBothAbstractAxis<Option<AlignItems>>,
-    baseline_shim: InBothAbstractAxis<f32>,
-    baseline_group: InBothAbstractAxis<BaselineGroup>,
     baseline_fallback: InBothAbstractAxis<Option<AlignSelf>>,
     direction: Direction,
     parent_writing_mode: WritingMode,
-    container_border_box_size: Size<f32>,
-    container_border: Rect<f32>,
-    container_scrollbar_insets: Rect<f32>,
-) -> GridItemPlacement {
+) -> FinalGridItemLayout {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
     let flow = GridFlow::new(parent_writing_mode, direction);
-    let converter = flow.writing_direction().converter(container_border_box_size);
-    let logical_grid_area_size = converter.to_logical_size(grid_area_size);
-    let logical_grid_area_offset =
-        converter.to_logical_point(Point { x: grid_area.left, y: grid_area.top }, grid_area_size);
+    let logical_grid_area_size = flow.to_logical_size(grid_area_size);
     let percentage_basis = logical_grid_area_size.inline_size;
 
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
@@ -218,13 +273,11 @@ pub(super) fn align_and_position_item(
         inline_size: logical_grid_area_size
             .inline_size
             .maybe_sub(logical_margin.inline_start)
-            .maybe_sub(logical_margin.inline_end)
-            - baseline_shim.inline,
+            .maybe_sub(logical_margin.inline_end),
         block_size: logical_grid_area_size
             .block_size
             .maybe_sub(logical_margin.block_start)
-            .maybe_sub(logical_margin.block_end)
-            - baseline_shim.block,
+            .maybe_sub(logical_margin.block_end),
     };
     let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
     let item_available_size = grid_area_minus_item_margins_size;
@@ -423,6 +476,53 @@ pub(super) fn align_and_position_item(
     let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
 
     let physical_size = Size { width, height };
+    FinalGridItemLayout {
+        grid_area,
+        flow,
+        writing_mode: item_writing_mode,
+        margin,
+        alignment_styles,
+        physical_size,
+        layout_output,
+        scrollbar_size,
+        padding,
+        border,
+        overflow,
+    }
+}
+
+/// Align and position a previously laid-out grid item.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn position_grid_item(
+    tree: &mut impl LayoutGridContainer,
+    node: NodeId,
+    order: u32,
+    item_layout: FinalGridItemLayout,
+    baseline_shim: InBothAbstractAxis<f32>,
+    baseline_group: InBothAbstractAxis<BaselineGroup>,
+    container_border_box_size: Size<f32>,
+    container_border: Rect<f32>,
+    container_scrollbar_insets: Rect<f32>,
+) -> GridItemPlacement {
+    let FinalGridItemLayout {
+        grid_area,
+        flow,
+        writing_mode: _,
+        margin,
+        alignment_styles,
+        physical_size,
+        layout_output,
+        scrollbar_size,
+        padding,
+        border,
+        overflow,
+    } = item_layout;
+    let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
+    let converter = flow.writing_direction().converter(container_border_box_size);
+    let logical_grid_area_size = converter.to_logical_size(grid_area_size);
+    let logical_grid_area_offset =
+        converter.to_logical_point(Point { x: grid_area.left, y: grid_area.top }, grid_area_size);
+    let logical_margin = flow.writing_direction().to_logical_box_strut(margin);
     let logical_size = flow.to_logical_size(physical_size);
     let (inline_offset, _) = align_item_within_area(
         Line {

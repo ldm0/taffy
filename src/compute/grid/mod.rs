@@ -1,6 +1,8 @@
 //! This module is a partial implementation of the CSS Grid Level 1 specification
 //! <https://www.w3.org/TR/css-grid-1>
-use crate::compute::common::baseline::{physical_baseline, synthesized_logical_baseline, BaselineGroup};
+use crate::compute::common::baseline::{
+    logical_block_baseline, physical_baseline, synthesized_logical_baseline, BaselineGroup,
+};
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Point, Size};
 use crate::style::{AlignItems, AvailableSpace, Position};
@@ -16,13 +18,14 @@ use crate::{
     style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
     JustifyContent, LayoutGridContainer, RequestedAxis,
 };
-use alignment::{align_and_position_item, align_tracks, out_of_flow_static_position};
+use alignment::{align_tracks, layout_grid_item, out_of_flow_static_position, position_grid_item, FinalGridItemLayout};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
 use flow::GridFlow;
 use implicit_grid::compute_grid_size_estimate;
 use placement::place_grid_items;
 use track_sizing::{
-    determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes, track_sizing_algorithm,
+    determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_baseline_shims, resolve_item_track_indexes,
+    track_sizing_algorithm,
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
@@ -89,6 +92,63 @@ fn refresh_intrinsic_min_content_contributions<Tree: LayoutPartialTree>(
     }
 
     contribution_changed
+}
+
+/// Recompute baseline-sharing groups from fragments laid out against the
+/// resolved grid areas.
+///
+/// The earlier track-sizing pass intentionally uses intrinsic measurements so
+/// its shims can contribute to track sizes. Those measurements are not valid
+/// placement geometry once the tracks have their used sizes. Blink likewise
+/// completes a separate final baseline-alignment pass before placing items.
+fn resolve_final_item_baselines(items: &mut [GridItem], layouts: &[FinalGridItemLayout]) {
+    debug_assert_eq!(items.len(), layouts.len());
+
+    for axis in [AbstractAxis::Inline, AbstractAxis::Block] {
+        // `layouts` is kept in source order while baseline grouping sorts the
+        // items, so restore their one-to-one correspondence before each axis.
+        items.sort_by_key(|item| item.source_order);
+
+        for (item, layout) in items.iter_mut().zip(layouts) {
+            *item.alignment_baseline.get_mut(axis) = None;
+            *item.baseline_shim.get_mut(axis) = 0.0;
+
+            if !item.alignment(axis).is_baseline() {
+                continue;
+            }
+
+            let alignment = item.alignment(axis);
+            let baseline_context = item.baseline_context.get(axis);
+            let baseline_writing_direction =
+                crate::WritingDirection::new(baseline_context.writing_mode, crate::Direction::Ltr);
+            let block_size = baseline_context.writing_mode.to_logical(layout.size()).block_size;
+            let fragment_baseline = logical_block_baseline(
+                layout.baselines(alignment.is_last_baseline()),
+                layout.size(),
+                baseline_writing_direction,
+            );
+
+            item.resolve_baseline_fallback(axis, layout.writing_mode(), fragment_baseline.is_none());
+            if !item.used_alignment(axis).is_baseline() {
+                continue;
+            }
+
+            let baseline_from_start = fragment_baseline.unwrap_or_else(|| {
+                synthesized_logical_baseline(block_size, baseline_writing_direction, item.parent_font_baseline)
+            });
+            let baseline =
+                if alignment.is_last_baseline() { block_size - baseline_from_start } else { baseline_from_start };
+            let logical_margin = baseline_writing_direction.to_logical_box_strut(layout.margin());
+            let baseline_margin =
+                if alignment.is_last_baseline() { logical_margin.block_end } else { logical_margin.block_start }
+                    .unwrap_or(0.0);
+            *item.alignment_baseline.get_mut(axis) = Some(baseline + baseline_margin);
+        }
+
+        resolve_baseline_shims(items, axis);
+    }
+
+    items.sort_by_key(|item| item.source_order);
 }
 
 /// Invalidate contribution caches in one logical axis before rerunning track
@@ -958,8 +1018,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let container_alignment_styles = InBothAbstractAxis { inline: justify_items, block: align_items };
     let physical_container_border_box = flow.to_physical_size(container_border_box);
 
-    // Position in-flow children (stored in items vector)
-    for (index, item) in items.iter_mut().enumerate() {
+    // Lay out in-flow children against their final grid areas before resolving
+    // placement baselines. Intrinsic fragments from track sizing are not
+    // reusable here: fixed, stretched, and orthogonal items can have different
+    // border-box geometry once both track axes are definite.
+    let mut final_item_layouts = Vec::with_capacity(items.len());
+    for item in &items {
         let grid_area = flow.to_physical_rect(
             Line {
                 start: columns[item.column_indexes.start as usize + 1].offset,
@@ -970,18 +1034,31 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 end: rows[item.row_indexes.end as usize].offset,
             },
         );
-        #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-        let placement = align_and_position_item(
+        final_item_layouts.push(layout_grid_item(
             tree,
             item.node,
-            index as u32,
             grid_area,
             container_alignment_styles,
-            item.baseline_shim,
-            InBothAbstractAxis { inline: item.baseline_context.inline.group, block: item.baseline_context.block.group },
             item.baseline_fallback,
             direction,
             writing_mode,
+        ));
+    }
+
+    if has_inline_baseline_aligned_item || has_block_baseline_aligned_item {
+        resolve_final_item_baselines(&mut items, &final_item_layouts);
+    }
+
+    // Position in-flow children (stored in items vector)
+    for (index, (item, item_layout)) in items.iter_mut().zip(final_item_layouts).enumerate() {
+        #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
+        let placement = position_grid_item(
+            tree,
+            item.node,
+            index as u32,
+            item_layout,
+            item.baseline_shim,
+            InBothAbstractAxis { inline: item.baseline_context.inline.group, block: item.baseline_context.block.group },
             physical_container_border_box,
             border,
             scrollbar_insets,

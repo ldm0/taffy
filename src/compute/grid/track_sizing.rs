@@ -533,6 +533,15 @@ fn resolve_item_baselines(
         *item.alignment_baseline.get_mut(alignment_axis) = Some(baseline + baseline_margin);
     }
 
+    resolve_baseline_shims(items, alignment_axis);
+}
+
+/// Resolve a shared baseline and shim for every populated alignment group.
+///
+/// Both intrinsic track sizing and the final fragment pass populate
+/// `alignment_baseline`, then use this common grouping step. This keeps the
+/// two phases consistent while preserving their distinct fragment inputs.
+pub(super) fn resolve_baseline_shims(items: &mut [GridItem], alignment_axis: AbstractAxis) {
     // Items share a baseline only when both their selected track and their
     // major/minor group match. Sorting keeps this pass O(n log n) without a
     // hash table, which is important for no_std builds.

@@ -1,5 +1,6 @@
 use taffy::prelude::*;
 use taffy::{Direction, LogicalOffset, LogicalSize, Point, WritingDirection, WritingMode};
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode as TextWritingMode};
 
 fn layout_two_by_two_grid(writing_mode: WritingMode, direction: Direction) -> [(Point<f32>, Size<f32>); 4] {
     let mut tree = TaffyTree::<()>::new();
@@ -380,6 +381,69 @@ fn grid_baseline_groups_follow_item_line_directions() {
     // major group aligns to block-start and the minor group to block-end.
     assert_eq!(tree.unrounded_layout(major).location, Point { x: 80.0, y: 0.0 });
     assert_eq!(tree.unrounded_layout(minor).location, Point { x: 0.0, y: 50.0 });
+}
+
+#[test]
+fn fixed_grid_baseline_alignment_uses_final_area_fragments() {
+    let mut tree = new_test_tree();
+
+    // This orthogonal item cannot expose a baseline in the horizontal grid's
+    // row-axis context, so its final 200px border-box under edge is used.
+    let orthogonal = tree
+        .new_leaf(Style {
+            size: Size { width: length(100.0), height: length(200.0) },
+            grid_column: Line { start: line(1), end: line(2) },
+            grid_row: Line { start: line(1), end: line(2) },
+            ..Style::default()
+        })
+        .unwrap();
+    tree.set_writing_mode(orthogonal, WritingMode::VerticalRl).unwrap();
+
+    // The text is four lines (40px high) at min-content width, but one line
+    // (10px high) in its final 200px grid area. The flex wrapper exports that
+    // synthesized child baseline while retaining its own fixed 100px height.
+    let text = tree
+        .new_leaf_with_context(
+            Style::default(),
+            TestNodeContext::ahem_text(
+                "aaaaa\u{200b}aaaaa\u{200b}aaaaa\u{200b}aaaaa".to_owned(),
+                TextWritingMode::Horizontal,
+            ),
+        )
+        .unwrap();
+    let horizontal = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                align_items: Some(AlignItems::START),
+                size: Size { width: auto(), height: length(100.0) },
+                grid_column: Line { start: line(2), end: line(3) },
+                grid_row: Line { start: line(1), end: line(2) },
+                ..Style::default()
+            },
+            &[text],
+        )
+        .unwrap();
+
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(300.0), height: length(300.0) },
+                grid_template_columns: vec![length(100.0), length(200.0)],
+                grid_template_rows: vec![length(200.0), length(100.0)],
+                align_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[orthogonal, horizontal],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.unrounded_layout(orthogonal).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(horizontal).size, Size { width: 200.0, height: 100.0 });
+    assert_eq!(tree.unrounded_layout(horizontal).location, Point { x: 100.0, y: 190.0 });
 }
 
 #[test]
