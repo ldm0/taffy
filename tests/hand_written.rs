@@ -10,6 +10,7 @@ mod hand_written {
     mod flex_basis_content;
     mod floats;
     mod grid_detailed_layout_info;
+    mod grid_track_rerun;
     mod intrinsic_width;
     mod measure;
     mod min_max_overrides;
