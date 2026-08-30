@@ -13,6 +13,39 @@ use core::unreachable;
 
 use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
 
+/// Node-level values resolved by the embedding before leaf layout begins.
+///
+/// These values form one adapter boundary so browser integrations do not need
+/// a separate leaf-layout entry point for every combination of inherited and
+/// replaced-element state.
+#[derive(Copy, Clone, Debug)]
+pub struct LeafLayoutContext {
+    /// The inherited writing mode that defines the node's logical axes.
+    writing_mode: WritingMode,
+    /// The node's used preferred ratio, including its sizing-box semantics.
+    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Physical space occupied by resolved scrollbar gutters.
+    scrollbar_insets: Rect<f32>,
+}
+
+impl LeafLayoutContext {
+    /// Creates a context from values already resolved at the layout node.
+    pub const fn new(
+        writing_mode: WritingMode,
+        resolved_aspect_ratio: Option<ResolvedAspectRatio>,
+        scrollbar_insets: Rect<f32>,
+    ) -> Self {
+        Self { writing_mode, resolved_aspect_ratio, scrollbar_insets }
+    }
+
+    /// Builds the default context from values exposed directly by the style.
+    fn from_style(style: &impl CoreStyle) -> Self {
+        let resolved_aspect_ratio =
+            style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
+        Self::new(style.writing_mode(), resolved_aspect_ratio, resolve_scrollbar_insets(style))
+    }
+}
+
 /// Compute the size of a leaf node (node with no children)
 pub fn compute_leaf_layout<MeasureFunction>(
     inputs: LayoutInput,
@@ -23,12 +56,10 @@ pub fn compute_leaf_layout<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_resolved_inputs(
+    compute_leaf_layout_with_context(
         inputs,
         style,
-        style.writing_mode(),
-        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
-        resolve_scrollbar_insets(style),
+        LeafLayoutContext::from_style(style),
         resolve_calc_value,
         measure_function,
     )
@@ -42,19 +73,17 @@ where
 pub fn compute_leaf_layout_with_aspect_ratio<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
-    resolved_aspect_ratio: ResolvedAspectRatio,
+    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_resolved_inputs(
+    compute_leaf_layout_with_context(
         inputs,
         style,
-        style.writing_mode(),
-        resolved_aspect_ratio,
-        resolve_scrollbar_insets(style),
+        LeafLayoutContext::new(style.writing_mode(), resolved_aspect_ratio, resolve_scrollbar_insets(style)),
         resolve_calc_value,
         measure_function,
     )
@@ -76,12 +105,12 @@ pub fn compute_leaf_layout_with_scrollbar_insets<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_resolved_inputs(
+    let resolved_aspect_ratio =
+        style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
+    compute_leaf_layout_with_context(
         inputs,
         style,
-        style.writing_mode(),
-        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
-        scrollbar_insets,
+        LeafLayoutContext::new(style.writing_mode(), resolved_aspect_ratio, scrollbar_insets),
         resolve_calc_value,
         measure_function,
     )
@@ -97,37 +126,34 @@ pub fn compute_leaf_layout_with_aspect_ratio_and_writing_mode<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
     writing_mode: WritingMode,
-    resolved_aspect_ratio: ResolvedAspectRatio,
+    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_resolved_inputs(
+    compute_leaf_layout_with_context(
         inputs,
         style,
-        writing_mode,
-        resolved_aspect_ratio,
-        resolve_scrollbar_insets(style),
+        LeafLayoutContext::new(writing_mode, resolved_aspect_ratio, resolve_scrollbar_insets(style)),
         resolve_calc_value,
         measure_function,
     )
 }
 
 /// Computes a leaf from the complete set of embedding-resolved inputs.
-fn compute_leaf_layout_with_resolved_inputs<MeasureFunction>(
+pub fn compute_leaf_layout_with_context<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
-    writing_mode: WritingMode,
-    resolved_aspect_ratio: ResolvedAspectRatio,
-    scrollbar_insets: Rect<f32>,
+    context: LeafLayoutContext,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
     measure_function: MeasureFunction,
 ) -> LayoutOutput
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
+    let LeafLayoutContext { writing_mode, resolved_aspect_ratio, scrollbar_insets } = context;
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
@@ -145,7 +171,7 @@ where
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, resolved_aspect_ratio.disabled(), false)
+            (node_size, node_min_size, node_max_size, None, false)
         }
         SizingMode::InherentSize => {
             let raw_size = style.size();

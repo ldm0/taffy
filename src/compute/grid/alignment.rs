@@ -258,7 +258,7 @@ pub(super) fn align_and_position_item(
             }
         }),
         vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || aspect_ratio.ratio.is_some() {
+            if inherent_size.height.is_some() || aspect_ratio.is_some() {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH

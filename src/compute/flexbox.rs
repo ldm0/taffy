@@ -158,7 +158,7 @@ struct FlexItem {
     /// The maximum allowable size when aspect-ratio transfers participate.
     max_size_with_transfer: Size<Option<f32>>,
     /// The used aspect ratio and the CSS sizing box that it constrains.
-    aspect_ratio: ResolvedAspectRatio,
+    aspect_ratio: Option<ResolvedAspectRatio>,
     /// The CSS sizing box used by authored size properties.
     box_sizing: BoxSizing,
     /// Resolved flex basis state. This retains whether resolution needed a
@@ -356,11 +356,7 @@ pub fn compute_flexbox_layout(
     let style = tree.get_flexbox_container_style(node);
 
     // Pull these out earlier to avoid borrowing issues
-    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize {
-        resolved_aspect_ratio
-    } else {
-        resolved_aspect_ratio.disabled()
-    };
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border_sum = padding.sum_axes() + border.sum_axes();
@@ -674,7 +670,7 @@ fn compute_constants(
     style: impl FlexboxContainerStyle,
     scrollbar_insets: Rect<f32>,
     inputs: LayoutInput,
-    resolved_aspect_ratio: ResolvedAspectRatio,
+    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     writing_mode: WritingMode,
 ) -> AlgoConstants {
     let LayoutInput { known_dimensions, parent_size, sizing_mode, .. } = inputs;
@@ -691,8 +687,7 @@ fn compute_constants(
     let is_wrap = matches!(flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
     let is_wrap_reverse = flow.cross_axis_reversed;
 
-    let aspect_ratio =
-        if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { resolved_aspect_ratio.disabled() };
+    let aspect_ratio = if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -814,7 +809,7 @@ fn generate_anonymous_flex_items(
             let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
                 .into_iter()
                 .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
-            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.is_some();
             let flex_basis = child_style.flex_basis();
             let mut untransferred_size =
                 raw_size.maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis));
