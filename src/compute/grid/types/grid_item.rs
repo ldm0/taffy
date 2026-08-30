@@ -1,6 +1,6 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
-use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
@@ -9,7 +9,7 @@ use crate::style::{
 };
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, GridItemStyle, LengthPercentage, WritingMode};
+use crate::{AutoSizeBehavior, BoxSizing, GridItemStyle, LengthPercentage, WritingMode};
 use core::ops::Range;
 
 /// Represents a single grid item
@@ -278,21 +278,26 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let resolved = resolve_size_constraints(
-            self.size
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: self
+                .size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.min_size
+            min_size: self
+                .min_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.max_size
+            max_size: self
+                .max_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.size.map(|dimension| dimension.is_auto()),
-            TransferredSizesMode::Normal,
+            size_is_auto: self.size.map(|dimension| dimension.is_auto()),
+            writing_mode: tree.get_writing_mode(self.node),
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
-            padding_border_size,
-        );
+            padding_border: padding_border_size,
+        });
         let inherent_size = resolved.size;
         let min_size = resolved.min_size;
         let max_size = resolved.max_size;
@@ -559,21 +564,26 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let resolved = resolve_size_constraints(
-            self.size
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: self
+                .size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.min_size
+            min_size: self
+                .min_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.max_size
+            max_size: self
+                .max_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            self.size.map(|dimension| dimension.is_auto()),
-            TransferredSizesMode::Normal,
-            self.aspect_ratio,
-            padding_border_size,
-        );
+            size_is_auto: self.size.map(|dimension| dimension.is_auto()),
+            writing_mode: tree.get_writing_mode(self.node),
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: self.aspect_ratio,
+            padding_border: padding_border_size,
+        });
         resolved
             .size
             .get(axis)

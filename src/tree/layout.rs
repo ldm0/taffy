@@ -42,6 +42,36 @@ pub enum SizingPurpose {
     IntrinsicContribution,
 }
 
+/// How an authored `auto` size behaves in the logical block axis.
+///
+/// This belongs to the constraint space rather than style: the containing
+/// formatting context decides whether `auto` is content-sized or stretched
+/// when it supplies known dimensions. Keeping the resolution order explicit
+/// is required when a preferred aspect ratio can synthesize the block size.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub enum AutoSizeBehavior {
+    /// Resolve `auto` from the formatting context's content contribution.
+    #[default]
+    FitContent,
+    /// Stretch before considering a preferred aspect ratio.
+    StretchExplicit,
+    /// Stretch only if a preferred aspect ratio did not supply a size.
+    StretchImplicit,
+}
+
+impl AutoSizeBehavior {
+    /// Whether `auto` uses content/intrinsic block-size semantics here.
+    #[inline(always)]
+    pub const fn is_content_based(self, has_preferred_aspect_ratio: bool) -> bool {
+        match self {
+            Self::FitContent => true,
+            Self::StretchExplicit => false,
+            Self::StretchImplicit => has_preferred_aspect_ratio,
+        }
+    }
+}
+
 /// A set of margins that are available for collapsing with for block layout's margin collapsing
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -145,6 +175,8 @@ pub struct LayoutInput {
     pub sizing_purpose: SizingPurpose,
     /// Which axis we need the size of
     pub axis: RequestedAxis,
+    /// Resolution behavior for an authored logical `block-size: auto`.
+    pub block_auto_behavior: AutoSizeBehavior,
 
     /// Known dimensions represent dimensions (width/height) which should be taken as fixed when performing layout.
     /// For example, if known_dimensions.width is set to Some(WIDTH) then this means something like:
@@ -193,6 +225,7 @@ impl LayoutInput {
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
         vertical_margins_are_collapsible: Line::FALSE,
     };
 
@@ -204,6 +237,7 @@ impl LayoutInput {
             run_mode: self.run_mode,
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
+            block_auto_behavior: self.block_auto_behavior,
             writing_mode,
             parent_writing_mode: self.parent_writing_mode,
             known_size: writing_mode.to_logical(self.known_dimensions),
@@ -234,6 +268,8 @@ pub(crate) struct ChildLayoutInput {
     pub available_space: Size<AvailableSpace>,
     /// Whether authored size constraints participate in child sizing.
     pub sizing_mode: SizingMode,
+    /// Resolution behavior for an authored logical `block-size: auto`.
+    pub block_auto_behavior: AutoSizeBehavior,
     /// Whether the child's physical vertical margins may collapse through the boundary.
     pub vertical_margins_are_collapsible: Line<bool>,
 }
@@ -255,8 +291,16 @@ impl ChildLayoutInput {
             parent_writing_mode,
             available_space,
             sizing_mode,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
             vertical_margins_are_collapsible,
         }
+    }
+
+    /// Set the containing formatting context's block-axis auto behavior.
+    #[inline(always)]
+    pub const fn with_block_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {
+        self.block_auto_behavior = behavior;
+        self
     }
 
     /// Convert shared child inputs into an intrinsic measurement request.
@@ -267,6 +311,7 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis,
+            block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
             parent_size: self.parent_size,
@@ -284,6 +329,7 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
+            block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
             parent_size: self.parent_size,
@@ -309,6 +355,8 @@ pub struct ConstraintSpace {
     /// Whether this computation produces final layout or an intrinsic
     /// contribution.
     pub sizing_purpose: SizingPurpose,
+    /// Resolution behavior for an authored logical `block-size: auto`.
+    pub block_auto_behavior: AutoSizeBehavior,
     /// Writing mode whose logical axes own these sizes.
     pub writing_mode: WritingMode,
     /// Writing mode of the containing block that produced this space.
@@ -337,6 +385,7 @@ impl ConstraintSpace {
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
             axis: self.requested_axis,
+            block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.writing_mode.to_physical(self.known_size),
             definite_dimensions: self.writing_mode.to_physical(self.definite_size),
             parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
@@ -388,6 +437,7 @@ mod constraint_space_tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size { width: Some(30.0), height: None },
             definite_dimensions: Size { width: Some(30.0), height: None },
             parent_size: Size { width: Some(100.0), height: Some(200.0) },
@@ -740,4 +790,12 @@ pub enum DetailedLayoutInfo {
     Grid(Box<crate::compute::grid::DetailedGridInfo>),
     /// For node that hasn't had any detailed information yet
     None,
+}
+#[test]
+fn block_auto_behavior_preserves_aspect_ratio_resolution_order() {
+    assert!(AutoSizeBehavior::FitContent.is_content_based(false));
+    assert!(AutoSizeBehavior::FitContent.is_content_based(true));
+    assert!(!AutoSizeBehavior::StretchExplicit.is_content_based(true));
+    assert!(!AutoSizeBehavior::StretchImplicit.is_content_based(false));
+    assert!(AutoSizeBehavior::StretchImplicit.is_content_based(true));
 }

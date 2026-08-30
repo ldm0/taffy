@@ -11,7 +11,10 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
 use core::unreachable;
 
-use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use super::common::aspect_ratio::{
+    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+};
+use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 /// Node-level values resolved by the embedding before leaf layout begins.
 ///
@@ -175,15 +178,23 @@ where
         }
         SizingMode::InherentSize => {
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(
-                raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                style.min_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                raw_size.map(|dimension| dimension.is_auto()),
-                TransferredSizesMode::Normal,
-                resolved_aspect_ratio,
-                pb_sum,
-            );
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                min_size: style
+                    .min_size()
+                    .maybe_resolve(parent_size, &resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment),
+                max_size: style
+                    .max_size()
+                    .maybe_resolve(parent_size, &resolve_calc_value)
+                    .maybe_add(box_sizing_adjustment),
+                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                block_auto_behavior: inputs.block_auto_behavior,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio: resolved_aspect_ratio,
+                padding_border: pb_sum,
+            });
             let style_size = resolved.size;
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
@@ -194,9 +205,12 @@ where
             // other axis through the preferred ratio at the leaf boundary just
             // like an authored one-axis size.
             let size_before_ratio = known_dimensions.or(style_size);
-            let node_size = size_before_ratio.maybe_apply_aspect_ratio_with_box_sizing(
+            let node_size = apply_preferred_aspect_ratio(
+                size_before_ratio,
+                raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                inputs.block_auto_behavior,
                 resolved_aspect_ratio,
-                BoxSizing::BorderBox,
                 pb_sum,
             );
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
@@ -227,36 +241,53 @@ where
 
     // Return early if both width and height are known
     if run_mode == RunMode::ComputeSize && has_styles_preventing_being_collapsed_through {
-        if let Size { width: Some(width), height: Some(height) } = node_size {
-            let size = Size { width, height }
-                .maybe_clamp(node_min_size, node_max_size)
-                .maybe_max(padding_border.sum_axes().map(Some));
+        let used_size = resolve_used_size(known_dimensions, node_size, node_min_size, node_max_size, pb_sum);
+        if let Size { width: Some(width), height: Some(height) } = used_size {
+            let size = Size { width, height };
             return LayoutOutput::from_outer_size(size).with_applied_aspect_ratio(applied_aspect_ratio);
         };
     }
 
     // Compute available space
+    let resolve_available_axis = |known_dimension: Option<f32>,
+                                  node_size: Option<f32>,
+                                  available_space: AvailableSpace,
+                                  margin_sum: f32,
+                                  min_size: Option<f32>,
+                                  max_size: Option<f32>,
+                                  minimum_border_box_size: f32,
+                                  content_box_inset: f32| {
+        let resolved_size = resolve_used_axis(known_dimension, node_size, min_size, max_size, minimum_border_box_size);
+        available_space.maybe_sub(margin_sum).maybe_set(resolved_size).map_definite_value(|size| {
+            let outer_size = if resolved_size.is_some() {
+                size
+            } else {
+                size.maybe_clamp(min_size, max_size).max(minimum_border_box_size)
+            };
+            outer_size - content_box_inset
+        })
+    };
     let available_space = Size {
-        width: known_dimensions
-            .width
-            .map(AvailableSpace::from)
-            .unwrap_or(available_space.width)
-            .maybe_sub(margin.horizontal_axis_sum())
-            .maybe_set(known_dimensions.width)
-            .maybe_set(node_size.width)
-            .map_definite_value(|size| {
-                size.maybe_clamp(node_min_size.width, node_max_size.width) - content_box_inset.horizontal_axis_sum()
-            }),
-        height: known_dimensions
-            .height
-            .map(AvailableSpace::from)
-            .unwrap_or(available_space.height)
-            .maybe_sub(margin.vertical_axis_sum())
-            .maybe_set(known_dimensions.height)
-            .maybe_set(node_size.height)
-            .map_definite_value(|size| {
-                size.maybe_clamp(node_min_size.height, node_max_size.height) - content_box_inset.vertical_axis_sum()
-            }),
+        width: resolve_available_axis(
+            known_dimensions.width,
+            node_size.width,
+            available_space.width,
+            margin.horizontal_axis_sum(),
+            node_min_size.width,
+            node_max_size.width,
+            pb_sum.width,
+            content_box_inset.horizontal_axis_sum(),
+        ),
+        height: resolve_available_axis(
+            known_dimensions.height,
+            node_size.height,
+            available_space.height,
+            margin.vertical_axis_sum(),
+            node_min_size.height,
+            node_max_size.height,
+            pb_sum.height,
+            content_box_inset.vertical_axis_sum(),
+        ),
     };
 
     // Measure node
@@ -268,16 +299,27 @@ where
         },
         available_space,
     );
-    let clamped_size = known_dimensions
-        .or(node_size)
-        .unwrap_or(measured_size + content_box_inset.sum_axes())
-        .maybe_clamp(node_min_size, node_max_size);
-    let ratio_height = Size { width: Some(clamped_size.width), height: None }
+    let measured_outer_size = measured_size + content_box_inset.sum_axes();
+    let used_size = resolve_used_size(
+        known_dimensions,
+        node_size.or(measured_outer_size.map(Some)),
+        node_min_size,
+        node_max_size,
+        pb_sum,
+    )
+    .unwrap_or(measured_outer_size);
+    let ratio_height = Size { width: Some(used_size.width), height: None }
         .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
         .height
         .unwrap_or(0.0);
-    let size = Size { width: clamped_size.width, height: f32_max(clamped_size.height, ratio_height) };
-    let size = size.maybe_max(padding_border.sum_axes().map(Some));
+    let size = Size {
+        width: used_size.width,
+        height: if known_dimensions.height.is_some() {
+            used_size.height
+        } else {
+            f32_max(used_size.height, ratio_height)
+        },
+    };
 
     let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
     output.margins_can_collapse_through =
