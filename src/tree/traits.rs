@@ -214,9 +214,9 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// can override this node-level seam to combine authored and natural ratios
     /// for replaced elements. Intrinsic ratios and CSS `auto <ratio>` use the
     /// content box even when authored sizes use the border box.
-    fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> ResolvedAspectRatio {
+    fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> Option<ResolvedAspectRatio> {
         let style = self.get_core_container_style(node_id);
-        ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() }
+        style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()))
     }
 
     /// Resolve calc value

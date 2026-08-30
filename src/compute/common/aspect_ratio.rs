@@ -47,7 +47,7 @@ pub(crate) fn resolve_size_constraints(
     max_size: Size<Option<f32>>,
     size_is_auto: Size<bool>,
     transferred_sizes_mode: TransferredSizesMode,
-    aspect_ratio: ResolvedAspectRatio,
+    aspect_ratio: Option<ResolvedAspectRatio>,
     padding_border: Size<f32>,
 ) -> ResolvedSizeConstraints {
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
@@ -81,7 +81,7 @@ pub(crate) fn resolve_size_constraints(
 fn transferred_constraints(
     constraints: Size<Option<f32>>,
     target_is_auto: Size<bool>,
-    aspect_ratio: ResolvedAspectRatio,
+    aspect_ratio: Option<ResolvedAspectRatio>,
     padding_border: Size<f32>,
 ) -> Size<Option<f32>> {
     Size {
@@ -142,7 +142,7 @@ mod tests {
             Size { width: None, height: Some(100.0) },
             Size { width: false, height: true },
             TransferredSizesMode::Normal,
-            ResolvedAspectRatio { ratio: Some(0.5), box_sizing: BoxSizing::BorderBox },
+            ResolvedAspectRatio::new(0.5, BoxSizing::BorderBox),
             Size::ZERO,
         );
 
@@ -160,7 +160,7 @@ mod tests {
             Size { width: None, height: Some(100.0) },
             Size { width: true, height: true },
             TransferredSizesMode::Normal,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             Size::ZERO,
         );
 
@@ -176,7 +176,7 @@ mod tests {
             Size { width: Some(20.0), height: Some(100.0) },
             Size { width: true, height: true },
             TransferredSizesMode::Ignore,
-            ResolvedAspectRatio { ratio: Some(2.0), box_sizing: BoxSizing::BorderBox },
+            ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             Size::ZERO,
         );
 

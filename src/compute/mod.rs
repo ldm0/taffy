@@ -39,7 +39,7 @@ pub(crate) mod grid;
 
 pub use leaf::{
     compute_leaf_layout, compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
-    compute_leaf_layout_with_scrollbar_insets,
+    compute_leaf_layout_with_context, compute_leaf_layout_with_scrollbar_insets, LeafLayoutContext,
 };
 
 #[cfg(feature = "block_layout")]
@@ -301,7 +301,7 @@ fn node_block_constraint_dependency(
     }
 
     let writing_mode = tree.get_writing_mode(node);
-    let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).ratio.is_some();
+    let has_aspect_ratio = tree.get_resolved_aspect_ratio(node).is_some();
     let style_depends_on_parent_block_size = {
         let style = tree.get_core_container_style(node);
         let size = writing_mode.to_logical(style.size());

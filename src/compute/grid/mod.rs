@@ -60,11 +60,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // 1. Compute "available grid space"
     // https://www.w3.org/TR/css-grid-1/#available-grid-space
-    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize {
-        resolved_aspect_ratio
-    } else {
-        resolved_aspect_ratio.disabled()
-    };
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border = padding + border;

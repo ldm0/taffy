@@ -49,7 +49,7 @@ pub(in super::super) struct GridItem {
     /// The item's max_size style
     pub max_size: Size<Dimension>,
     /// The used aspect ratio and the CSS sizing box that it constrains.
-    pub aspect_ratio: ResolvedAspectRatio,
+    pub aspect_ratio: Option<ResolvedAspectRatio>,
     /// The item's padding style
     pub padding: Rect<LengthPercentage>,
     /// The item's border style
@@ -128,7 +128,7 @@ impl GridItem {
             size: style.size(),
             min_size: style.min_size(),
             max_size: style.max_size(),
-            aspect_ratio: ResolvedAspectRatio { ratio: style.aspect_ratio(), box_sizing: style.box_sizing() },
+            aspect_ratio: style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing())),
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),

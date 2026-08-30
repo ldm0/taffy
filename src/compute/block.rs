@@ -366,11 +366,7 @@ pub fn compute_block_layout(
     // css-align-3 §5.1.1: a non-`normal` `align-content` makes a block container establish an
     // independent formatting context. <https://drafts.csswg.org/css-align-3/#distribution-block>
     let establishes_new_bfc = is_scroll_container || style.align_content().is_some();
-    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize {
-        resolved_aspect_ratio
-    } else {
-        resolved_aspect_ratio.disabled()
-    };
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border_size = (padding + border).sum_axes();
@@ -484,8 +480,7 @@ fn compute_inner(
     let scrollbar_gutter = tree.get_scrollbar_insets(node_id);
     let style = tree.get_block_container_style(node_id);
     let raw_margin = style.margin();
-    let aspect_ratio =
-        if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { resolved_aspect_ratio.disabled() };
+    let aspect_ratio = if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let direction = style.direction();
@@ -850,7 +845,7 @@ fn generate_item_list(
             let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
                 .into_iter()
                 .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
-            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.ratio.is_some();
+            let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.is_some();
             let mut size = raw_size
                 .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);

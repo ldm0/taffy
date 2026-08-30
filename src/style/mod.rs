@@ -376,24 +376,37 @@ pub enum BoxSizing {
     ContentBox,
 }
 
-/// A preferred aspect ratio together with the CSS sizing box whose dimensions
-/// it constrains.
+/// A valid preferred aspect ratio together with the CSS sizing box whose
+/// dimensions it constrains.
 ///
 /// The sizing box normally follows [`BoxSizing`], but intrinsic replaced
 /// ratios and CSS `auto <ratio>` constrain the content box even when authored
 /// sizes use the border box.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct ResolvedAspectRatio {
-    /// Width divided by height, or `None` when no preferred ratio applies.
-    pub ratio: Option<f32>,
+    /// Width divided by height.
+    ratio: f32,
     /// The box whose width and height must satisfy `ratio`.
-    pub box_sizing: BoxSizing,
+    sizing_box: BoxSizing,
 }
 
 impl ResolvedAspectRatio {
-    /// Removes the numeric ratio while retaining its sizing-box metadata.
-    pub const fn disabled(self) -> Self {
-        Self { ratio: None, ..self }
+    /// Creates a preferred aspect ratio from width divided by height.
+    ///
+    /// Invalid, non-finite, and non-positive ratios are represented by
+    /// `None` at the call site rather than by an invalid value of this type.
+    pub fn new(ratio: f32, sizing_box: BoxSizing) -> Option<Self> {
+        (ratio.is_finite() && ratio > 0.0).then_some(Self { ratio, sizing_box })
+    }
+
+    /// Returns width divided by height.
+    pub const fn ratio(self) -> f32 {
+        self.ratio
+    }
+
+    /// Returns the box whose width and height must satisfy this ratio.
+    pub const fn sizing_box(self) -> BoxSizing {
+        self.sizing_box
     }
 }
 
