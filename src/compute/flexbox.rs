@@ -195,6 +195,7 @@ enum FlexItemKind {
 }
 
 impl FlexItemKind {
+    /// Select the sizing model from the item's replaced-element classification.
     #[inline(always)]
     const fn from_is_replaced(is_replaced: bool) -> Self {
         if is_replaced {
@@ -204,6 +205,7 @@ impl FlexItemKind {
         }
     }
 
+    /// Return whether this item uses replaced-element intrinsic sizing.
     #[inline(always)]
     const fn is_replaced(self) -> bool {
         matches!(self, Self::Replaced)

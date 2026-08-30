@@ -14,6 +14,7 @@ use crate::style::{
     AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow, ResolvedAspectRatio,
 };
 use crate::tree::{AutoSizeBehavior, ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::util::sys::{f32_max, f32_min};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, Direction, GridItemStyle, LengthPercentage, WritingDirection, WritingMode};
 use core::ops::Range;
@@ -59,6 +60,22 @@ enum MinimumContributionSource {
     UsedMinimum,
     /// Measure the item's ordinary min-content contribution.
     MinContent,
+}
+
+/// Clamp a content-based automatic minimum without discarding the box edges
+/// and baseline shim that form its irreducible outer size.
+///
+/// CSS Grid first adds the shim to the contribution, then caps it by the
+/// spanned tracks' fixed maximum. The cap itself may not be smaller than the
+/// item's border, padding, and shim. Keeping that ordering in one operation
+/// prevents callers from adding the shim again after the clamp.
+#[inline]
+fn clamp_automatic_minimum_contribution(
+    contribution_with_shim: f32,
+    padding_border_with_shim: f32,
+    spanned_tracks_maximum: f32,
+) -> f32 {
+    f32_min(contribution_with_shim, f32_max(padding_border_with_shim, spanned_tracks_maximum))
 }
 
 /// Represents a single grid item
@@ -144,7 +161,8 @@ pub(in super::super) struct GridItem {
     pub grid_area_size_cache: Option<Size<Option<f32>>>,
     /// Cache for the min-content size
     pub min_content_contribution_cache: LogicalSize<Option<f32>>,
-    /// Cache for the minimum contribution
+    /// Cache for the minimum contribution, including its baseline shim but
+    /// excluding ordinary margins.
     pub minimum_contribution_cache: LogicalSize<Option<f32>>,
     /// Cache for the max-content size
     pub max_content_contribution_cache: LogicalSize<Option<f32>>,
@@ -826,7 +844,8 @@ impl GridItem {
             padding_border: padding_border_size,
         });
         let physical_axis = axis.to_absolute(self.parent_writing_direction.mode);
-        match self.minimum_contribution_source(axis) {
+        let mut clamp_to_fixed_track_maximum = false;
+        let minimum_contribution = match self.minimum_contribution_source(axis) {
             MinimumContributionSource::MinContent => {
                 self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size)
             }
@@ -839,6 +858,7 @@ impl GridItem {
 
                     // Otherwise, the automatic minimum size is zero, as usual.
                     if self.uses_content_based_automatic_minimum(axis, axis_tracks) {
+                        clamp_to_fixed_track_maximum = true;
                         let mut minimum_contribution =
                             self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
 
@@ -857,22 +877,41 @@ impl GridItem {
                             minimum_contribution = minimum_contribution.maybe_min(size).maybe_min(max_size);
                         }
 
-                        // The content-based minimum size is additionally clamped by the sum of any fixed max track sizing
-                        // functions of the tracks the item spans. Note that this clamp does not apply to explicitly specified
-                        // preferred or minimum sizes, and that the argument to fit-content() does not clamp the content-based
-                        // minimum size in the same way as a fixed max track sizing function.
-                        let limit = self.spanned_fixed_track_limit(
-                            axis,
-                            axis_tracks,
-                            inner_node_size.get(axis),
-                            &|val, basis| tree.resolve_calc_value(val, basis),
-                        );
-                        minimum_contribution.maybe_min(limit)
+                        minimum_contribution
                     } else {
                         0.0
                     }
                 }),
+        };
+
+        // Baseline alignment contributes an extra margin to the item's outer
+        // size. It belongs inside the automatic-minimum clamp: adding it
+        // afterwards can produce a result larger than a fixed track maximum,
+        // while clamping the unshimmed value can erase the minimum outer size
+        // required to reach the shared baseline.
+        let writing_mode = self.parent_writing_direction.mode;
+        let contribution_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(axis, None));
+        let shim_percentage_basis = writing_mode.to_logical(contribution_space).inline_size;
+        let baseline_shim =
+            self.intrinsic_contribution_baseline_shim(axis, minimum_contribution, shim_percentage_basis, tree);
+        let minimum_contribution = minimum_contribution + baseline_shim;
+
+        if !clamp_to_fixed_track_maximum {
+            return minimum_contribution;
         }
+
+        // The content-based minimum is capped by the sum of fixed max track
+        // sizing functions, but never below border + padding + baseline shim.
+        // An argument to fit-content() deliberately does not provide this cap.
+        let Some(limit) =
+            self.spanned_fixed_track_limit(axis, axis_tracks, inner_node_size.get(axis), &|val, basis| {
+                tree.resolve_calc_value(val, basis)
+            })
+        else {
+            return minimum_contribution;
+        };
+        let minimum_outer_size = padding_border_size.get_abs(physical_axis) + baseline_shim;
+        clamp_automatic_minimum_contribution(minimum_contribution, minimum_outer_size, limit)
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters
@@ -898,6 +937,18 @@ mod tests {
     use super::*;
     use crate::style_helpers::{auto, percent};
     use crate::{Direction, Point, Style, WritingMode};
+
+    #[test]
+    fn automatic_minimum_clamps_after_adding_the_baseline_shim() {
+        // Mirrors the three meaningful limits in WPT's
+        // grid-minimum-contribution-baseline-shim family. The 50px item's
+        // baseline-aligned outer contribution is 100px, while its 25px
+        // padding plus 50px shim establish an irreducible 75px outer size.
+        assert_eq!(clamp_automatic_minimum_contribution(100.0, 75.0, 0.0), 75.0);
+        assert_eq!(clamp_automatic_minimum_contribution(100.0, 75.0, 75.0), 75.0);
+        assert_eq!(clamp_automatic_minimum_contribution(100.0, 75.0, 88.0), 88.0);
+        assert_eq!(clamp_automatic_minimum_contribution(100.0, 75.0, 150.0), 100.0);
+    }
 
     #[test]
     fn overflow_axes_follow_the_parent_writing_mode() {

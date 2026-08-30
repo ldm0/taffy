@@ -104,6 +104,14 @@ where
         )
     }
 
+    /// Resolve ordinary margins in the track axis without a baseline shim.
+    #[inline(always)]
+    fn margin_axis_sum(&self, item: &GridItem, available_space: Size<Option<f32>>) -> f32 {
+        let percentage_basis = item.parent_writing_direction.mode.to_logical(available_space).inline_size;
+        let margin_size = item.margins_axis_sums(percentage_basis, self.tree);
+        item.parent_writing_direction.mode.to_logical(margin_size).get(self.axis)
+    }
+
     /// Add the item's ordinary margins and the baseline shim belonging to this
     /// exact intrinsic contribution.
     ///
@@ -114,8 +122,7 @@ where
     #[inline(always)]
     fn outer_contribution(&self, item: &GridItem, available_space: Size<Option<f32>>, contribution: f32) -> f32 {
         let percentage_basis = item.parent_writing_direction.mode.to_logical(available_space).inline_size;
-        let margin_size = item.margins_axis_sums(percentage_basis, self.tree);
-        let margin_axis_sum = item.parent_writing_direction.mode.to_logical(margin_size).get(self.axis);
+        let margin_axis_sum = self.margin_axis_sum(item, available_space);
         let baseline_shim =
             item.intrinsic_contribution_baseline_shim(self.axis, contribution, percentage_basis, self.tree);
         contribution + margin_axis_sum + baseline_shim
@@ -161,7 +168,10 @@ where
         let available_space = writing_mode.to_physical(writing_mode.to_logical(grid_area_size).with(self.axis, None));
         let contribution =
             item.minimum_contribution_cached(self.tree, self.axis, axis_tracks, grid_area_size, self.inner_node_size);
-        self.outer_contribution(item, available_space, contribution)
+        // `minimum_contribution` owns the shim because Grid's automatic-minimum
+        // clamp must apply after adding it. Ordinary margins remain outside
+        // that border-box contribution and are added exactly once here.
+        contribution + self.margin_axis_sum(item, available_space)
     }
 }
 
