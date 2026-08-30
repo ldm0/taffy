@@ -282,7 +282,7 @@ impl GridItem {
     ///
     /// A synthesized baseline cannot participate when the item's size in the
     /// alignment axis is percentage/stretch-dependent on an intrinsic or flex
-    /// track. The fallback edge follows the item's baseline-sharing group.
+    /// track. The safe fallback edge follows the item's baseline-sharing group.
     pub fn resolve_baseline_fallback(
         &mut self,
         axis: AbstractAxis,
@@ -304,8 +304,8 @@ impl GridItem {
             sizes.into_iter().any(|size| size.may_have_percentage_dependence() || size.is_stretch());
         let fallback = if has_synthesized_baseline && spans_content_sized_track && size_depends_on_track {
             Some(match self.baseline_context.get(axis).group {
-                BaselineGroup::Major => AlignSelf::START,
-                BaselineGroup::Minor => AlignSelf::END,
+                BaselineGroup::Major => AlignSelf::SAFE_START,
+                BaselineGroup::Minor => AlignSelf::SAFE_END,
             })
         } else {
             None
@@ -941,6 +941,6 @@ mod tests {
         assert_eq!(item.used_alignment(AbstractAxis::Block), AlignSelf::BASELINE);
 
         item.resolve_baseline_fallback(AbstractAxis::Block, WritingMode::HorizontalTb, true);
-        assert_eq!(item.used_alignment(AbstractAxis::Block), AlignSelf::START);
+        assert_eq!(item.used_alignment(AbstractAxis::Block), AlignSelf::SAFE_START);
     }
 }

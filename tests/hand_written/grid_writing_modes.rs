@@ -672,6 +672,60 @@ fn grid_cyclic_minor_baseline_falls_back_to_group_end() {
 }
 
 #[test]
+fn orthogonal_percentage_block_size_uses_safe_cyclic_baseline_fallback() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let fixed = tree
+        .new_leaf(Style {
+            size: Size { width: length(50.0), height: auto() },
+            grid_column: Line { start: line(1), end: line(2) },
+            grid_row: Line { start: line(1), end: line(2) },
+            ..Style::default()
+        })
+        .unwrap();
+    let cyclic = tree
+        .new_leaf(Style {
+            size: Size { width: percent(2.0), height: auto() },
+            grid_column: Line { start: line(1), end: line(2) },
+            grid_row: Line { start: line(2), end: line(3) },
+            ..Style::default()
+        })
+        .unwrap();
+    let spanning = tree
+        .new_leaf(Style {
+            size: Size { width: length(25.0), height: auto() },
+            grid_column: Line { start: line(2), end: line(3) },
+            grid_row: Line { start: line(1), end: line(3) },
+            ..Style::default()
+        })
+        .unwrap();
+    for child in [fixed, cyclic, spanning] {
+        tree.set_writing_mode(child, WritingMode::VerticalRl).unwrap();
+    }
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: length(200.0) },
+                grid_template_rows: vec![length(100.0), length(100.0)],
+                justify_items: Some(AlignItems::BASELINE),
+                ..Style::default()
+            },
+            &[fixed, cyclic, spanning],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.unrounded_layout(grid).size, Size { width: 75.0, height: 200.0 });
+    assert_eq!(tree.unrounded_layout(fixed).location, Point { x: 0.0, y: 0.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.unrounded_layout(cyclic).location, Point { x: 0.0, y: 100.0 });
+    assert_eq!(tree.unrounded_layout(spanning).location, Point { x: 50.0, y: 0.0 });
+}
+
+#[test]
 fn grid_last_baseline_uses_each_items_last_fragment_baseline() {
     let mut tree = TaffyTree::<()>::new();
     let first_line =
