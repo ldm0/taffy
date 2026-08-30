@@ -119,6 +119,17 @@ impl GridTrack {
         self.min_track_sizing_function.uses_percentage() || self.max_track_sizing_function.uses_percentage()
     }
 
+    /// Whether resolving the grid container's used size can change this
+    /// track's result.
+    ///
+    /// Percentage tracks acquire a percentage basis and flexible tracks rerun
+    /// the fr expansion step against the now-definite free space. This mirrors
+    /// Blink's `kIsDependentOnAvailableSize` track-collection property.
+    #[inline(always)]
+    pub fn depends_on_available_size(&self) -> bool {
+        self.uses_percentage() || self.is_flexible()
+    }
+
     #[inline(always)]
     /// Returns true if the track has an intrinsic min and or max sizing function
     pub fn has_intrinsic_sizing_function(&self) -> bool {

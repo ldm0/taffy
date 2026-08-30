@@ -318,6 +318,18 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
     }
 }
 
+/// Information produced by track sizing that cannot be reconstructed from
+/// the final track base sizes.
+#[derive(Copy, Clone, Debug, Default)]
+pub(super) struct TrackSizingResult {
+    /// The definite inner size used when an intrinsically sized flexible axis
+    /// was constrained by the grid container's min/max size.
+    ///
+    /// Tracks whose flex factors sum to less than one intentionally occupy
+    /// only part of this space, so their base-size sum cannot recover it.
+    pub constrained_available_space: Option<f32>,
+}
+
 /// Track sizing algorithm
 /// Note: Gutters are treated as empty fixed-size tracks for the purpose of the track sizing algorithm.
 #[allow(clippy::too_many_arguments)]
@@ -335,7 +347,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     items: &mut [GridItem],
     get_track_size_estimate: fn(&GridTrack, Option<f32>, &Tree) -> Option<f32>,
     has_baseline_aligned_item: bool,
-) {
+) -> TrackSizingResult {
     // 11.4 Initialise Track sizes
     // Initialize each track’s base size and growth limit.
     let percentage_basis = inner_node_size.get(axis).or(axis_min_size);
@@ -349,7 +361,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     // If all tracks have base_size = growth_limit, then skip the rest of this function.
     // Note: this can only happen both track sizing function have the same fixed track sizing function
     if axis_tracks.iter().all(|track| track.base_size == track.growth_limit) {
-        return;
+        return TrackSizingResult::default();
     }
 
     // Pre-computations for 11.5 Resolve Intrinsic Track Sizes
@@ -401,7 +413,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
 
     // 11.7. Expand Flexible Tracks
     // This step sizes flexible tracks using the largest value it can assign to an fr without exceeding the available space.
-    expand_flexible_tracks(
+    let constrained_flexible_available_space = expand_flexible_tracks(
         tree,
         axis,
         axis_tracks,
@@ -416,6 +428,8 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     if axis_alignment == AlignContent::STRETCH {
         stretch_auto_tracks(axis_tracks, axis_min_size, axis_available_space_for_expansion);
     }
+
+    TrackSizingResult { constrained_available_space: constrained_flexible_available_space }
 }
 
 /// Whether it is a minimum or maximum size's space being distributed
@@ -1244,9 +1258,9 @@ fn expand_flexible_tracks(
     axis_min_size: Option<f32>,
     axis_max_size: Option<f32>,
     axis_available_space_for_expansion: AvailableSpace,
-) {
+) -> Option<f32> {
     // First, find the grid’s used flex fraction:
-    let flex_fraction = match axis_available_space_for_expansion {
+    let (flex_fraction, constrained_available_space) = match axis_available_space_for_expansion {
         // If the free space is zero:
         //    The used flex fraction is zero.
         // Otherwise, if the free space is a definite length:
@@ -1256,13 +1270,13 @@ fn expand_flexible_tracks(
             let used_space: f32 = axis_tracks.iter().map(|track| track.base_size).sum();
             let free_space = available_space - used_space;
             if free_space <= 0.0 {
-                0.0
+                (0.0, None)
             } else {
-                find_size_of_fr(axis_tracks, available_space)
+                (find_size_of_fr(axis_tracks, available_space), None)
             }
         }
         // If ... sizing the grid container under a min-content constraint the used flex fraction is zero.
-        AvailableSpace::MinContent => 0.0,
+        AvailableSpace::MinContent => (0.0, None),
         // Otherwise, if the free space is an indefinite length:
         AvailableSpace::MaxContent => {
             // The used flex fraction is the maximum of:
@@ -1316,11 +1330,11 @@ fn expand_flexible_tracks(
             let axis_min_size = axis_min_size.unwrap_or(0.0);
             let axis_max_size = axis_max_size.unwrap_or(f32::INFINITY);
             if hypothetical_grid_size < axis_min_size {
-                find_size_of_fr(axis_tracks, axis_min_size)
+                (find_size_of_fr(axis_tracks, axis_min_size), Some(axis_min_size))
             } else if hypothetical_grid_size > axis_max_size {
-                find_size_of_fr(axis_tracks, axis_max_size)
+                (find_size_of_fr(axis_tracks, axis_max_size), Some(axis_max_size))
             } else {
-                flex_fraction
+                (flex_fraction, None)
             }
         }
     };
@@ -1331,6 +1345,11 @@ fn expand_flexible_tracks(
         let track_flex_factor = track.max_track_sizing_function.0.value();
         track.base_size = f32_max(track.base_size, track_flex_factor * flex_fraction);
     }
+
+    // When the sum of flex factors is below one, the expanded tracks do not
+    // reconstruct the definite min/max space used by the algorithm. Preserve
+    // that space for the grid container's used-size calculation.
+    constrained_available_space
 }
 
 /// 11.7.1. Find the Size of an fr

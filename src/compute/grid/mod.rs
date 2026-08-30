@@ -4,7 +4,8 @@ use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Position};
 use crate::tree::{
-    ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
+    ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RunMode,
+    SizingMode,
 };
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
@@ -38,6 +39,57 @@ mod placement;
 mod track_sizing;
 mod types;
 mod util;
+
+/// Refresh every cached min-content contribution that can depend on the
+/// opposite axis' resolved tracks.
+///
+/// Track sizing is allowed one additional pass after the container's used
+/// size becomes definite. All affected items must be measured in that final
+/// constraint space before deciding whether the pass is needed; using
+/// `Iterator::any` here would stop at the first change and leave later caches
+/// describing the provisional pass.
+fn refresh_intrinsic_min_content_contributions<Tree: LayoutPartialTree>(
+    tree: &mut Tree,
+    items: &mut [GridItem],
+    axis: AbstractAxis,
+    axis_tracks: &[GridTrack],
+    other_axis_tracks: &[GridTrack],
+    resolved_inner_node_size: Size<Option<f32>>,
+) -> bool {
+    let mut contribution_changed = false;
+
+    for item in items.iter_mut().filter(|item| item.crosses_intrinsic_track(axis)) {
+        let grid_area_size = item.grid_area_size(
+            axis,
+            axis_tracks,
+            other_axis_tracks,
+            resolved_inner_node_size,
+            |track: &GridTrack, _| Some(track.base_size),
+            &|val, basis| tree.calc(val, basis),
+        );
+        let available_space = grid_area_size.with(axis, None);
+        let new_contribution = item.min_content_contribution(axis, tree, grid_area_size, available_space);
+
+        contribution_changed |= Some(new_contribution) != item.min_content_contribution_cache.get(axis);
+        item.grid_area_size_cache = Some(grid_area_size);
+        item.min_content_contribution_cache.set(axis, Some(new_contribution));
+        item.max_content_contribution_cache.set(axis, None);
+        item.minimum_contribution_cache.set(axis, None);
+    }
+
+    contribution_changed
+}
+
+/// Invalidate contribution caches in one axis before rerunning with a newly
+/// definite available size.
+fn clear_intrinsic_contribution_caches(items: &mut [GridItem], axis: AbstractAxis) {
+    for item in items {
+        item.grid_area_size_cache = None;
+        item.min_content_contribution_cache.set(axis, None);
+        item.max_content_contribution_cache.set(axis, None);
+        item.minimum_contribution_cache.set(axis, None);
+    }
+}
 
 /// Grid layout algorithm
 /// This consists of a few phases:
@@ -308,8 +360,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Determine if the grid has any baseline aligned items
     let has_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
 
+    // Keep the original definiteness separate from the provisional numeric
+    // sizes produced by intrinsic track sizing. A track collection may need a
+    // second pass once the container's used content-box size is known.
+    let initial_inner_node_size = inner_node_size;
+
     // Run track sizing algorithm for Inline axis
-    track_sizing_algorithm(
+    let column_track_sizing_result = track_sizing_algorithm(
         tree,
         AbstractAxis::Inline,
         inner_min_size.get(AbstractAxis::Inline),
@@ -332,7 +389,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
 
     // Run track sizing algorithm for Block axis
-    track_sizing_algorithm(
+    let row_track_sizing_result = track_sizing_algorithm(
         tree,
         AbstractAxis::Block,
         inner_min_size.get(AbstractAxis::Block),
@@ -348,7 +405,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         false, // TODO: Support baseline alignment in the vertical axis
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
-    inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
 
     debug_log!("initial_column_sum", dbg:initial_column_sum);
     debug_log!(dbg: columns.iter().map(|track| track.base_size).collect::<Vec<_>>());
@@ -357,21 +413,30 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // 6. Compute container size
     let resolved_style_size = known_dimensions.or(preferred_size);
+    let initial_column_container_size =
+        column_track_sizing_result.constrained_available_space.unwrap_or(initial_column_sum);
+    let initial_row_container_size = row_track_sizing_result.constrained_available_space.unwrap_or(initial_row_sum);
     let mut container_border_box = Size {
         width: resolved_style_size
             .get(AbstractAxis::Inline)
-            .unwrap_or_else(|| initial_column_sum + content_box_inset.horizontal_axis_sum())
+            .unwrap_or_else(|| initial_column_container_size + content_box_inset.horizontal_axis_sum())
             .maybe_clamp(min_size.width, max_size.width)
             .max(padding_border_size.width),
         height: resolved_style_size
             .get(AbstractAxis::Block)
-            .unwrap_or_else(|| initial_row_sum + content_box_inset.vertical_axis_sum())
+            .unwrap_or_else(|| initial_row_container_size + content_box_inset.vertical_axis_sum())
             .maybe_clamp(min_size.height, max_size.height)
             .max(padding_border_size.height),
     };
     let mut container_content_box = Size {
         width: f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum()),
         height: f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum()),
+    };
+    let resolved_inner_node_size =
+        Size { width: Some(container_content_box.width), height: Some(container_content_box.height) };
+    let resolved_available_grid_space = Size {
+        width: AvailableSpace::Definite(container_content_box.width),
+        height: AvailableSpace::Definite(container_content_box.height),
     };
 
     // If only the container's size has been requested
@@ -385,7 +450,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // 7. Resolve percentage track base sizes
     // In the case of an indefinitely sized container these resolve to zero during the "Initialise Tracks" step
     // and therefore need to be re-resolved here based on the content-sized content box of the container
-    if !available_grid_space.width.is_definite() {
+    if initial_inner_node_size.width.is_none() {
         for column in &mut columns {
             let min: Option<f32> = column
                 .min_track_sizing_function
@@ -396,7 +461,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             column.base_size = column.base_size.maybe_clamp(min, max);
         }
     }
-    if !available_grid_space.height.is_definite() {
+    if initial_inner_node_size.height.is_none() {
         for row in &mut rows {
             let min: Option<f32> = row
                 .min_track_sizing_function
@@ -408,135 +473,84 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         }
     }
 
-    // Column sizing must be re-run (once) if:
-    //   - The grid container's width was initially indefinite and there are any columns with percentage track sizing functions
-    //   - Any grid item crossing an intrinsically sized track's min content contribution width has changed
-    // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
-    let mut rerun_column_sizing;
+    // An initially indefinite axis is sized one more time if its track
+    // collection depends on the resolved available size (percentage or flex),
+    // or if sizing the opposite axis changed an intrinsic contribution.
     let mut intrinsic_column_contribution_changed = false;
-
     let has_percentage_column = columns.iter().any(|track| track.uses_percentage());
     let has_percentage_row = rows.iter().any(|track| track.uses_percentage());
-    let parent_width_indefinite = !available_space.width.is_definite();
-    rerun_column_sizing = parent_width_indefinite && has_percentage_column;
+    let mut rerun_column_sizing =
+        initial_inner_node_size.width.is_none() && columns.iter().any(GridTrack::depends_on_available_size);
 
     if !rerun_column_sizing {
-        intrinsic_column_contribution_changed =
-            items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
-                let grid_area_size = item.grid_area_size(
-                    AbstractAxis::Inline,
-                    &columns,
-                    &rows,
-                    inner_node_size,
-                    |track: &GridTrack, _| Some(track.base_size),
-                    &|val, basis| tree.calc(val, basis),
-                );
-                let available_space = grid_area_size.with(AbstractAxis::Inline, None);
-                let new_min_content_contribution =
-                    item.min_content_contribution(AbstractAxis::Inline, tree, grid_area_size, available_space);
-
-                let has_changed = Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
-
-                item.grid_area_size_cache = Some(grid_area_size);
-                item.min_content_contribution_cache.width = Some(new_min_content_contribution);
-                item.max_content_contribution_cache.width = None;
-                item.minimum_contribution_cache.width = None;
-
-                has_changed
-            });
+        intrinsic_column_contribution_changed = refresh_intrinsic_min_content_contributions(
+            tree,
+            &mut items,
+            AbstractAxis::Inline,
+            &columns,
+            &rows,
+            resolved_inner_node_size,
+        );
         rerun_column_sizing = intrinsic_column_contribution_changed;
     } else {
-        // Clear intrinsic width caches
-        items.iter_mut().for_each(|item| {
-            item.grid_area_size_cache = None;
-            item.min_content_contribution_cache.width = None;
-            item.max_content_contribution_cache.width = None;
-            item.minimum_contribution_cache.width = None;
-        });
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Inline);
     }
-
-    let mut intrinsic_row_contribution_changed = false;
 
     if rerun_column_sizing {
         // Re-run track sizing algorithm for Inline axis
-        track_sizing_algorithm(
+        let _ = track_sizing_algorithm(
             tree,
             AbstractAxis::Inline,
             inner_min_size.get(AbstractAxis::Inline),
             inner_max_size.get(AbstractAxis::Inline),
             justify_content,
             align_content,
-            available_grid_space,
-            inner_node_size,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
             &mut columns,
             &mut rows,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
             has_baseline_aligned_item,
         );
+    }
 
-        // Row sizing must be re-run (once) if:
-        //   - The grid container's height was initially indefinite and there are any rows with percentage track sizing functions
-        //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
-        // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
-        let mut rerun_row_sizing;
+    // Block-axis sizing always observes the final column geometry. It must not
+    // be conditional on whether columns happened to need their own rerun.
+    let mut rerun_row_sizing =
+        initial_inner_node_size.height.is_none() && rows.iter().any(GridTrack::depends_on_available_size);
+    let mut intrinsic_row_contribution_changed = false;
+    if !rerun_row_sizing {
+        intrinsic_row_contribution_changed = refresh_intrinsic_min_content_contributions(
+            tree,
+            &mut items,
+            AbstractAxis::Block,
+            &rows,
+            &columns,
+            resolved_inner_node_size,
+        );
+        rerun_row_sizing = intrinsic_row_contribution_changed;
+    } else {
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Block);
+    }
 
-        let parent_height_indefinite = !available_space.height.is_definite();
-        rerun_row_sizing = parent_height_indefinite && has_percentage_row;
-
-        if !rerun_row_sizing {
-            intrinsic_row_contribution_changed =
-                items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
-                    let grid_area_size = item.grid_area_size(
-                        AbstractAxis::Block,
-                        &rows,
-                        &columns,
-                        inner_node_size,
-                        |track: &GridTrack, _| Some(track.base_size),
-                        &|val, basis| tree.calc(val, basis),
-                    );
-                    let available_space = grid_area_size.with(AbstractAxis::Block, None);
-                    let new_min_content_contribution =
-                        item.min_content_contribution(AbstractAxis::Block, tree, grid_area_size, available_space);
-
-                    let has_changed = Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
-
-                    item.grid_area_size_cache = Some(grid_area_size);
-                    item.min_content_contribution_cache.height = Some(new_min_content_contribution);
-                    item.max_content_contribution_cache.height = None;
-                    item.minimum_contribution_cache.height = None;
-
-                    has_changed
-                });
-            rerun_row_sizing = intrinsic_row_contribution_changed;
-        } else {
-            items.iter_mut().for_each(|item| {
-                // Clear intrinsic height caches
-                item.grid_area_size_cache = None;
-                item.min_content_contribution_cache.height = None;
-                item.max_content_contribution_cache.height = None;
-                item.minimum_contribution_cache.height = None;
-            });
-        }
-
-        if rerun_row_sizing {
-            // Re-run track sizing algorithm for Block axis
-            track_sizing_algorithm(
-                tree,
-                AbstractAxis::Block,
-                inner_min_size.get(AbstractAxis::Block),
-                inner_max_size.get(AbstractAxis::Block),
-                align_content,
-                justify_content,
-                available_grid_space,
-                inner_node_size,
-                &mut rows,
-                &mut columns,
-                &mut items,
-                |track: &GridTrack, _, _| Some(track.base_size),
-                false, // TODO: Support baseline alignment in the vertical axis
-            );
-        }
+    if rerun_row_sizing {
+        // Re-run track sizing algorithm for Block axis
+        let _ = track_sizing_algorithm(
+            tree,
+            AbstractAxis::Block,
+            inner_min_size.get(AbstractAxis::Block),
+            inner_max_size.get(AbstractAxis::Block),
+            align_content,
+            justify_content,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
+            &mut rows,
+            &mut columns,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            false, // TODO: Support baseline alignment in the vertical axis
+        );
     }
 
     if (intrinsic_column_contribution_changed && !has_percentage_column)

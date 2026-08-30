@@ -13,6 +13,7 @@ mod hand_written {
     mod floats;
     mod grid_detailed_layout_info;
     mod grid_flexible_intrinsic_size;
+    mod grid_track_rerun;
     mod intrinsic_width;
     mod logical_constraint_space;
     mod measure;
