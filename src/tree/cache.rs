@@ -3,8 +3,8 @@
 use crate::geometry::{Line, LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
-    AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, RunMode, SizingMode,
-    SizingPurpose, TableCellLayoutInput,
+    AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, OrthogonalFallback, RunMode,
+    SizingMode, SizingPurpose, TableCellLayoutInput,
 };
 use crate::RequestedAxis;
 
@@ -120,6 +120,8 @@ struct CacheKey {
     inline_auto_behavior: AutoSizeBehavior,
     /// How an authored logical block-size auto resolves in this space.
     block_auto_behavior: AutoSizeBehavior,
+    /// Whether the boundary permits the orthogonal viewport fallback.
+    orthogonal_fallback: OrthogonalFallback,
     /// Whether block-start/end margins may collapse through this boundary.
     block_margins_are_collapsible: Line<bool>,
     /// Table-cell measurement/final-alignment state for this node.
@@ -142,6 +144,7 @@ impl CacheKey {
             sizing_purpose: input.sizing_purpose,
             inline_auto_behavior: input.inline_auto_behavior,
             block_auto_behavior: input.block_auto_behavior,
+            orthogonal_fallback: input.orthogonal_fallback,
             block_margins_are_collapsible: input.block_margins_are_collapsible,
             table_cell: input.table_cell.map(Into::into),
         }
@@ -163,6 +166,7 @@ impl CacheKey {
             && self.sizing_purpose == other.sizing_purpose
             && self.inline_auto_behavior == other.inline_auto_behavior
             && self.block_auto_behavior == other.block_auto_behavior
+            && self.orthogonal_fallback == other.orthogonal_fallback
             && self.block_margins_are_collapsible == other.block_margins_are_collapsible
             && self.table_cell == other.table_cell
     }
@@ -517,7 +521,7 @@ mod tests {
     use crate::style::AvailableSpace;
     use crate::tree::{
         AutoSizeBehavior, CollapsibleMarginSet, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput,
-        RequestedAxis, RunMode, SizingMode, SizingPurpose,
+        OrthogonalFallback, RequestedAxis, RunMode, SizingMode, SizingPurpose,
     };
 
     fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
@@ -528,6 +532,7 @@ mod tests {
             axis: RequestedAxis::Horizontal,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size::NONE,
@@ -633,6 +638,17 @@ mod tests {
         let stretch = LayoutInput { inline_auto_behavior: AutoSizeBehavior::StretchImplicit, ..fit_content };
         assert!(cache.get(&stretch).is_none());
         assert_eq!(cache.get(&fit_content).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn orthogonal_fallback_policies_do_not_alias() {
+        let mut cache = Cache::new();
+        let fallback = input(SizingPurpose::IntrinsicContribution);
+        cache.store(&fallback, LayoutOutput::from_outer_size(Size { width: 60.0, height: 25.0 }));
+
+        let suppressed = LayoutInput { orthogonal_fallback: OrthogonalFallback::Suppress, ..fallback };
+        assert!(cache.get(&suppressed).is_none());
+        assert_eq!(cache.get(&fallback).unwrap().size.width, 60.0);
     }
 
     #[test]

@@ -653,6 +653,7 @@ impl GridItem {
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
+            .without_orthogonal_fallback()
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
             axis.to_absolute(self.parent_writing_direction.mode),
@@ -704,6 +705,7 @@ impl GridItem {
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
+            .without_orthogonal_fallback()
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
             axis.to_absolute(self.parent_writing_direction.mode),

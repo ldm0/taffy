@@ -502,7 +502,8 @@ fn resolve_item_baselines(
                 Size::MIN_CONTENT,
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .without_orthogonal_fallback(),
         );
 
         let child_writing_mode = tree.get_writing_mode(item.node);

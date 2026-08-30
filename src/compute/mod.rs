@@ -111,6 +111,7 @@ pub fn compute_out_of_flow_layout(
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
     let root_writing_mode = tree.get_writing_mode(root);
     let root_inputs = LayoutInput {
+        orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
         run_mode: RunMode::PerformLayout,
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,

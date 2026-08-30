@@ -1033,7 +1033,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     Size::MAX_CONTENT,
                     SizingMode::InherentSize,
                     Line::FALSE,
-                ),
+                )
+                .without_orthogonal_fallback(),
             );
             order += 1;
             return;

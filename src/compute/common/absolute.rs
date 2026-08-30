@@ -599,6 +599,7 @@ pub(crate) fn layout_out_of_flow_item(
         auto_behavior(AbstractAxis::Inline, inset_modified_containing_block.inline.has_auto_inset);
     let block_auto_behavior = auto_behavior(AbstractAxis::Block, inset_modified_containing_block.block.has_auto_inset);
     let mut sizing_inputs = LayoutInput {
+        orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
         run_mode: RunMode::ComputeSize,
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
@@ -833,6 +834,7 @@ pub(crate) fn layout_out_of_flow_item(
     let layout_output = tree.compute_child_layout(
         item.node,
         LayoutInput {
+            orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
             known_dimensions: final_size.map(Some),
             definite_dimensions: known_dimensions,
             parent_size: area_size.map(Some),

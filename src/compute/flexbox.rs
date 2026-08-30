@@ -1558,6 +1558,7 @@ fn generate_anonymous_flex_items(
             };
             let available_width = child_available_space.width.maybe_sub(margin.horizontal_axis_sum());
             let intrinsic_inputs = LayoutInput {
+                orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
                 run_mode: RunMode::ComputeSize,
                 sizing_mode: SizingMode::InherentSize,
                 sizing_purpose: SizingPurpose::IntrinsicContribution,

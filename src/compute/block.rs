@@ -1161,6 +1161,7 @@ fn generate_item_list(
                 max_size = max_size.or(stretch.max);
                 let intrinsic_axis = child_writing_mode.inline_axis();
                 let intrinsic_inputs = LayoutInput {
+                    orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
                     run_mode: RunMode::ComputeSize,
                     sizing_mode: SizingMode::InherentSize,
                     sizing_purpose: SizingPurpose::IntrinsicContribution,
@@ -1713,6 +1714,7 @@ fn perform_final_layout_on_in_flow_children(
                     block_size: child_available_block_space,
                 });
                 LayoutInput {
+                    orthogonal_fallback: crate::tree::OrthogonalFallback::UseInitialContainingBlock,
                     run_mode,
                     sizing_mode: SizingMode::InherentSize,
                     sizing_purpose: SizingPurpose::Layout,

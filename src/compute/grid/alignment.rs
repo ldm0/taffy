@@ -269,6 +269,7 @@ pub(super) fn align_and_position_item(
         SizingMode::InherentSize,
         Line::FALSE,
     )
+    .without_orthogonal_fallback()
     .with_inline_auto_behavior(inline_auto_behavior)
     .with_block_auto_behavior(block_auto_behavior)
     .into_layout();
@@ -310,6 +311,7 @@ pub(super) fn align_and_position_item(
                 SizingMode::ContentSize,
                 Line::FALSE,
             )
+            .without_orthogonal_fallback()
             .with_definite_dimensions(node_sizing.definite_size)
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior),
@@ -371,6 +373,7 @@ pub(super) fn align_and_position_item(
             SizingMode::ContentSize,
             Line::FALSE,
         )
+        .without_orthogonal_fallback()
         .with_definite_dimensions(definite_dimensions(Size { width, height }, definite_axes))
         .with_block_auto_behavior(block_auto_behavior),
         content_based_block_size,
@@ -411,6 +414,7 @@ pub(super) fn align_and_position_item(
             SizingMode::InherentSize,
             Line::FALSE,
         )
+        .without_orthogonal_fallback()
         .with_definite_dimensions(definite_size)
         .with_block_auto_behavior(block_auto_behavior),
     );
