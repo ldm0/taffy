@@ -9,7 +9,7 @@
 
 use crate::geometry::{AbsoluteAxis, Size};
 use crate::style::{AvailableSpace, BoxSizing, CoreStyle, ResolvedAspectRatio, SizeContainment};
-use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, SizingMode};
+use crate::tree::{LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::WritingMode;
 
@@ -134,7 +134,9 @@ pub fn compute_replaced_layout(
 ) -> LayoutOutput {
     let constraint_space = inputs.constraint_space(context.writing_mode);
     let percentage_basis = constraint_space.margin_padding_percentage_basis();
-    let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, axis: requested_axis, .. } = inputs;
+    let LayoutInput {
+        run_mode, known_dimensions, parent_size, available_space, sizing_mode, axis: requested_axis, ..
+    } = inputs;
 
     let padding = style.padding().resolve_or_zero(percentage_basis, &resolve_calc_value);
     let border = style.border().resolve_or_zero(percentage_basis, &resolve_calc_value);
@@ -161,7 +163,7 @@ pub fn compute_replaced_layout(
         width: contained_content_size.width.unwrap_or(context.natural_sizing.default_object_size.width),
         height: contained_content_size.height.unwrap_or(context.natural_sizing.default_object_size.height),
     };
-    let natural_size = normalized_natural_size(
+    let (natural_size, natural_ratio_derived_axes) = normalized_natural_size(
         natural_dimensions,
         default_object_size,
         context.aspect_ratio,
@@ -310,41 +312,70 @@ pub fn compute_replaced_layout(
         .maybe_max(min_size);
         let known_or_cyclic_preferred =
             if cyclic_min_content_axis.is_some() { content_known.or(preferred_size) } else { content_known };
+        let transfer_basis = known_or_cyclic_preferred.maybe_clamp(min_size, style_max_size);
+        let ratio_derived_axes = if transfer_basis.width.is_none() && transfer_basis.height.is_none() {
+            natural_ratio_derived_axes
+        } else {
+            ratio_derived_axes_from_basis(transfer_basis, context.aspect_ratio)
+        };
         let transferred = complete_replaced_size(
-            apply_aspect_ratio_to_content_size(
-                known_or_cyclic_preferred.maybe_clamp(min_size, style_max_size),
-                context.aspect_ratio,
-                padding_border_sum,
-            ),
+            apply_aspect_ratio_to_content_size(transfer_basis, context.aspect_ratio, padding_border_sum),
             natural_size,
         )
         .expect("known replaced dimensions or natural sizing determine both axes");
         let size = content_known.unwrap_or(transferred.maybe_clamp(min_size, style_max_size));
-        return replaced_output(size.map(|value| value.max(0.0)) + padding_border_sum);
+        let ratio_derived_axes = Size {
+            width: content_known.width.is_none() && ratio_derived_axes.width,
+            height: content_known.height.is_none() && ratio_derived_axes.height,
+        };
+        return replaced_output(
+            size.map(|value| value.max(0.0)) + padding_border_sum,
+            run_mode,
+            requested_axis,
+            ratio_derived_axes,
+        );
     }
 
     let direct_preferred_axes = Size { width: preferred_size.width.is_some(), height: preferred_size.height.is_some() };
-    let unclamped = if direct_preferred_axes.width || direct_preferred_axes.height {
-        complete_replaced_size(
-            apply_aspect_ratio_to_content_size(preferred_size, context.aspect_ratio, padding_border_sum),
-            natural_size,
-        )
-        .expect("preferred replaced dimensions or natural sizing determine both axes")
-    } else {
-        natural_size.unwrap_or_else(|| {
-            ratio_only_stretch_size(
-                available_space,
-                context.writing_mode,
-                context.aspect_ratio,
-                padding_border_sum,
-                ratio_only_max_content_inline_size,
+    let (unclamped, ratio_derived_axes) = if direct_preferred_axes.width || direct_preferred_axes.height {
+        (
+            complete_replaced_size(
+                apply_aspect_ratio_to_content_size(preferred_size, context.aspect_ratio, padding_border_sum),
+                natural_size,
             )
-        })
+            .expect("preferred replaced dimensions or natural sizing determine both axes"),
+            ratio_derived_axes_from_basis(preferred_size, context.aspect_ratio),
+        )
+    } else {
+        match natural_size {
+            Some(natural_size) => (natural_size, natural_ratio_derived_axes),
+            None => {
+                let ratio_basis = ratio_only_stretch_basis(
+                    available_space,
+                    context.writing_mode,
+                    padding_border_sum,
+                    ratio_only_max_content_inline_size,
+                );
+                (
+                    complete_replaced_size(
+                        apply_aspect_ratio_to_content_size(ratio_basis, context.aspect_ratio, padding_border_sum),
+                        None,
+                    )
+                    .expect("a valid preferred ratio resolves the stretch-fit axis"),
+                    ratio_derived_axes_from_basis(ratio_basis, context.aspect_ratio),
+                )
+            }
+        }
     };
     let size = unclamped.map(|value| value.max(0.0));
 
     if !context.aspect_ratio.has_ratio() {
-        return replaced_output(size.maybe_clamp(min_size, max_size) + padding_border_sum);
+        return replaced_output(
+            size.maybe_clamp(min_size, max_size) + padding_border_sum,
+            run_mode,
+            requested_axis,
+            ratio_derived_axes,
+        );
     }
 
     let size = constrain_replaced_size(
@@ -355,7 +386,7 @@ pub fn compute_replaced_layout(
         context.aspect_ratio,
         padding_border_sum,
     );
-    replaced_output(size + padding_border_sum)
+    replaced_output(size + padding_border_sum, run_mode, requested_axis, ratio_derived_axes)
 }
 
 /// Apply used min/max constraints without losing which preferred axes were
@@ -508,24 +539,31 @@ fn normalized_natural_size(
     aspect_ratio: ResolvedAspectRatio,
     writing_mode: WritingMode,
     padding_border: Size<f32>,
-) -> Option<Size<f32>> {
+) -> (Option<Size<f32>>, Size<bool>) {
     if !aspect_ratio.has_ratio() {
-        return Some(dimensions.unwrap_or(default_object_size));
+        return (Some(dimensions.unwrap_or(default_object_size)), Size { width: false, height: false });
     }
 
     let ratio_basis = if writing_mode.is_horizontal() {
         if let Some(width) = dimensions.width {
             Size { width: Some(width), height: None }
+        } else if let Some(height) = dimensions.height {
+            Size { width: None, height: Some(height) }
         } else {
-            Size { width: None, height: Some(dimensions.height?) }
+            return (None, Size { width: false, height: false });
         }
     } else if let Some(height) = dimensions.height {
         Size { width: None, height: Some(height) }
+    } else if let Some(width) = dimensions.width {
+        Size { width: Some(width), height: None }
     } else {
-        Size { width: Some(dimensions.width?), height: None }
+        return (None, Size { width: false, height: false });
     };
 
-    complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
+    (
+        complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None),
+        ratio_derived_axes_from_basis(ratio_basis, aspect_ratio),
+    )
 }
 
 /// Resolve the stretch-fit fallback for replaced content that has only a
@@ -541,18 +579,31 @@ fn ratio_only_stretch_size(
     padding_border: Size<f32>,
     percentage_max_content_inline_size: Option<f32>,
 ) -> Size<f32> {
+    let ratio_basis =
+        ratio_only_stretch_basis(available_space, writing_mode, padding_border, percentage_max_content_inline_size);
+    complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
+        .expect("a valid preferred ratio resolves the stretch-fit axis")
+}
+
+/// Resolve the independently chosen logical inline basis for ratio-only
+/// replaced content. Keeping this source separate lets intrinsic measurement
+/// report which orthogonal axis was synthesized through the ratio.
+fn ratio_only_stretch_basis(
+    available_space: Size<AvailableSpace>,
+    writing_mode: WritingMode,
+    padding_border: Size<f32>,
+    percentage_max_content_inline_size: Option<f32>,
+) -> Size<Option<f32>> {
     let stretch_inline_axis = |space: AvailableSpace, inset: f32| match space {
         AvailableSpace::Definite(size) => (size - inset).max(0.0),
         AvailableSpace::MinContent => 0.0,
         AvailableSpace::MaxContent => percentage_max_content_inline_size.unwrap_or(0.0),
     };
-    let ratio_basis = if writing_mode.is_horizontal() {
+    if writing_mode.is_horizontal() {
         Size { width: Some(stretch_inline_axis(available_space.width, padding_border.width)), height: None }
     } else {
         Size { width: None, height: Some(stretch_inline_axis(available_space.height, padding_border.height)) }
-    };
-    complete_replaced_size(apply_aspect_ratio_to_content_size(ratio_basis, aspect_ratio, padding_border), None)
-        .expect("a valid preferred ratio resolves the stretch-fit axis")
+    }
 }
 
 /// Fill missing candidate axes from a complete natural size, or return a
@@ -586,9 +637,33 @@ fn intrinsic_constraint_size(
         .map(|size| size.get_abs(axis))
 }
 
-/// Construct an output whose content extent is the atomic replaced box.
-fn replaced_output(size: Size<f32>) -> LayoutOutput {
-    LayoutOutput::from_sizes(size, size)
+/// Identify axes synthesized from the opposite source through a preferred
+/// ratio. Axes already present in the sizing basis retain direct provenance.
+fn ratio_derived_axes_from_basis(basis: Size<Option<f32>>, aspect_ratio: ResolvedAspectRatio) -> Size<bool> {
+    if !aspect_ratio.has_ratio() {
+        return Size { width: false, height: false };
+    }
+    Size {
+        width: basis.width.is_none() && basis.height.is_some(),
+        height: basis.height.is_none() && basis.width.is_some(),
+    }
+}
+
+/// Construct an output whose content extent is the atomic replaced box while
+/// retaining operation-local preferred-ratio provenance for intrinsic probes.
+fn replaced_output(
+    size: Size<f32>,
+    run_mode: RunMode,
+    requested_axis: RequestedAxis,
+    ratio_derived_axes: Size<bool>,
+) -> LayoutOutput {
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize
+        && match requested_axis {
+            RequestedAxis::Horizontal => ratio_derived_axes.width,
+            RequestedAxis::Vertical => ratio_derived_axes.height,
+            RequestedAxis::Both => ratio_derived_axes.width || ratio_derived_axes.height,
+        };
+    LayoutOutput::from_sizes(size, size).with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Classify one dimension against its used minimum and maximum.
@@ -850,6 +925,28 @@ mod tests {
             ),
             Size { width: 0.0, height: 40.0 }
         );
+    }
+
+    #[test]
+    fn intrinsic_probe_reports_a_cross_size_transferred_from_the_preferred_inline_size() {
+        let style: TestStyle =
+            Style { size: Size { width: Dimension::length(100.0), height: Dimension::auto() }, ..Style::default() };
+        let context = ReplacedSizingContext::new(
+            WritingMode::HorizontalTb,
+            ResolvedAspectRatio::from_option(Some(1.0), BoxSizing::ContentBox),
+            SizeContainment::NONE,
+            ReplacedNaturalSizing::fixed(Size { width: 10.0, height: 10.0 }),
+        );
+        let mut input = inputs(Size { width: Some(10.0), height: None });
+        input.sizing_mode = SizingMode::ContentSize;
+        input.sizing_purpose = SizingPurpose::IntrinsicContribution;
+        input.axis = RequestedAxis::Vertical;
+        input.available_space = Size { width: AvailableSpace::Definite(10.0), height: AvailableSpace::MinContent };
+
+        let result = compute_replaced_layout(input, &style, context, |_, _| 0.0).into_intrinsic_size_result();
+
+        assert_eq!(result.size, Size { width: 100.0, height: 100.0 });
+        assert!(result.applied_aspect_ratio);
     }
 
     #[test]
