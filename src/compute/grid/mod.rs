@@ -23,7 +23,8 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::used_size::resolve_used_size;
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -72,23 +73,25 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(
-                raw_size
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
+                min_size: style
                     .min_size()
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                style
+                max_size: style
                     .max_size()
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                raw_size.map(|dimension| dimension.is_auto()),
-                TransferredSizesMode::Normal,
+                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                block_auto_behavior: inputs.block_auto_behavior,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
-                padding_border_size,
-            );
+                padding_border: padding_border_size,
+            });
             (resolved.min_size, resolved.max_size, resolved.size, resolved.aspect_ratio_applied.width)
         }
     };
@@ -109,12 +112,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let grid_auto_columns = style.grid_auto_columns();
     let grid_auto_rows = style.grid_auto_rows();
 
-    let constrained_available_space = known_dimensions
-        .or(preferred_size)
+    let outer_node_size = resolve_used_size(known_dimensions, preferred_size, min_size, max_size, padding_border_size);
+    let constrained_available_space = outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
-        .unwrap_or(available_space)
-        .maybe_clamp(min_size, max_size)
-        .maybe_max(padding_border_size);
+        .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
 
     let available_grid_space = Size {
         width: constrained_available_space
@@ -124,9 +125,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .height
             .map_definite_value(|space| space - content_box_inset.vertical_axis_sum()),
     };
-
-    let outer_node_size =
-        known_dimensions.or(preferred_size).maybe_clamp(min_size, max_size).maybe_max(padding_border_size);
 
     // The track sizing algorithm operates on the grid container's content box, so the min/max sizes
     // (which are border-box sizes) need converting to content-box sizes before being passed to it

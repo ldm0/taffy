@@ -5,6 +5,7 @@
 use crate::geometry::{LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{IntrinsicSizeResult, LayoutInput, LayoutOutput, RunMode, SizingMode, SizingPurpose};
+use crate::AutoSizeBehavior;
 use crate::RequestedAxis;
 
 /// The number of cache entries for each node in the tree
@@ -99,6 +100,8 @@ struct CacheKey {
     sizing_mode: SizingMode,
     /// Whether this result is final layout or an intrinsic contribution.
     sizing_purpose: SizingPurpose,
+    /// How an authored logical block-size auto resolves in this space.
+    block_auto_behavior: AutoSizeBehavior,
 }
 
 impl CacheKey {
@@ -127,6 +130,7 @@ impl From<&LayoutInput> for CacheKey {
             parent_writing_mode: input.parent_writing_mode,
             sizing_mode: input.sizing_mode,
             sizing_purpose: input.sizing_purpose,
+            block_auto_behavior: input.block_auto_behavior,
         }
     }
 }
@@ -279,6 +283,7 @@ impl Cache {
                 && entry.key.parent_writing_mode == key.parent_writing_mode
                 && entry.key.sizing_mode == key.sizing_mode
                 && entry.key.sizing_purpose == key.sizing_purpose
+                && entry.key.block_auto_behavior == key.block_auto_behavior
             {
                 return Some(IntrinsicSizeResult {
                     size: entry.content.size,
@@ -386,7 +391,8 @@ mod tests {
     use crate::geometry::{Line, Size, WritingMode};
     use crate::style::AvailableSpace;
     use crate::tree::{
-        IntrinsicSizeResult, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode, SizingPurpose,
+        AutoSizeBehavior, IntrinsicSizeResult, LayoutInput, LayoutOutput, RequestedAxis, RunMode, SizingMode,
+        SizingPurpose,
     };
 
     fn input(sizing_purpose: SizingPurpose) -> LayoutInput {
@@ -395,6 +401,7 @@ mod tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose,
             axis: RequestedAxis::Horizontal,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size::NONE,

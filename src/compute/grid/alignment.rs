@@ -3,7 +3,7 @@ use super::types::GridTrack;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
-use crate::compute::common::aspect_ratio::{resolve_size_constraints, TransferredSizesMode};
+use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
@@ -17,7 +17,7 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
-use crate::{BoxSizing, Direction, LayoutGridContainer, RequestedAxis, WritingMode};
+use crate::{AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, RequestedAxis, WritingMode};
 
 /// Final block-axis geometry and baseline data for a positioned grid item.
 ///
@@ -210,6 +210,7 @@ pub(super) fn align_and_position_item(
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
         axis: RequestedAxis::Horizontal,
+        block_auto_behavior: crate::AutoSizeBehavior::FitContent,
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
         parent_size: grid_area_size.map(Some),
@@ -232,15 +233,17 @@ pub(super) fn align_and_position_item(
     inherent_size.width = inherent_size.width.or(intrinsic.preferred);
     min_size.width = min_size.width.or(intrinsic.min);
     max_size.width = max_size.width.or(intrinsic.max);
-    let resolved = resolve_size_constraints(
-        inherent_size,
+    let resolved = resolve_size_constraints(SizeConstraintInput {
+        size: inherent_size,
         min_size,
         max_size,
-        raw_size.map(|dimension| dimension.is_auto()),
-        TransferredSizesMode::Normal,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode: item_writing_mode,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
-        padding_border_size,
-    );
+        padding_border: padding_border_size,
+    });
     inherent_size = resolved.size;
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
