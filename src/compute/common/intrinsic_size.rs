@@ -115,22 +115,37 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     resolve_intrinsic_axis_value(tree, node_id, inputs, value, available_space, axis)
 }
 
-/// Intrinsic components of the preferred, minimum, and maximum inline sizes.
+/// Intrinsic components of preferred, minimum and maximum sizes in one axis.
 ///
 /// Numeric and percentage components are resolved by the formatting-context
 /// algorithm that owns their containing block. These fields contain only the
 /// values that required intrinsic content measurement (or `stretch`).
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct IntrinsicWidthConstraints {
-    /// Intrinsic component of `width`.
+pub(crate) struct IntrinsicSizeConstraints {
+    /// Intrinsic component of the preferred size.
     pub preferred: Option<f32>,
-    /// Intrinsic component of `min-width`.
+    /// Intrinsic component of the minimum size.
     pub min: Option<f32>,
-    /// Intrinsic component of `max-width`.
+    /// Intrinsic component of the maximum size.
     pub max: Option<f32>,
     /// Whether any measured contribution changes with the containing block's
     /// block-size.
     pub depends_on_block_constraints: bool,
+}
+
+/// Authored constraints and available space for one intrinsic sizing axis.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IntrinsicAxisInput {
+    /// Preferred size property in the selected axis.
+    pub preferred: Dimension,
+    /// Minimum size property in the selected axis.
+    pub min: Dimension,
+    /// Maximum size property in the selected axis.
+    pub max: Dimension,
+    /// Available border-box space after margins in the selected axis.
+    pub available_space: AvailableSpace,
+    /// Physical axis corresponding to the formatting context's logical axis.
+    pub axis: AbsoluteAxis,
 }
 
 /// Content-derived constraints for one logical block axis.
@@ -347,7 +362,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     min: Dimension,
     max: Dimension,
     available_width: AvailableSpace,
-) -> IntrinsicWidthConstraints {
+) -> IntrinsicSizeConstraints {
     let child_input = ChildLayoutInput::new(
         inputs.known_dimensions,
         inputs.parent_size,
@@ -357,11 +372,28 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         inputs.vertical_margins_are_collapsible,
     )
     .with_block_auto_behavior(inputs.block_auto_behavior);
-    let preferred =
-        resolve_intrinsic_axis_value(tree, node_id, child_input, preferred, available_width, AbsoluteAxis::Horizontal);
-    let min = resolve_intrinsic_axis_value(tree, node_id, child_input, min, available_width, AbsoluteAxis::Horizontal);
-    let max = resolve_intrinsic_axis_value(tree, node_id, child_input, max, available_width, AbsoluteAxis::Horizontal);
-    IntrinsicWidthConstraints {
+    resolve_intrinsic_axis_constraints(
+        tree,
+        node_id,
+        child_input,
+        IntrinsicAxisInput { preferred, min, max, available_space: available_width, axis: AbsoluteAxis::Horizontal },
+    )
+}
+
+/// Resolve preferred/minimum/maximum intrinsic sizing values along one
+/// physical axis. Formatting contexts select the axis by projecting their
+/// logical inline axis through their writing mode.
+pub(crate) fn resolve_intrinsic_axis_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: ChildLayoutInput,
+    axis_input: IntrinsicAxisInput,
+) -> IntrinsicSizeConstraints {
+    let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
+    let preferred = resolve_intrinsic_axis_value(tree, node_id, inputs, preferred, available_space, axis);
+    let min = resolve_intrinsic_axis_value(tree, node_id, inputs, min, available_space, axis);
+    let max = resolve_intrinsic_axis_value(tree, node_id, inputs, max, available_space, axis);
+    IntrinsicSizeConstraints {
         preferred: preferred.value,
         min: min.value,
         max: max.value,

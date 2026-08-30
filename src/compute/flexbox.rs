@@ -817,8 +817,8 @@ fn generate_anonymous_flex_items(
         .enumerate()
         .filter_map(|(index, child)| {
             let aspect_ratio = tree.get_resolved_aspect_ratio(child);
-            let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
             let child_writing_mode = tree.get_writing_mode(child);
+            let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
             let child_style = tree.get_flexbox_child_style(child);
             if child_style.position() == Position::Absolute
                 || child_style.box_generation_mode() == BoxGenerationMode::None
@@ -2729,8 +2729,8 @@ fn perform_absolute_layout_on_absolute_children(
     for order in 0..tree.child_count(node) {
         let child = tree.get_child_id(node, order);
         let aspect_ratio = tree.get_resolved_aspect_ratio(child);
-        let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
         let child_writing_mode = tree.get_writing_mode(child);
+        let scrollbar_size = tree.get_scrollbar_insets(child).sum_axes();
         let child_style = tree.get_flexbox_child_style(child);
 
         // Skip items that are display:none or are not position:absolute
@@ -2996,26 +2996,10 @@ fn perform_absolute_layout_on_absolute_children(
         let cross_is_rtl = cross_axis_is_horizontal && constants.horizontal_direction.is_rtl();
         let main_axis_flex_start_reversed = constants.main_axis_flex_start_reversed;
         let cross_axis_flex_start_reversed = constants.cross_axis_flex_start_reversed;
-        let main_start_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_start(constants.dir)
-        };
-        let cross_start_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        };
-        let main_end_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_end(constants.dir)
-        };
-        let cross_end_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        };
+        let main_start_scrollbar_offset = constants.scrollbar_insets.main_start(constants.dir);
+        let cross_start_scrollbar_offset = constants.scrollbar_insets.cross_start(constants.dir);
+        let main_end_scrollbar_offset = constants.scrollbar_insets.main_end(constants.dir);
+        let cross_end_scrollbar_offset = constants.scrollbar_insets.cross_end(constants.dir);
 
         // Apply main-axis alignment
         // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);

@@ -185,6 +185,15 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// Get core style
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
 
+    /// Return the writing mode that owns a node's logical axes.
+    ///
+    /// The default reads [`CoreStyle`]. Browser adapters whose numeric style
+    /// projection does not own inherited properties may override this seam,
+    /// provided every leaf-layout call receives the same value.
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.get_core_container_style(node_id).writing_mode()
+    }
+
     /// Get the resolved physical space occupied by scrollbar gutters.
     ///
     /// The default derives the traditional end-edge gutters from
@@ -196,15 +205,6 @@ pub trait LayoutPartialTree: TraversePartialTree {
     #[inline]
     fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
         resolve_scrollbar_insets(&self.get_core_container_style(node_id))
-    }
-
-    /// Return the writing mode that owns a node's logical axes.
-    ///
-    /// The default reads [`CoreStyle`]. Browser adapters whose numeric style
-    /// projection does not own inherited properties may override this seam,
-    /// provided every leaf-layout call receives the same value.
-    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
-        self.get_core_container_style(node_id).writing_mode()
     }
 
     /// Returns the node's used aspect ratio and the sizing box whose dimensions

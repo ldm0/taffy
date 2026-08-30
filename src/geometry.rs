@@ -626,6 +626,19 @@ impl<T> LogicalSize<T> {
     }
 }
 
+impl LogicalSize<f32> {
+    /// A logical size whose inline and block extents are zero.
+    pub const ZERO: Self = Self { inline_size: 0.0, block_size: 0.0 };
+
+    /// Component-wise maximum that preserves CSS floating-point semantics.
+    pub(crate) fn f32_max(self, other: Self) -> Self {
+        Self {
+            inline_size: f32_max(self.inline_size, other.inline_size),
+            block_size: f32_max(self.block_size, other.block_size),
+        }
+    }
+}
+
 impl<U, T: Add<U>> Add<LogicalSize<U>> for LogicalSize<T> {
     type Output = LogicalSize<T::Output>;
 

@@ -1,4 +1,6 @@
 use taffy::prelude::*;
+#[cfg(feature = "float_layout")]
+use taffy::Float;
 use taffy::{AbsoluteAxis, WritingMode};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode as TextWritingMode};
 
@@ -171,6 +173,55 @@ fn intrinsic_flex_basis_keywords_remain_distinct_across_logical_axes() {
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "float_layout")]
+#[test]
+fn orthogonal_flex_basis_uses_logical_inline_float_contributions() {
+    let cases = [(Dimension::min_content(), 50.0), (Dimension::max_content(), 100.0), (Dimension::fit_content(), 75.0)];
+
+    for (flex_basis, expected_height) in cases {
+        let mut tree = TaffyTree::<()>::new();
+        let float_style = Style {
+            display: Display::Block,
+            float: Float::Left,
+            size: Size::from_lengths(50.0, 50.0),
+            ..Default::default()
+        };
+        let first_float = tree.new_leaf(float_style.clone()).unwrap();
+        let second_float = tree.new_leaf(float_style).unwrap();
+        let item = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    min_size: Size::from_lengths(0.0, 0.0),
+                    flex_basis,
+                    flex_grow: 0.0,
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &[first_float, second_float],
+            )
+            .unwrap();
+        for node in [first_float, second_float, item] {
+            tree.set_writing_mode(node, WritingMode::VerticalRl).unwrap();
+        }
+        let flex = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    size: Size::from_lengths(75.0, 75.0),
+                    ..Default::default()
+                },
+                &[item],
+            )
+            .unwrap();
+
+        tree.compute_layout(flex, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(item).unwrap().size.height, expected_height, "basis={flex_basis:?}");
     }
 }
 

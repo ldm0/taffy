@@ -117,8 +117,8 @@ pub(super) fn align_and_position_item(
     let percentage_basis = parent_writing_mode.to_logical(grid_area_size).inline_size;
 
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
-    let scrollbar_size = tree.get_scrollbar_insets(node).sum_axes();
     let item_writing_mode = tree.get_writing_mode(node);
+    let scrollbar_size = tree.get_scrollbar_insets(node).sum_axes();
     let style = tree.get_grid_child_style(node);
 
     let overflow = style.overflow();
