@@ -548,6 +548,31 @@ fn flex_wrap_reverse_flips_the_last_baseline_group_once() {
 }
 
 #[test]
+fn wrap_reverse_oversized_line_keeps_its_flex_start_edge() {
+    let mut tree = TaffyTree::<()>::new();
+    let child =
+        tree.new_leaf(Style { size: Size { width: length(20.0), height: length(47.0) }, ..Style::default() }).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_wrap: FlexWrap::WrapReverse,
+                size: Size { width: length(40.0), height: length(40.0) },
+                ..Style::default()
+            },
+            &[child],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    // `align-content: stretch` falls back to `flex-start` when the line cannot
+    // stretch. For wrap-reverse that edge is the physical bottom, so overflow
+    // extends seven pixels above the container rather than below it.
+    assert_eq!(tree.unrounded_layout(child).location, Point { x: 0.0, y: -7.0 });
+}
+
+#[test]
 fn absolute_flex_last_baseline_uses_its_end_fallback() {
     let mut tree = TaffyTree::<()>::new();
     let child = tree

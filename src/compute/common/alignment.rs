@@ -125,14 +125,14 @@ pub fn apply_alignment_fallback(
     };
 
     // 1. If there is only a single item being aligned or the items overflow the container, the
-    //    distributed alignment keywords (`stretch`, `space-*`) fall back to a positional keyword
-    //    and gain implicit `safe` semantics so step 2 can flip them to `Start` on overflow.
+    //    distributed alignment keywords (`stretch`, `space-*`) fall back to a positional keyword.
+    //    `stretch` falls back to plain `flex-start`; unlike the `space-*` fallbacks it does not
+    //    gain implicit overflow safety, so reversed flex axes retain their flex-relative edge.
     //    https://www.w3.org/TR/css-align-3/#distribution-values
     if num_items <= 1 || free_space <= 0.0 {
         (keyword, is_safe) = match keyword {
-            ResolvedAlignContentKeyword::Stretch | ResolvedAlignContentKeyword::SpaceBetween => {
-                (ResolvedAlignContentKeyword::FlexStart, true)
-            }
+            ResolvedAlignContentKeyword::Stretch => (ResolvedAlignContentKeyword::FlexStart, false),
+            ResolvedAlignContentKeyword::SpaceBetween => (ResolvedAlignContentKeyword::FlexStart, true),
             ResolvedAlignContentKeyword::SpaceAround | ResolvedAlignContentKeyword::SpaceEvenly => {
                 (ResolvedAlignContentKeyword::Center, true)
             }
@@ -233,5 +233,11 @@ mod tests {
         assert_eq!(ResolvedAlignContentKeyword::Stretch.reversed(), ResolvedAlignContentKeyword::End);
         assert_eq!(ResolvedAlignContentKeyword::Center.reversed(), ResolvedAlignContentKeyword::Center);
         assert_eq!(ResolvedAlignContentKeyword::SpaceBetween.reversed(), ResolvedAlignContentKeyword::SpaceBetween);
+    }
+
+    #[test]
+    fn stretch_overflow_falls_back_to_flex_start_without_safety() {
+        assert_eq!(apply_alignment_fallback(-7.0, 1, AlignContent::STRETCH), ResolvedAlignContentKeyword::FlexStart);
+        assert_eq!(compute_alignment_offset(-7.0, 1, 0.0, ResolvedAlignContentKeyword::FlexStart, true, true), -7.0);
     }
 }
