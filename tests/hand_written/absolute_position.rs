@@ -118,6 +118,118 @@ mod absolute_position {
         assert_eq!(fixture.tree.layout(fixture.text).unwrap().size.height, 40.0);
     }
 
+    fn absolute_intrinsic_block_constraint(
+        container_display: Display,
+        preferred_block_size: Dimension,
+        min_block_size: Dimension,
+        max_block_size: Dimension,
+        block_insets: Line<LengthPercentageAuto>,
+        aspect_ratio: Option<f32>,
+    ) -> Layout {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let content = tree
+            .new_leaf(Style { size: Size { width: length(40.0), height: length(80.0) }, ..Default::default() })
+            .unwrap();
+        let absolute = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    position: Position::Absolute,
+                    size: Size { width: length(100.0), height: preferred_block_size },
+                    min_size: Size { width: auto(), height: min_block_size },
+                    max_size: Size { width: auto(), height: max_block_size },
+                    inset: Rect { top: block_insets.start, bottom: block_insets.end, ..Rect::auto() },
+                    aspect_ratio,
+                    ..Default::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: container_display,
+                    size: Size { width: length(300.0), height: length(200.0) },
+                    ..Default::default()
+                },
+                &[absolute],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        *tree.layout(absolute).unwrap()
+    }
+
+    #[test]
+    fn absolute_intrinsic_preferred_block_size_uses_the_content_contribution() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = absolute_intrinsic_block_constraint(
+                container_display,
+                Dimension::max_content(),
+                auto(),
+                auto(),
+                Line::AUTO,
+                None,
+            );
+            assert_eq!(layout.size, Size { width: 100.0, height: 80.0 });
+        }
+    }
+
+    #[test]
+    fn absolute_min_content_block_constraint_clamps_a_definite_preferred_size() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = absolute_intrinsic_block_constraint(
+                container_display,
+                length(0.0),
+                Dimension::max_content(),
+                auto(),
+                Line::AUTO,
+                None,
+            );
+            assert_eq!(layout.size, Size { width: 100.0, height: 80.0 });
+        }
+    }
+
+    #[test]
+    fn absolute_max_content_block_constraint_clamps_a_definite_preferred_size() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = absolute_intrinsic_block_constraint(
+                container_display,
+                length(160.0),
+                auto(),
+                Dimension::min_content(),
+                Line::AUTO,
+                None,
+            );
+            assert_eq!(layout.size, Size { width: 100.0, height: 80.0 });
+        }
+    }
+
+    #[test]
+    fn absolute_intrinsic_maximum_clamps_inset_stretch() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout = absolute_intrinsic_block_constraint(
+                container_display,
+                auto(),
+                auto(),
+                Dimension::max_content(),
+                Line { start: length(10.0), end: length(10.0) },
+                None,
+            );
+            assert_eq!(layout.size, Size { width: 100.0, height: 80.0 });
+        }
+    }
+
+    #[test]
+    fn absolute_aspect_ratio_observes_the_content_based_automatic_minimum() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let layout =
+                absolute_intrinsic_block_constraint(container_display, auto(), auto(), auto(), Line::AUTO, Some(2.0));
+            assert_eq!(layout.size, Size { width: 100.0, height: 80.0 });
+        }
+    }
+
     fn absolute_box(
         direction: Direction,
         containing_size: Size<f32>,

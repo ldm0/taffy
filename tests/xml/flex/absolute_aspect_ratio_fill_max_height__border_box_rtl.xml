@@ -9,7 +9,7 @@
   </input>
   <expectations>
     <node x="0" y="0" width="400" height="300">
-      <node x="350" y="0" width="50" height="17"/>
+      <node x="350" y="0" width="50" height="90"/>
     </node>
   </expectations>
 </test>

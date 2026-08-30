@@ -15,7 +15,9 @@ use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{AutoSizeBehavior, BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
-use super::common::absolute::fit_content_width;
+use super::common::absolute::{
+    fit_content_width, AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing,
+};
 use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 #[cfg(feature = "content_size")]
@@ -2707,6 +2709,7 @@ fn perform_absolute_layout_on_absolute_children(
         let raw_size = child_style.size();
         let raw_min_size = child_style.min_size();
         let raw_max_size = child_style.max_size();
+        let is_replaced = child_style.is_compressible_replaced();
         let mut style_size = raw_size
             .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
             .maybe_add(box_sizing_adjustment);
@@ -2766,8 +2769,20 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         });
-        let min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let max_size = resolved.max_size;
+        let block_size_resolver = AbsoluteBlockSizeResolver::new(AbsoluteBlockSizeInput {
+            writing_mode: child_writing_mode,
+            size: raw_size,
+            min_size: raw_min_size,
+            max_size: raw_max_size,
+            aspect_ratio,
+            padding_border: padding_border_sum,
+            block_auto_behavior,
+            is_scroll_container: overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+            is_replaced,
+            constraint_sources: resolved.block_axis_constraints(child_writing_mode),
+        });
+        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let mut max_size = resolved.max_size;
         let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
 
         // Fill in width from left/right and reapply aspect ratio if:
@@ -2815,6 +2830,26 @@ fn perform_absolute_layout_on_absolute_children(
                 .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
                 .maybe_clamp(min_size, max_size);
         }
+        let sizing = block_size_resolver.resolve(
+            tree,
+            child,
+            ChildLayoutInput::new(
+                known_dimensions,
+                constants.node_inner_size,
+                constants.writing_mode,
+                Size {
+                    width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
+                    height: AvailableSpace::Definite(container_height),
+                },
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
+            AbsoluteBoxSizing { size: known_dimensions, min_size, max_size },
+        );
+        known_dimensions = sizing.size;
+        min_size = sizing.min_size;
+        max_size = sizing.max_size;
+
         let measured_size = tree.measure_child_size_both(
             child,
             ChildLayoutInput::new(

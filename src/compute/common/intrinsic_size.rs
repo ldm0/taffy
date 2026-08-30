@@ -178,9 +178,11 @@ impl BlockSizeProperties {
         has_preferred_aspect_ratio: bool,
         auto_size_is_content_based: bool,
         is_scroll_container: bool,
+        is_replaced: bool,
     ) -> bool {
         has_preferred_aspect_ratio
             && !is_scroll_container
+            && !is_replaced
             && self.min.is_auto()
             && self.preferred_is_content_based(auto_size_is_content_based)
     }
@@ -193,6 +195,7 @@ impl BlockSizeProperties {
         ratio_block_size: Option<f32>,
         auto_size_is_content_based: bool,
         is_scroll_container: bool,
+        is_replaced: bool,
     ) -> IntrinsicBlockSizeConstraints {
         let content_block_size = ratio_block_size.unwrap_or(intrinsic_border_box_size);
         let resolve_explicit = |value: Dimension| value.is_intrinsic().then_some(content_block_size);
@@ -203,7 +206,12 @@ impl BlockSizeProperties {
             min: resolve_explicit(self.min),
             max: resolve_explicit(self.max),
             automatic_min: self
-                .applies_automatic_minimum(ratio_block_size.is_some(), auto_size_is_content_based, is_scroll_container)
+                .applies_automatic_minimum(
+                    ratio_block_size.is_some(),
+                    auto_size_is_content_based,
+                    is_scroll_container,
+                    is_replaced,
+                )
                 .then_some(intrinsic_border_box_size),
             depends_on_block_constraints: false,
         }
@@ -223,6 +231,8 @@ pub(crate) struct ContentBasedBlockSize {
     auto_size_is_content_based: bool,
     /// Whether overflow suppresses the ratio-dependent automatic minimum.
     is_scroll_container: bool,
+    /// Whether replaced sizing bypasses the non-replaced automatic minimum.
+    is_replaced: bool,
 }
 
 impl ContentBasedBlockSize {
@@ -234,8 +244,9 @@ impl ContentBasedBlockSize {
         padding_border: Size<f32>,
         auto_size_is_content_based: bool,
         is_scroll_container: bool,
+        is_replaced: bool,
     ) -> Self {
-        Self { properties, aspect_ratio, padding_border, auto_size_is_content_based, is_scroll_container }
+        Self { properties, aspect_ratio, padding_border, auto_size_is_content_based, is_scroll_container, is_replaced }
     }
 
     /// Whether the real intrinsic block contribution is required.
@@ -246,6 +257,7 @@ impl ContentBasedBlockSize {
                 self.aspect_ratio.is_some(),
                 self.auto_size_is_content_based,
                 self.is_scroll_container,
+                self.is_replaced,
             )
     }
 
@@ -269,6 +281,7 @@ impl ContentBasedBlockSize {
             ratio_block_size,
             self.auto_size_is_content_based,
             self.is_scroll_container,
+            self.is_replaced,
         )
     }
 }

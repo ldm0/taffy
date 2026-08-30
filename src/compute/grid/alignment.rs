@@ -1,5 +1,6 @@
 //! Alignment of tracks and final positioning of items
 use super::types::GridTrack;
+use crate::compute::common::absolute::{AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing};
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
@@ -181,6 +182,20 @@ pub(super) fn align_and_position_item(
     let raw_size = style.size();
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
+    let is_replaced = style.is_compressible_replaced();
+    let block_auto_behavior = if position == Position::Absolute {
+        match item_writing_mode.block_axis() {
+            crate::AbsoluteAxis::Horizontal if inset_horizontal.start.is_some() && inset_horizontal.end.is_some() => {
+                AutoSizeBehavior::StretchExplicit
+            }
+            crate::AbsoluteAxis::Vertical if inset_vertical.start.is_some() && inset_vertical.end.is_some() => {
+                AutoSizeBehavior::StretchExplicit
+            }
+            _ => AutoSizeBehavior::FitContent,
+        }
+    } else {
+        AutoSizeBehavior::FitContent
+    };
     let mut inherent_size =
         raw_size.maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
     let mut min_size =
@@ -197,14 +212,19 @@ pub(super) fn align_and_position_item(
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
         height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
     };
-    let intrinsic_available_width = if position == Position::Absolute {
-        grid_area_minus_item_margins_size.width
-            - inset_horizontal.start.unwrap_or(0.0)
-            - inset_horizontal.end.unwrap_or(0.0)
+    let inset_modified_available_size = if position == Position::Absolute {
+        Size {
+            width: grid_area_minus_item_margins_size.width
+                - inset_horizontal.start.unwrap_or(0.0)
+                - inset_horizontal.end.unwrap_or(0.0),
+            height: grid_area_minus_item_margins_size.height
+                - inset_vertical.start.unwrap_or(0.0)
+                - inset_vertical.end.unwrap_or(0.0),
+        }
     } else {
-        grid_area_minus_item_margins_size.width
+        grid_area_minus_item_margins_size
     };
-    let intrinsic_available_space = AvailableSpace::Definite(f32_max(intrinsic_available_width, 0.0));
+    let intrinsic_available_space = AvailableSpace::Definite(f32_max(inset_modified_available_size.width, 0.0));
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
         sizing_mode: SizingMode::InherentSize,
@@ -239,10 +259,24 @@ pub(super) fn align_and_position_item(
         max_size,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode: item_writing_mode,
-        block_auto_behavior: AutoSizeBehavior::FitContent,
+        block_auto_behavior,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border: padding_border_size,
+    });
+    let block_size_resolver = (position == Position::Absolute).then(|| {
+        AbsoluteBlockSizeResolver::new(AbsoluteBlockSizeInput {
+            writing_mode: item_writing_mode,
+            size: raw_size,
+            min_size: raw_min_size,
+            max_size: raw_max_size,
+            aspect_ratio,
+            padding_border: padding_border_size,
+            block_auto_behavior,
+            is_scroll_container: overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+            is_replaced,
+            constraint_sources: resolved.block_axis_constraints(item_writing_mode),
+        })
     });
     inherent_size = resolved.size;
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
@@ -330,8 +364,29 @@ pub(super) fn align_and_position_item(
         padding_border_size,
     );
 
-    // Clamp size by min and max width/height
-    let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
+    // Clamp size by min and max width/height. Content-dependent block-axis
+    // constraints are resolved only now, once the absolute inline size and
+    // inset-modified containing block are known.
+    let mut used_size = Size { width, height }.maybe_clamp(min_size, max_size);
+    if let Some(resolver) = block_size_resolver {
+        let sizing = resolver.resolve(
+            tree,
+            node,
+            ChildLayoutInput::new(
+                used_size,
+                grid_area_size.map(Some),
+                parent_writing_mode,
+                inset_modified_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
+                SizingMode::InherentSize,
+                Line::FALSE,
+            ),
+            AbsoluteBoxSizing { size: used_size, min_size, max_size },
+        );
+        used_size = sizing.size;
+        min_size = sizing.min_size;
+        max_size = sizing.max_size;
+    }
+    let Size { width, height } = used_size;
 
     // Layout node
     let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
