@@ -41,6 +41,83 @@ pub enum WritingMode {
     SidewaysLr,
 }
 
+/// The CSS writing mode and inline text direction of a formatting context.
+///
+/// These values jointly determine the physical location of all four logical
+/// sides. Keeping them together prevents layout code from projecting sizes
+/// with a writing mode while accidentally positioning boxes with an unrelated
+/// or implicit direction.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct WritingDirection {
+    /// The orientation and block progression of the formatting context.
+    pub mode: WritingMode,
+    /// The inline progression of the formatting context.
+    pub direction: Direction,
+}
+
+impl WritingDirection {
+    /// Create a writing direction from its two CSS components.
+    #[inline(always)]
+    pub const fn new(mode: WritingMode, direction: Direction) -> Self {
+        Self { mode, direction }
+    }
+
+    /// Whether the logical inline start lies at the high physical coordinate.
+    #[inline(always)]
+    pub const fn is_inline_flow_reversed(self) -> bool {
+        self.mode.is_inline_flow_reversed(self.direction)
+    }
+
+    /// Whether the logical block start lies at the high physical coordinate.
+    #[inline(always)]
+    pub const fn is_block_flow_reversed(self) -> bool {
+        self.mode.is_block_flow_reversed()
+    }
+
+    /// Create a converter whose offsets are relative to `outer_size`.
+    #[inline(always)]
+    pub const fn converter<T>(self, outer_size: Size<T>) -> WritingModeConverter<T> {
+        WritingModeConverter::new(self, outer_size)
+    }
+
+    /// Convert physical box edges into logical start/end edges.
+    ///
+    /// Edge conversion does not depend on a containing size, so callers do
+    /// not need to construct a full [`WritingModeConverter`] for struts.
+    pub fn to_logical_box_strut<T: Copy>(self, rect: Rect<T>) -> LogicalBoxStrut<T> {
+        let (inline_low, inline_high, block_low, block_high) = if self.mode.is_horizontal() {
+            (rect.left, rect.right, rect.top, rect.bottom)
+        } else {
+            (rect.top, rect.bottom, rect.left, rect.right)
+        };
+        let (inline_start, inline_end) =
+            if self.is_inline_flow_reversed() { (inline_high, inline_low) } else { (inline_low, inline_high) };
+        let (block_start, block_end) =
+            if self.is_block_flow_reversed() { (block_high, block_low) } else { (block_low, block_high) };
+        LogicalBoxStrut { inline_start, inline_end, block_start, block_end }
+    }
+
+    /// Convert logical start/end edges back into physical box edges.
+    pub fn to_physical_box_strut<T: Copy>(self, rect: LogicalBoxStrut<T>) -> Rect<T> {
+        let (inline_low, inline_high) = if self.is_inline_flow_reversed() {
+            (rect.inline_end, rect.inline_start)
+        } else {
+            (rect.inline_start, rect.inline_end)
+        };
+        let (block_low, block_high) = if self.is_block_flow_reversed() {
+            (rect.block_end, rect.block_start)
+        } else {
+            (rect.block_start, rect.block_end)
+        };
+        if self.mode.is_horizontal() {
+            Rect { left: inline_low, right: inline_high, top: block_low, bottom: block_high }
+        } else {
+            Rect { left: block_low, right: block_high, top: inline_low, bottom: inline_high }
+        }
+    }
+}
+
 impl WritingMode {
     /// Whether the inline axis is the physical horizontal axis.
     #[inline(always)]
@@ -237,6 +314,73 @@ pub struct Rect<T> {
     /// This can represent either the y-coordinate of the bottom edge,
     /// or the amount of padding on the bottom side.
     pub bottom: T,
+}
+
+/// A margin, border, padding or inset strut in CSS flow-relative coordinates.
+///
+/// This is the logical counterpart of the physical edge values in [`Rect`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LogicalBoxStrut<T> {
+    /// Edge at the beginning of the inline axis.
+    pub inline_start: T,
+    /// Edge at the end of the inline axis.
+    pub inline_end: T,
+    /// Edge at the beginning of the block axis.
+    pub block_start: T,
+    /// Edge at the end of the block axis.
+    pub block_end: T,
+}
+
+impl<U, T: Add<U>> Add<LogicalBoxStrut<U>> for LogicalBoxStrut<T> {
+    type Output = LogicalBoxStrut<T::Output>;
+
+    fn add(self, rhs: LogicalBoxStrut<U>) -> Self::Output {
+        LogicalBoxStrut {
+            inline_start: self.inline_start + rhs.inline_start,
+            inline_end: self.inline_end + rhs.inline_end,
+            block_start: self.block_start + rhs.block_start,
+            block_end: self.block_end + rhs.block_end,
+        }
+    }
+}
+
+impl<T> LogicalBoxStrut<T> {
+    /// Applies `f` to all four logical sides.
+    pub fn map<R, F>(self, f: F) -> LogicalBoxStrut<R>
+    where
+        F: Fn(T) -> R,
+    {
+        LogicalBoxStrut {
+            inline_start: f(self.inline_start),
+            inline_end: f(self.inline_end),
+            block_start: f(self.block_start),
+            block_end: f(self.block_end),
+        }
+    }
+}
+
+impl<T, U> LogicalBoxStrut<T>
+where
+    T: Add<Output = U> + Copy,
+{
+    /// Sum of the two inline-axis sides.
+    #[inline(always)]
+    pub fn inline_axis_sum(&self) -> U {
+        self.inline_start + self.inline_end
+    }
+
+    /// Sum of the two block-axis sides.
+    #[inline(always)]
+    pub fn block_axis_sum(&self) -> U {
+        self.block_start + self.block_end
+    }
+
+    /// Sum both pairs of sides as a logical size.
+    #[inline(always)]
+    pub fn sum_axes(&self) -> LogicalSize<U> {
+        LogicalSize { inline_size: self.inline_axis_sum(), block_size: self.block_axis_sum() }
+    }
 }
 
 impl<U, T: Add<U>> Add<Rect<U>> for Rect<T> {
@@ -479,6 +623,22 @@ impl<T> LogicalSize<T> {
         F: Fn(T) -> R,
     {
         LogicalSize { inline_size: f(self.inline_size), block_size: f(self.block_size) }
+    }
+}
+
+impl<U, T: Add<U>> Add<LogicalSize<U>> for LogicalSize<T> {
+    type Output = LogicalSize<T::Output>;
+
+    fn add(self, rhs: LogicalSize<U>) -> Self::Output {
+        LogicalSize { inline_size: self.inline_size + rhs.inline_size, block_size: self.block_size + rhs.block_size }
+    }
+}
+
+impl<U, T: Sub<U>> Sub<LogicalSize<U>> for LogicalSize<T> {
+    type Output = LogicalSize<T::Output>;
+
+    fn sub(self, rhs: LogicalSize<U>) -> Self::Output {
+        LogicalSize { inline_size: self.inline_size - rhs.inline_size, block_size: self.block_size - rhs.block_size }
     }
 }
 
@@ -836,6 +996,53 @@ impl Size<Dimension> {
     }
 }
 
+/// A two-dimensional offset expressed in CSS flow-relative coordinates.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LogicalOffset<T> {
+    /// Offset from the inline-start edge.
+    pub inline_offset: T,
+    /// Offset from the block-start edge.
+    pub block_offset: T,
+}
+
+impl<U, T: Add<U>> Add<LogicalOffset<U>> for LogicalOffset<T> {
+    type Output = LogicalOffset<T::Output>;
+
+    fn add(self, rhs: LogicalOffset<U>) -> Self::Output {
+        LogicalOffset {
+            inline_offset: self.inline_offset + rhs.inline_offset,
+            block_offset: self.block_offset + rhs.block_offset,
+        }
+    }
+}
+
+impl<U, T: Sub<U>> Sub<LogicalOffset<U>> for LogicalOffset<T> {
+    type Output = LogicalOffset<T::Output>;
+
+    fn sub(self, rhs: LogicalOffset<U>) -> Self::Output {
+        LogicalOffset {
+            inline_offset: self.inline_offset - rhs.inline_offset,
+            block_offset: self.block_offset - rhs.block_offset,
+        }
+    }
+}
+
+impl<T> LogicalOffset<T> {
+    /// Applies `f` to both logical offsets.
+    pub fn map<R, F>(self, f: F) -> LogicalOffset<R>
+    where
+        F: Fn(T) -> R,
+    {
+        LogicalOffset { inline_offset: f(self.inline_offset), block_offset: f(self.block_offset) }
+    }
+}
+
+impl LogicalOffset<f32> {
+    /// A logical point at inline-start/block-start.
+    pub const ZERO: Self = Self { inline_offset: 0.0, block_offset: 0.0 };
+}
+
 /// A 2-dimensional coordinate.
 ///
 /// When used in association with a [`Rect`], represents the top-left corner.
@@ -907,6 +1114,218 @@ impl<T> Point<T> {
 impl<T> From<Point<T>> for Size<T> {
     fn from(value: Point<T>) -> Self {
         Size { width: value.x, height: value.y }
+    }
+}
+
+/// Converts geometry between physical and CSS flow-relative coordinate spaces.
+///
+/// Offset conversion needs the containing rectangle's size because inline or
+/// block start can lie on the physical right or bottom edge. It also needs the
+/// child size so that the returned physical point is always the child's
+/// top-left corner, matching [`Layout::location`](crate::tree::Layout::location).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct WritingModeConverter<T> {
+    /// Logical axes and their physical progression directions.
+    writing_direction: WritingDirection,
+    /// Physical containing size used to resolve reversed offsets.
+    outer_size: Size<T>,
+}
+
+impl<T> WritingModeConverter<T> {
+    /// Create a converter for descendants of a physical rectangle.
+    #[inline(always)]
+    pub const fn new(writing_direction: WritingDirection, outer_size: Size<T>) -> Self {
+        Self { writing_direction, outer_size }
+    }
+
+    /// The writing mode and direction used by this converter.
+    #[inline(always)]
+    pub const fn writing_direction(&self) -> WritingDirection {
+        self.writing_direction
+    }
+
+    /// The physical size offsets are relative to.
+    #[inline(always)]
+    pub const fn outer_size(&self) -> &Size<T> {
+        &self.outer_size
+    }
+}
+
+impl<T: Copy> WritingModeConverter<T> {
+    /// Project a physical size into the converter's logical axes.
+    #[inline(always)]
+    pub fn to_logical_size(&self, size: Size<T>) -> LogicalSize<T> {
+        self.writing_direction.mode.to_logical(size)
+    }
+
+    /// Project a logical size back into physical axes.
+    #[inline(always)]
+    pub fn to_physical_size(&self, size: LogicalSize<T>) -> Size<T> {
+        self.writing_direction.mode.to_physical(size)
+    }
+
+    /// Convert physical box edges into logical start/end edges.
+    pub fn to_logical_box_strut(&self, rect: Rect<T>) -> LogicalBoxStrut<T> {
+        self.writing_direction.to_logical_box_strut(rect)
+    }
+
+    /// Convert logical start/end edges back into physical box edges.
+    pub fn to_physical_box_strut(&self, rect: LogicalBoxStrut<T>) -> Rect<T> {
+        self.writing_direction.to_physical_box_strut(rect)
+    }
+}
+
+impl<T> WritingModeConverter<T>
+where
+    T: Copy + Sub<Output = T>,
+{
+    /// Convert a logical child offset to its physical top-left point.
+    pub fn to_physical_point(&self, offset: LogicalOffset<T>, inner_size: Size<T>) -> Point<T> {
+        let outer_size = self.to_logical_size(self.outer_size);
+        let inner_size = self.to_logical_size(inner_size);
+        let inline_offset = if self.writing_direction.is_inline_flow_reversed() {
+            outer_size.inline_size - offset.inline_offset - inner_size.inline_size
+        } else {
+            offset.inline_offset
+        };
+        let block_offset = if self.writing_direction.is_block_flow_reversed() {
+            outer_size.block_size - offset.block_offset - inner_size.block_size
+        } else {
+            offset.block_offset
+        };
+        if self.writing_direction.mode.is_horizontal() {
+            Point { x: inline_offset, y: block_offset }
+        } else {
+            Point { x: block_offset, y: inline_offset }
+        }
+    }
+
+    /// Convert a physical child top-left point to its logical offset.
+    pub fn to_logical_point(&self, offset: Point<T>, inner_size: Size<T>) -> LogicalOffset<T> {
+        let outer_size = self.to_logical_size(self.outer_size);
+        let inner_size = self.to_logical_size(inner_size);
+        let (inline_offset, block_offset) =
+            if self.writing_direction.mode.is_horizontal() { (offset.x, offset.y) } else { (offset.y, offset.x) };
+        LogicalOffset {
+            inline_offset: if self.writing_direction.is_inline_flow_reversed() {
+                outer_size.inline_size - inline_offset - inner_size.inline_size
+            } else {
+                inline_offset
+            },
+            block_offset: if self.writing_direction.is_block_flow_reversed() {
+                outer_size.block_size - block_offset - inner_size.block_size
+            } else {
+                block_offset
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod writing_mode_tests {
+    use super::{LogicalBoxStrut, LogicalOffset, Point, Rect, Size, WritingDirection, WritingMode};
+    use crate::Direction;
+
+    const OUTER_SIZE: Size<i32> = Size { width: 300, height: 400 };
+    const INNER_SIZE: Size<i32> = Size { width: 5, height: 65 };
+
+    const WRITING_DIRECTIONS: [WritingDirection; 10] = [
+        WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+        WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
+        WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr),
+        WritingDirection::new(WritingMode::VerticalRl, Direction::Rtl),
+        WritingDirection::new(WritingMode::VerticalLr, Direction::Ltr),
+        WritingDirection::new(WritingMode::VerticalLr, Direction::Rtl),
+        WritingDirection::new(WritingMode::SidewaysRl, Direction::Ltr),
+        WritingDirection::new(WritingMode::SidewaysRl, Direction::Rtl),
+        WritingDirection::new(WritingMode::SidewaysLr, Direction::Ltr),
+        WritingDirection::new(WritingMode::SidewaysLr, Direction::Rtl),
+    ];
+
+    #[test]
+    fn logical_offsets_convert_to_physical_top_left_points() {
+        let logical = LogicalOffset { inline_offset: 20, block_offset: 30 };
+        let expected = [
+            Point { x: 20, y: 30 },
+            Point { x: 275, y: 30 },
+            Point { x: 265, y: 20 },
+            Point { x: 265, y: 315 },
+            Point { x: 30, y: 20 },
+            Point { x: 30, y: 315 },
+            Point { x: 265, y: 20 },
+            Point { x: 265, y: 315 },
+            Point { x: 30, y: 315 },
+            Point { x: 30, y: 20 },
+        ];
+
+        for (writing_direction, expected) in WRITING_DIRECTIONS.into_iter().zip(expected) {
+            assert_eq!(
+                writing_direction.converter(OUTER_SIZE).to_physical_point(logical, INNER_SIZE),
+                expected,
+                "{writing_direction:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn physical_top_left_points_convert_to_logical_offsets() {
+        let physical = Point { x: 20, y: 30 };
+        let expected = [
+            LogicalOffset { inline_offset: 20, block_offset: 30 },
+            LogicalOffset { inline_offset: 275, block_offset: 30 },
+            LogicalOffset { inline_offset: 30, block_offset: 275 },
+            LogicalOffset { inline_offset: 305, block_offset: 275 },
+            LogicalOffset { inline_offset: 30, block_offset: 20 },
+            LogicalOffset { inline_offset: 305, block_offset: 20 },
+            LogicalOffset { inline_offset: 30, block_offset: 275 },
+            LogicalOffset { inline_offset: 305, block_offset: 275 },
+            LogicalOffset { inline_offset: 305, block_offset: 20 },
+            LogicalOffset { inline_offset: 30, block_offset: 20 },
+        ];
+
+        for (writing_direction, expected) in WRITING_DIRECTIONS.into_iter().zip(expected) {
+            assert_eq!(
+                writing_direction.converter(OUTER_SIZE).to_logical_point(physical, INNER_SIZE),
+                expected,
+                "{writing_direction:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn physical_and_logical_box_edges_round_trip() {
+        let physical = Rect { left: 1, right: 2, top: 3, bottom: 4 };
+        let expected = [
+            LogicalBoxStrut { inline_start: 1, inline_end: 2, block_start: 3, block_end: 4 },
+            LogicalBoxStrut { inline_start: 2, inline_end: 1, block_start: 3, block_end: 4 },
+            LogicalBoxStrut { inline_start: 3, inline_end: 4, block_start: 2, block_end: 1 },
+            LogicalBoxStrut { inline_start: 4, inline_end: 3, block_start: 2, block_end: 1 },
+            LogicalBoxStrut { inline_start: 3, inline_end: 4, block_start: 1, block_end: 2 },
+            LogicalBoxStrut { inline_start: 4, inline_end: 3, block_start: 1, block_end: 2 },
+            LogicalBoxStrut { inline_start: 3, inline_end: 4, block_start: 2, block_end: 1 },
+            LogicalBoxStrut { inline_start: 4, inline_end: 3, block_start: 2, block_end: 1 },
+            LogicalBoxStrut { inline_start: 4, inline_end: 3, block_start: 1, block_end: 2 },
+            LogicalBoxStrut { inline_start: 3, inline_end: 4, block_start: 1, block_end: 2 },
+        ];
+
+        for (writing_direction, expected) in WRITING_DIRECTIONS.into_iter().zip(expected) {
+            let converter = writing_direction.converter(OUTER_SIZE);
+            let logical = converter.to_logical_box_strut(physical);
+            assert_eq!(logical, expected, "{writing_direction:?}");
+            assert_eq!(converter.to_physical_box_strut(logical), physical, "{writing_direction:?}");
+        }
+    }
+
+    #[test]
+    fn vertical_rl_block_start_maps_to_physical_right() {
+        let converter =
+            WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr).converter(Size { width: 100, height: 200 });
+        assert_eq!(
+            converter
+                .to_physical_point(LogicalOffset { inline_offset: 0, block_offset: 0 }, Size { width: 50, height: 10 },),
+            Point { x: 50, y: 0 },
+        );
     }
 }
 
