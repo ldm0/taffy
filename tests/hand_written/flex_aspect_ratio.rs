@@ -660,7 +660,12 @@ fn replaced_natural_content_suggestion_is_independent_of_the_preferred_main_size
         )
         .unwrap();
 
-    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+    tree.compute_layout_with_measure(
+        container,
+        Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::Definite(100.0) },
+        test_measure_function,
+    )
+    .unwrap();
 
     assert_eq!(tree.layout(item).unwrap().size.width, 10.0);
 }

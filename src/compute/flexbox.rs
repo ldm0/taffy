@@ -200,6 +200,43 @@ struct FlexAutomaticMinimum {
     /// Definite authored maximum in the main axis. For a compressible replaced
     /// item, cyclic percentages are resolved against zero at this boundary.
     maximum_size_suggestion: Option<f32>,
+    /// Main-axis bounds transferred from direct cross-axis constraints.
+    content_size_bounds: FlexContentSizeBounds,
+}
+
+/// Bounds that may clamp Flexbox's content-size suggestion.
+///
+/// CSS Flexbox permits definite cross-axis min/max constraints to transfer
+/// through a preferred ratio. A content-based automatic minimum is a later
+/// used-value constraint and must not feed back into this suggestion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FlexContentSizeBounds {
+    /// Minimum main size transferred from the direct cross-axis minimum.
+    minimum: Option<f32>,
+    /// Maximum main size transferred from the direct cross-axis maximum.
+    maximum: Option<f32>,
+}
+
+impl FlexContentSizeBounds {
+    /// Transfer direct cross-axis constraints into the flex main axis.
+    fn from_cross_axis(
+        constraints: ResolvedAxisConstraints,
+        direction: FlexDirection,
+        aspect_ratio: ResolvedAspectRatio,
+        padding_border: Size<f32>,
+    ) -> Self {
+        let (minimum, maximum) = constraints.resolve(None, None, None);
+        Self {
+            minimum: transfer_flex_cross_size_to_main(minimum, direction, aspect_ratio, padding_border),
+            maximum: transfer_flex_cross_size_to_main(maximum, direction, aspect_ratio, padding_border),
+        }
+    }
+
+    /// Clamp a content contribution by the transferable direct constraints.
+    #[inline(always)]
+    fn clamp(self, size: f32) -> f32 {
+        size.maybe_clamp(self.minimum, self.maximum)
+    }
 }
 
 /// Resolve one preferred/maximum-size input for Flexbox's content-based
@@ -242,6 +279,11 @@ mod automatic_minimum_suggestion_tests {
         );
     }
 
+    #[test]
+    fn content_suggestion_without_direct_cross_bounds_retains_intrinsic_size() {
+        assert_eq!(FlexContentSizeBounds::default().clamp(10.0), 10.0);
+    }
+
     #[cfg(feature = "calc")]
     #[test]
     fn replaced_calc_suggestion_keeps_its_absolute_term() {
@@ -279,6 +321,22 @@ impl FlexAutomaticCrossSize {
         self.0
     }
 
+    /// Select the cross size that may be fixed while measuring the flex
+    /// basis. A value transferred from the preferred main size is
+    /// provisional; only an independently definite preferred size or this
+    /// explicit stretch constraint may become a known child dimension.
+    #[inline(always)]
+    fn resolve_known_dimension(
+        self,
+        preferred_size: Option<f32>,
+        preferred_size_applied_aspect_ratio: bool,
+        min_size: Option<f32>,
+        max_size: Option<f32>,
+    ) -> Option<f32> {
+        let independent_preferred_size = if preferred_size_applied_aspect_ratio { None } else { preferred_size };
+        self.0.or(independent_preferred_size).maybe_clamp(min_size, max_size)
+    }
+
     /// Return the logical auto-size behavior carried by the child constraint
     /// space.
     ///
@@ -297,6 +355,32 @@ impl FlexAutomaticCrossSize {
             physical.set_cross(direction, AutoSizeBehavior::StretchExplicit);
         }
         writing_mode.to_logical(physical)
+    }
+}
+
+#[cfg(test)]
+mod automatic_cross_size_tests {
+    use super::*;
+
+    #[test]
+    fn provisional_ratio_cross_size_is_not_known_without_explicit_stretch() {
+        let cross_size = FlexAutomaticCrossSize::default();
+
+        assert_eq!(cross_size.resolve_known_dimension(Some(100.0), true, None, None), None);
+    }
+
+    #[test]
+    fn explicit_stretch_replaces_a_provisional_ratio_cross_size() {
+        let cross_size = FlexAutomaticCrossSize::new(Some(50.0));
+
+        assert_eq!(cross_size.resolve_known_dimension(Some(100.0), true, Some(20.0), Some(40.0)), Some(40.0));
+    }
+
+    #[test]
+    fn explicit_stretch_owns_an_automatic_content_cross_size() {
+        let cross_size = FlexAutomaticCrossSize::new(Some(50.0));
+
+        assert_eq!(cross_size.resolve_known_dimension(Some(25.0), false, None, None), Some(50.0));
     }
 }
 
@@ -344,6 +428,8 @@ struct FlexItem {
     preferred_size: Size<Option<f32>>,
     /// Source-preserving inputs to the Flexbox automatic-minimum calculation.
     automatic_minimum: FlexAutomaticMinimum,
+    /// Definite single-line stretch constraint supplied by the container.
+    automatic_cross_size: FlexAutomaticCrossSize,
     /// The preferred size before transferring a dimension through `aspect-ratio`
     /// or applying a content-box padding/border adjustment.
     ///
@@ -1655,6 +1741,12 @@ fn generate_anonymous_flex_items(
                 box_sizing_adjustment.get_abs(main_axis),
                 |val, basis| tree.calc(val, basis),
             );
+            let content_size_bounds = FlexContentSizeBounds::from_cross_axis(
+                constraints_without_transfer.axis_constraints(constants.dir.cross_axis()),
+                constants.dir,
+                aspect_ratio,
+                pb_sum,
+            );
             let transferred_size_suggestion = Size::NONE
                 .with_cross(
                     constants.dir,
@@ -1675,7 +1767,9 @@ fn generate_anonymous_flex_items(
                     specified_size_suggestion,
                     transferred_size_suggestion,
                     maximum_size_suggestion,
+                    content_size_bounds,
                 },
+                automatic_cross_size,
                 untransferred_size,
                 min_size: constraints_without_transfer.min_size,
                 max_size: constraints_without_transfer.max_size,
@@ -1791,14 +1885,9 @@ fn transfer_flex_cross_size_to_main(
 fn resolve_flex_content_based_automatic_minimum(
     item: &FlexItem,
     min_content_main_size: f32,
-    dir: FlexDirection,
-    padding_border: Size<f32>,
+    padding_border: f32,
 ) -> f32 {
-    let content_minimum =
-        transfer_flex_cross_size_to_main(item.min_size.cross(dir), dir, item.aspect_ratio, padding_border);
-    let content_maximum =
-        transfer_flex_cross_size_to_main(item.max_size.cross(dir), dir, item.aspect_ratio, padding_border);
-    let ratio_aware_content_size = min_content_main_size.maybe_clamp(content_minimum, content_maximum);
+    let ratio_aware_content_size = item.automatic_minimum.content_size_bounds.clamp(min_content_main_size);
     // Blink's two intrinsic SizeType probes differ only in preferred-ratio
     // participation. For a non-replaced inline-axis main size, retain the
     // ratio-independent intrinsic contribution as the larger candidate. A
@@ -1811,7 +1900,7 @@ fn resolve_flex_content_based_automatic_minimum(
         } else {
             ratio_aware_content_size
         };
-    item.automatic_minimum.resolve(content_size_suggestion, padding_border.main(dir))
+    item.automatic_minimum.resolve(content_size_suggestion, padding_border)
 }
 
 /// Determine the flex base size and hypothetical main size of each item.
@@ -1886,33 +1975,15 @@ fn determine_flex_base_size(
             } else {
                 child.size.with_main(dir, None)
             };
-            // A cross size synthesized from the preferred main size is not an
-            // independent child constraint. In particular, feeding it into a
-            // replaced item's content-size probe would transfer the authored
-            // main size through the ratio and back again, collapsing the
-            // distinct specified- and content-size suggestions. The used
-            // cross size is transferred again from the flexed main size during
-            // hypothetical cross sizing.
-            if child.preferred_size_aspect_ratio_applied.cross(dir) {
-                ckd.set_cross(dir, None);
-            }
-            // Clamp the definite cross size by the cross min/max sizes so that sizes
-            // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
-            // are based on the used cross size.
             ckd.set_cross(
                 dir,
-                ckd.cross(dir).maybe_clamp(min_size_with_transfer.cross(dir), max_size_with_transfer.cross(dir)),
+                child.automatic_cross_size.resolve_known_dimension(
+                    ckd.cross(dir),
+                    child.preferred_size_aspect_ratio_applied.cross(dir),
+                    min_size_with_transfer.cross(dir),
+                    max_size_with_transfer.cross(dir),
+                ),
             );
-            if child.align_self == AlignSelf::STRETCH
-                && !child.margin_is_auto.cross_start(constants.dir)
-                && !child.margin_is_auto.cross_end(constants.dir)
-                && ckd.cross(dir).is_none()
-            {
-                ckd.set_cross(
-                    dir,
-                    cross_axis_available_space.into_option().maybe_sub(child.margin.cross_axis_sum(dir)),
-                );
-            }
             ckd
         };
 
@@ -2182,9 +2253,8 @@ fn determine_flex_base_size(
 
             // 4.5. Automatic Minimum Size of Flex Items
             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
-            resolve_flex_content_based_automatic_minimum(child, min_content_main_size, dir, padding_border)
+            resolve_flex_content_based_automatic_minimum(child, min_content_main_size, padding_border.main(dir))
         });
-
         // Sizes transferred through the aspect ratio clamp the hypothetical main size,
         // but do not participate in resolving flexible lengths or clamping the final size.
         // https://github.com/w3c/csswg-drafts/issues/10997
@@ -2359,17 +2429,13 @@ fn measure_flex_item_content_main_size(
     let mut known_dimensions = item.size.with_main(dir, None);
     known_dimensions.set_cross(
         dir,
-        known_dimensions
-            .cross(dir)
-            .maybe_clamp(item.min_size_with_transfer.cross(dir), item.max_size_with_transfer.cross(dir)),
+        item.automatic_cross_size.resolve_known_dimension(
+            known_dimensions.cross(dir),
+            item.preferred_size_aspect_ratio_applied.cross(dir),
+            item.min_size_with_transfer.cross(dir),
+            item.max_size_with_transfer.cross(dir),
+        ),
     );
-    if item.align_self == AlignSelf::STRETCH
-        && !item.margin_is_auto.cross_start(dir)
-        && !item.margin_is_auto.cross_end(dir)
-        && known_dimensions.cross(dir).is_none()
-    {
-        known_dimensions.set_cross(dir, cross_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
-    }
 
     let padding_border = (item.padding + item.border).sum_axes();
     if let Some(ratio_main_size) = known_dimensions
@@ -2614,18 +2680,16 @@ fn determine_container_main_size(
                                 let child_available_space = available_space.with_cross(dir, cross_axis_available_space);
 
                                 // Known dimensions for child sizing
-                                let child_known_dimensions = {
-                                    let mut ckd = item.size.with_main(dir, None);
-                                    if item.align_self == AlignSelf::STRETCH && ckd.cross(dir).is_none() {
-                                        ckd.set_cross(
-                                            dir,
-                                            cross_axis_available_space
-                                                .into_option()
-                                                .maybe_sub(item.margin.cross_axis_sum(dir)),
-                                        );
-                                    }
-                                    ckd
-                                };
+                                let mut child_known_dimensions = item.size.with_main(dir, None);
+                                child_known_dimensions.set_cross(
+                                    dir,
+                                    item.automatic_cross_size.resolve_known_dimension(
+                                        child_known_dimensions.cross(dir),
+                                        item.preferred_size_aspect_ratio_applied.cross(dir),
+                                        item.min_size.cross(dir),
+                                        item.max_size.cross(dir),
+                                    ),
+                                );
 
                                 // Either the min- or max- content size depending on which constraint we are sizing under.
                                 // TODO: Optimise by using already computed values where available
