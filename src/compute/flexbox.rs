@@ -785,7 +785,7 @@ fn compute_constants(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
-    let align_items = style.align_items().unwrap_or(AlignItems::STRETCH);
+    let align_items = style.align_items().unwrap_or(AlignItems::NORMAL).resolve_normal(AlignItems::STRETCH);
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
     let justify_content = style.justify_content();
     let horizontal_direction = flow.horizontal_direction;
@@ -936,13 +936,17 @@ fn generate_anonymous_flex_items(
             let raw_margin = child_style.margin();
             let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
-                child_writing_mode,
-                child_style.direction(),
-                constants.writing_mode,
-                constants.inline_direction,
-                constants.dir.cross_axis(),
-            );
+            let align_self = child_style
+                .align_self()
+                .unwrap_or(constants.align_items)
+                .resolve_normal(AlignItems::STRETCH)
+                .resolve_self_relative(
+                    child_writing_mode,
+                    child_style.direction(),
+                    constants.writing_mode,
+                    constants.inline_direction,
+                    constants.dir.cross_axis(),
+                );
             let overflow = child_style.overflow();
             let is_replaced = child_style.is_compressible_replaced();
             let flex_grow = child_style.flex_grow();
@@ -2490,7 +2494,7 @@ fn align_flex_items_along_cross_axis(
         }
         // SelfStart/SelfEnd are resolved to Start/End against the item's own direction when
         // flex items are generated.
-        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
+        AlignItemsKeyword::Normal | AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
     }
 }
 
@@ -2823,13 +2827,17 @@ fn perform_absolute_layout_on_absolute_children(
         }
 
         let overflow = child_style.overflow();
-        let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
-            child_writing_mode,
-            child_style.direction(),
-            constants.writing_mode,
-            constants.inline_direction,
-            constants.dir.cross_axis(),
-        );
+        let align_self = child_style
+            .align_self()
+            .unwrap_or(constants.align_items)
+            .resolve_normal(AlignItems::STRETCH)
+            .resolve_self_relative(
+                child_writing_mode,
+                child_style.direction(),
+                constants.writing_mode,
+                constants.inline_direction,
+                constants.dir.cross_axis(),
+            );
         let margin = child_style
             .margin()
             .map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
@@ -3264,7 +3272,9 @@ fn perform_absolute_layout_on_absolute_children(
                 }
                 // SelfStart/SelfEnd are resolved to Start/End against the item's own direction
                 // where `align_self` is read above.
-                (AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd, _) => unreachable!(),
+                (AlignItemsKeyword::Normal | AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd, _) => {
+                    unreachable!()
+                }
             }
         };
 

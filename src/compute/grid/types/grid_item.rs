@@ -1,5 +1,6 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
+use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
@@ -278,6 +279,26 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        let normal_auto_size = if self.is_compressible_replaced {
+            AutoSizeBehavior::FitContent
+        } else {
+            AutoSizeBehavior::StretchImplicit
+        };
+        let mut horizontal_auto_size =
+            resolve_self_alignment(self.justify_self, AlignSelf::START, normal_auto_size).auto_size;
+        let mut vertical_auto_size =
+            resolve_self_alignment(self.align_self, AlignSelf::START, normal_auto_size).auto_size;
+        if self.margin.left.is_auto() || self.margin.right.is_auto() {
+            horizontal_auto_size = AutoSizeBehavior::FitContent;
+        }
+        if self.margin.top.is_auto() || self.margin.bottom.is_auto() {
+            vertical_auto_size = AutoSizeBehavior::FitContent;
+        }
+        let child_writing_mode = tree.get_writing_mode(self.node);
+        let (inline_auto_behavior, block_auto_behavior) = match child_writing_mode.inline_axis() {
+            crate::AbsoluteAxis::Horizontal => (horizontal_auto_size, vertical_auto_size),
+            crate::AbsoluteAxis::Vertical => (vertical_auto_size, horizontal_auto_size),
+        };
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: self
                 .size
@@ -292,9 +313,9 @@ impl GridItem {
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
             size_is_auto: self.size.map(|dimension| dimension.is_auto()),
-            writing_mode: tree.get_writing_mode(self.node),
-            inline_auto_behavior: AutoSizeBehavior::FitContent,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
+            writing_mode: child_writing_mode,
+            inline_auto_behavior,
+            block_auto_behavior,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_size,
@@ -302,6 +323,7 @@ impl GridItem {
         let inherent_size = resolved.size;
         let min_size = resolved.min_size;
         let max_size = resolved.max_size;
+        let aspect_ratio_applied = resolved.aspect_ratio_applied;
 
         let grid_area_minus_item_margins_size = grid_area_size.maybe_sub(margins);
 
@@ -312,7 +334,7 @@ impl GridItem {
             //  - Alignment style is "stretch"
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
-            if !self.margin.left.is_auto() && !self.margin.right.is_auto() && self.justify_self == AlignSelf::STRETCH {
+            if !horizontal_auto_size.is_content_based(aspect_ratio_applied.width) {
                 return grid_area_minus_item_margins_size.width;
             }
 
@@ -327,7 +349,7 @@ impl GridItem {
             //  - Alignment style is "stretch"
             //  - The node is not absolutely positioned
             //  - The node does not have auto margins in this axis.
-            if !self.margin.top.is_auto() && !self.margin.bottom.is_auto() && self.align_self == AlignSelf::STRETCH {
+            if !vertical_auto_size.is_content_based(aspect_ratio_applied.height) {
                 return grid_area_minus_item_margins_size.height;
             }
 

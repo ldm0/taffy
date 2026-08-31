@@ -1,5 +1,33 @@
 //! Generic CSS alignment code that is shared between both the Flexbox and CSS Grid algorithms.
 use crate::style::{AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignmentSafety};
+use crate::tree::AutoSizeBehavior;
+
+/// A self-alignment value after its formatting context has supplied the
+/// context-dependent meaning of `normal`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct ResolvedSelfAlignment {
+    /// Positional alignment used after sizing.
+    pub(crate) position: AlignItems,
+    /// Ordering between automatic sizing, stretch, and preferred ratios.
+    pub(crate) auto_size: AutoSizeBehavior,
+}
+
+/// Resolve self-alignment without losing the distinction between implicit
+/// `normal` stretch and an explicitly authored `stretch`.
+#[inline]
+pub(crate) const fn resolve_self_alignment(
+    alignment: AlignItems,
+    normal_position: AlignItems,
+    normal_auto_size: AutoSizeBehavior,
+) -> ResolvedSelfAlignment {
+    match alignment.keyword() {
+        AlignItemsKeyword::Normal => ResolvedSelfAlignment { position: normal_position, auto_size: normal_auto_size },
+        AlignItemsKeyword::Stretch => {
+            ResolvedSelfAlignment { position: alignment, auto_size: AutoSizeBehavior::StretchExplicit }
+        }
+        _ => ResolvedSelfAlignment { position: alignment, auto_size: AutoSizeBehavior::FitContent },
+    }
+}
 
 /// Resolve the `safe`/`unsafe` overflow-position fallback for a self-level alignment value
 /// (used by `align-self` / `justify-self`-style sites and by absolutely-positioned items in

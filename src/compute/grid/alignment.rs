@@ -2,7 +2,7 @@
 use super::types::GridTrack;
 use crate::compute::common::absolute::{AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing};
 use crate::compute::common::alignment::{
-    apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
+    apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment, resolve_self_alignment_safety,
 };
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::intrinsic_size::{
@@ -187,19 +187,6 @@ pub(super) fn align_and_position_item(
     let raw_min_size = style.min_size();
     let raw_max_size = style.max_size();
     let is_replaced = style.is_compressible_replaced();
-    let block_auto_behavior = if position == Position::Absolute {
-        match item_writing_mode.block_axis() {
-            crate::AbsoluteAxis::Horizontal if inset_horizontal.start.is_some() && inset_horizontal.end.is_some() => {
-                AutoSizeBehavior::StretchExplicit
-            }
-            crate::AbsoluteAxis::Vertical if inset_vertical.start.is_some() && inset_vertical.end.is_some() => {
-                AutoSizeBehavior::StretchExplicit
-            }
-            _ => AutoSizeBehavior::FitContent,
-        }
-    } else {
-        AutoSizeBehavior::FitContent
-    };
     let mut inherent_size =
         raw_size.maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
     let mut min_size =
@@ -274,13 +261,50 @@ pub(super) fn align_and_position_item(
     inherent_size.width = inherent_size.width.or(intrinsic.preferred.value);
     min_size.width = min_size.width.or(intrinsic.min.value);
     max_size.width = max_size.width.or(intrinsic.max.value);
+    let normal_auto_size = if is_replaced { AutoSizeBehavior::FitContent } else { AutoSizeBehavior::StretchImplicit };
+    let resolved_alignment = InBothAbsAxis {
+        horizontal: resolve_self_alignment(
+            justify_self.or(container_alignment_styles.horizontal).unwrap_or(AlignSelf::NORMAL),
+            AlignSelf::START,
+            normal_auto_size,
+        ),
+        vertical: resolve_self_alignment(
+            align_self.or(container_alignment_styles.vertical).unwrap_or(AlignSelf::NORMAL),
+            AlignSelf::START,
+            normal_auto_size,
+        ),
+    };
+    let alignment_styles = InBothAbsAxis {
+        horizontal: resolved_alignment.horizontal.position,
+        vertical: resolved_alignment.vertical.position,
+    };
+    let mut auto_size = InBothAbsAxis {
+        horizontal: resolved_alignment.horizontal.auto_size,
+        vertical: resolved_alignment.vertical.auto_size,
+    };
+    if position != Position::Absolute {
+        // Auto margins take precedence over self-alignment for in-flow grid
+        // items. Out-of-flow margins participate in absolute positioning
+        // instead and do not alter the item's alignment-derived auto sizing.
+        if margin.left.is_none() || margin.right.is_none() {
+            auto_size.horizontal = AutoSizeBehavior::FitContent;
+        }
+        if margin.top.is_none() || margin.bottom.is_none() {
+            auto_size.vertical = AutoSizeBehavior::FitContent;
+        }
+    }
+    let (inline_auto_behavior, block_auto_behavior) = match item_writing_mode.inline_axis() {
+        crate::AbsoluteAxis::Horizontal => (auto_size.horizontal, auto_size.vertical),
+        crate::AbsoluteAxis::Vertical => (auto_size.vertical, auto_size.horizontal),
+    };
+
     let resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
         min_size,
         max_size,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode: item_writing_mode,
-        inline_auto_behavior: AutoSizeBehavior::FitContent,
+        inline_auto_behavior,
         block_auto_behavior,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
@@ -300,51 +324,27 @@ pub(super) fn align_and_position_item(
             constraint_sources: resolved.block_axis_constraints(item_writing_mode),
         })
     });
+    let aspect_ratio_applied = resolved.aspect_ratio_applied;
     inherent_size = resolved.size;
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
-
-    // Resolve default alignment styles if they are set on neither the parent or the node itself
-    // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
-    // and the then height is calculated from the width according the aspect ratio
-    // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
-    let alignment_styles = InBothAbsAxis {
-        horizontal: justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
-            if inherent_size.width.is_some() {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
-        vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || aspect_ratio.is_some() {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
-    };
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
     // from left, right and container_content_box if both are set.
     let width = inherent_size.width.or_else(|| {
         // Apply width derived from both the left and right properties of an absolutely
         // positioned element being set
-        if position == Position::Absolute {
+        if position == Position::Absolute && !auto_size.horizontal.is_content_based(aspect_ratio_applied.width) {
             if let (Some(left), Some(right)) = (inset_horizontal.start, inset_horizontal.end) {
                 return Some(f32_max(grid_area_minus_item_margins_size.width - left - right, 0.0));
             }
         }
 
-        // Apply width based on stretch alignment if:
-        //  - Alignment style is "stretch"
+        // Apply width based on stretch sizing if:
+        //  - The alignment resolves auto sizing to stretch
         //  - The node is not absolutely positioned
         //  - The node does not have auto margins in this axis.
-        if margin.left.is_some()
-            && margin.right.is_some()
-            && alignment_styles.horizontal == AlignSelf::STRETCH
-            && position != Position::Absolute
-        {
+        if !auto_size.horizontal.is_content_based(aspect_ratio_applied.width) && position != Position::Absolute {
             return Some(grid_area_minus_item_margins_size.width);
         }
 
@@ -359,21 +359,17 @@ pub(super) fn align_and_position_item(
     );
 
     let height = height.or_else(|| {
-        if position == Position::Absolute {
+        if position == Position::Absolute && !auto_size.vertical.is_content_based(aspect_ratio_applied.height) {
             if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
                 return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
             }
         }
 
-        // Apply height based on stretch alignment if:
-        //  - Alignment style is "stretch"
+        // Apply height based on stretch sizing if:
+        //  - The alignment resolves auto sizing to stretch
         //  - The node is not absolutely positioned
         //  - The node does not have auto margins in this axis.
-        if margin.top.is_some()
-            && margin.bottom.is_some()
-            && alignment_styles.vertical == AlignSelf::STRETCH
-            && position != Position::Absolute
-        {
+        if !auto_size.vertical.is_content_based(aspect_ratio_applied.height) && position != Position::Absolute {
             return Some(grid_area_minus_item_margins_size.height);
         }
 
@@ -448,7 +444,7 @@ pub(super) fn align_and_position_item(
 
     let (x, x_margin) = align_item_within_area(
         Line { start: grid_area.left, end: grid_area.right },
-        justify_self.unwrap_or(alignment_styles.horizontal),
+        alignment_styles.horizontal,
         width,
         position,
         inset_horizontal,
@@ -458,7 +454,7 @@ pub(super) fn align_and_position_item(
     );
     let (y, y_margin) = align_item_within_area(
         Line { start: grid_area.top, end: grid_area.bottom },
-        align_self.unwrap_or(alignment_styles.vertical),
+        alignment_styles.vertical,
         height,
         position,
         inset_vertical,
@@ -544,7 +540,8 @@ pub(super) fn align_item_within_area(
     // Compute offset in the axis
     let alignment_based_offset = match alignment_keyword {
         // TODO: Add support for baseline alignment. For now we treat it as "start".
-        AlignItemsKeyword::Start
+        AlignItemsKeyword::Normal
+        | AlignItemsKeyword::Start
         | AlignItemsKeyword::FlexStart
         | AlignItemsKeyword::Baseline
         | AlignItemsKeyword::Stretch => {
