@@ -698,9 +698,15 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        // A percentage min-size whose grid-area basis is still indefinite is
+        // cyclic during track sizing. CSS Sizing resolves that percentage
+        // against zero, while the preferred size remains unresolved until the
+        // final grid area is known. This also preserves the fixed component of
+        // calc() values.
+        let minimum_percentage_basis = grid_area_size.map(|basis| Some(basis.unwrap_or(0.0)));
         let mut resolved_min_size = self
             .min_size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_resolve(minimum_percentage_basis, |val, basis| tree.calc(val, basis))
             .maybe_add(box_sizing_adjustment);
         resolved_min_size =
             resolved_min_size.or(self.resolve_intrinsic_minimum_size(tree, physical_axis, grid_area_size));

@@ -235,3 +235,46 @@ fn intrinsic_minimum_sizes_select_their_content_contribution() {
     assert_eq!(intrinsic_minimum_contribution(auto(), Dimension::min_content()), 50.0);
     assert_eq!(intrinsic_minimum_contribution(auto(), Dimension::max_content()), 90.0);
 }
+
+#[test]
+fn grid_item_percentages_resolve_against_the_final_grid_area() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let content = tree.new_leaf(Style { size: Size::from_lengths(30.0, 30.0), ..Default::default() }).unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                min_size: Size { width: percent(1.0), height: percent(1.0) },
+                grid_row: Line { start: line(2), end: line(3) },
+                grid_column: Line { start: line(2), end: line(3) },
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(10.0, 10.0),
+                grid_template_columns: vec![length(3.0), auto(), length(4.0)],
+                grid_template_rows: vec![length(1.0), auto(), length(2.0)],
+                align_items: Some(AlignItems::START),
+                justify_items: Some(AlignItems::START),
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 3.0, height: 7.0 });
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    assert_eq!(info.columns.sizes, vec![3.0, 3.0, 4.0]);
+    assert_eq!(info.rows.sizes, vec![1.0, 7.0, 2.0]);
+}
