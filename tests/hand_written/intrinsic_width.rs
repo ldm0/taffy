@@ -172,6 +172,63 @@ fn absolute_fit_content_uses_inset_constrained_available_width() {
     }
 }
 
+fn layout_absolute_ratio_item(container_display: Display, mut item_style: Style, content_width: f32) -> Size<f32> {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::length(content_width), height: Dimension::length(0.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    item_style.display = Display::Block;
+    item_style.position = Position::Absolute;
+    item_style.inset.left = LengthPercentageAuto::length(0.0);
+    item_style.inset.top = LengthPercentageAuto::length(0.0);
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: container_display,
+                size: Size { width: Dimension::length(300.0), height: Dimension::length(300.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    tree.layout(item).unwrap().size
+}
+
+#[test]
+fn absolute_intrinsic_width_properties_use_the_ratio_content_contribution() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let preferred = layout_absolute_ratio_item(
+            display,
+            Style {
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(preferred, Size { width: 100.0, height: 100.0 }, "{display:?} preferred");
+
+        let minimum = layout_absolute_ratio_item(
+            display,
+            Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(25.0) },
+                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                aspect_ratio: Some(4.0),
+                ..Style::default()
+            },
+            150.0,
+        );
+        assert_eq!(minimum, Size { width: 100.0, height: 25.0 }, "{display:?} minimum");
+    }
+}
+
 fn layout_root_width(width: Dimension, available_width: f32) -> f32 {
     let mut tree = new_test_tree();
     let root = tree
@@ -231,6 +288,147 @@ fn definite_opposite_size_transfers_before_intrinsic_width_measurement() {
         )
         .unwrap();
         assert_eq!(tree.layout(child).unwrap().size.width, 400.0, "{display:?}");
+    }
+}
+
+fn layout_ratio_intrinsic_item(container_display: Display, mut item_style: Style, content_width: f32) -> Size<f32> {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::length(content_width), height: Dimension::length(0.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    item_style.display = Display::Block;
+    item_style.flex_grow = 0.0;
+    item_style.flex_shrink = 0.0;
+    item_style.align_self = Some(AlignSelf::START);
+    item_style.justify_self = Some(JustifySelf::START);
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: container_display,
+                size: Size { width: Dimension::length(300.0), height: Dimension::length(300.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    tree.layout(item).unwrap().size
+}
+
+/// Regressions for WPT intrinsic-size-010, intrinsic-size-014 and
+/// intrinsic-size-015. CSS sizing keywords request the `SizeType::Content`
+/// contribution, which is ratio-dependent when the opposite preferred size
+/// is definite. The raw min-intrinsic contribution remains a separate value
+/// for the automatic minimum.
+#[test]
+fn intrinsic_width_properties_use_the_ratio_dependent_content_contribution() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let preferred = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(preferred, Size { width: 100.0, height: 100.0 }, "{display:?} preferred");
+
+        let minimum = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(25.0) },
+                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                aspect_ratio: Some(4.0),
+                ..Style::default()
+            },
+            150.0,
+        );
+        assert_eq!(minimum, Size { width: 100.0, height: 25.0 }, "{display:?} minimum");
+
+        let maximum = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                size: Size { width: Dimension::length(200.0), height: Dimension::length(25.0) },
+                max_size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                aspect_ratio: Some(4.0),
+                ..Style::default()
+            },
+            150.0,
+        );
+        assert_eq!(maximum, Size { width: 100.0, height: 25.0 }, "{display:?} maximum");
+    }
+}
+
+#[test]
+fn ratio_dependent_content_contribution_uses_the_clamped_opposite_size() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let capped = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                size: Size { width: Dimension::min_content(), height: Dimension::length(300.0) },
+                max_size: Size { width: Dimension::auto(), height: Dimension::length(25.0) },
+                aspect_ratio: Some(4.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(capped, Size { width: 100.0, height: 25.0 }, "{display:?} maximum block constraint");
+
+        let floored = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                size: Size { width: Dimension::min_content(), height: Dimension::length(10.0) },
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(25.0) },
+                aspect_ratio: Some(4.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(floored, Size { width: 100.0, height: 25.0 }, "{display:?} minimum block constraint");
+    }
+}
+
+#[test]
+fn ratio_content_contribution_preserves_the_ratio_sizing_box() {
+    let edges = Rect {
+        left: LengthPercentage::length(10.0),
+        right: LengthPercentage::length(10.0),
+        top: LengthPercentage::length(10.0),
+        bottom: LengthPercentage::length(10.0),
+    };
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let border_box = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                box_sizing: BoxSizing::BorderBox,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                padding: edges,
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(border_box, Size { width: 100.0, height: 100.0 }, "{display:?} border box");
+
+        let content_box = layout_ratio_intrinsic_item(
+            display,
+            Style {
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                padding: edges,
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            0.0,
+        );
+        assert_eq!(content_box, Size { width: 120.0, height: 120.0 }, "{display:?} content box");
     }
 }
 

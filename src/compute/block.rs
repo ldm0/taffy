@@ -26,8 +26,8 @@ use super::common::aspect_ratio::{
 };
 use super::common::intrinsic_size::{
     measure_content_based_block_size, measure_intrinsic_axis, resolve_intrinsic_axis_constraints,
-    resolve_intrinsic_width_constraints, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
-    RatioDependentAutomaticMinimum,
+    resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, BlockSizeProperties,
+    ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicWidthInput, RatioDependentAutomaticMinimum,
 };
 use super::common::used_size::{
     promote_stretched_inline_size_to_definite, resolve_inline_auto_size, resolve_used_size,
@@ -1061,6 +1061,8 @@ fn generate_item_list(
 
             drop(child_style);
 
+            let mut preferred_inline_from_intrinsic_ratio = false;
+
             // Absolutely positioned boxes derive their available inline space
             // from their insets. Resolve those intrinsic keywords later, in
             // the absolute-layout seam, rather than against the whole parent.
@@ -1090,6 +1092,15 @@ fn generate_item_list(
                     Line::TRUE,
                 )
                 .with_block_auto_behavior(AutoSizeBehavior::FitContent);
+                let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+                    size,
+                    min_size,
+                    max_size,
+                    aspect_ratio,
+                    pb_sum,
+                    writing_mode.inline_axis(),
+                    child_block_size_depends_on_parent && aspect_ratio.is_some(),
+                );
                 let intrinsic = resolve_intrinsic_axis_constraints(
                     tree,
                     child_node_id,
@@ -1100,18 +1111,21 @@ fn generate_item_list(
                         max: raw_logical_max_size.inline_size,
                         available_space: available_inline_size,
                         axis: writing_mode.inline_axis(),
+                        ratio_content_contribution,
                     },
                 );
+                preferred_inline_from_intrinsic_ratio = intrinsic.preferred.applied_aspect_ratio
+                    && writing_mode.inline_axis() == child_writing_mode.inline_axis();
                 let mut logical_size = writing_mode.to_logical(size);
                 let mut logical_min_size = writing_mode.to_logical(min_size);
                 let mut logical_max_size = writing_mode.to_logical(max_size);
-                logical_size.inline_size = logical_size.inline_size.or(intrinsic.preferred);
-                logical_min_size.inline_size = logical_min_size.inline_size.or(intrinsic.min);
-                logical_max_size.inline_size = logical_max_size.inline_size.or(intrinsic.max);
+                logical_size.inline_size = logical_size.inline_size.or(intrinsic.preferred.value);
+                logical_min_size.inline_size = logical_min_size.inline_size.or(intrinsic.min.value);
+                logical_max_size.inline_size = logical_max_size.inline_size.or(intrinsic.max.value);
                 size = writing_mode.to_physical(logical_size);
                 min_size = writing_mode.to_physical(logical_min_size);
                 max_size = writing_mode.to_physical(logical_max_size);
-                depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+                depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
             }
 
             let resolved = resolve_size_constraints(SizeConstraintInput {
@@ -1129,7 +1143,8 @@ fn generate_item_list(
             let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
             let inline_automatic_minimum = RatioDependentAutomaticMinimum::new(
                 resolved.inline_axis_constraints(child_writing_mode),
-                resolved.aspect_ratio_applied.get_abs(child_writing_mode.inline_axis()),
+                resolved.aspect_ratio_applied.get_abs(child_writing_mode.inline_axis())
+                    || preferred_inline_from_intrinsic_ratio,
                 child_writing_mode.to_logical(raw_min_size).inline_size,
                 is_scroll_container,
                 is_replaced,
@@ -1269,10 +1284,11 @@ fn determine_content_based_container_inline_size(
 /// final percentage basis.
 ///
 /// Item generation may run while that basis is indefinite in order to compute
-/// the container's intrinsic inline size. Numeric percentage values are therefore
-/// materialized again here, after that inline size is known. Intrinsic
-/// keyword measurements from the contribution phase are retained when the raw
-/// style cannot be reduced to a numeric value.
+/// the container's intrinsic inline size. Numeric percentages and intrinsic
+/// keywords are therefore materialized again here, after the final basis and
+/// margin-adjusted available inline size are known. Reusing the contribution
+/// resolver here prevents a raw opposite-axis size from bypassing intrinsic
+/// keyword and aspect-ratio ordering during final layout.
 fn resolve_block_item_final_style(
     tree: &mut impl LayoutBlockContainer,
     item: &mut BlockItem,
@@ -1282,7 +1298,7 @@ fn resolve_block_item_final_style(
     let percentage_basis = parent_writing_mode.to_logical(parent_size).inline_size;
     let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
     let writing_mode = tree.get_writing_mode(item.node_id);
-    let (size, min_size, max_size, inline_automatic_minimum, block_axis_constraints, padding, border) = {
+    let (raw_size, raw_min_size, raw_max_size, mut size, mut min_size, mut max_size, padding, border, overflow) = {
         let style = tree.get_block_child_style(item.node_id);
         let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
@@ -1291,51 +1307,112 @@ fn resolve_block_item_final_style(
         let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
         let raw_size = style.size();
         let raw_min_size = style.min_size();
-        let overflow = style.overflow();
-        let resolved = resolve_size_constraints(SizeConstraintInput {
-            size: raw_size
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
-            min_size: raw_min_size
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
-            max_size: style
-                .max_size()
-                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
-            size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-            writing_mode,
-            inline_auto_behavior: item.inline_auto_behavior,
-            block_auto_behavior: AutoSizeBehavior::FitContent,
-            transferred_sizes_mode: TransferredSizesMode::Normal,
-            aspect_ratio,
-            padding_border: padding_border_sum,
-        });
+        let raw_max_size = style.max_size();
         (
-            resolved.size,
-            resolved.min_size,
-            resolved.max_size,
-            RatioDependentAutomaticMinimum::new(
-                resolved.inline_axis_constraints(writing_mode),
-                resolved.aspect_ratio_applied.get_abs(writing_mode.inline_axis()),
-                writing_mode.to_logical(raw_min_size).inline_size,
-                overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
-                item.is_replaced,
-            ),
-            resolved.block_axis_constraints(writing_mode),
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            raw_size.maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment),
+            raw_min_size
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            raw_max_size
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
             padding,
             border,
+            style.overflow(),
         )
     };
+    let padding_border_sum = (padding + border).sum_axes();
+    let resolved_margin = item.margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let margin_axis_sums =
+        Size { width: resolved_margin.horizontal_axis_sum(), height: resolved_margin.vertical_axis_sum() };
+    let available_inline_size = percentage_basis
+        .map(AvailableSpace::Definite)
+        .unwrap_or(AvailableSpace::MaxContent)
+        .maybe_sub(margin_axis_sums.get_abs(parent_writing_mode.inline_axis()));
+    let child_available_space = parent_writing_mode
+        .to_physical(LogicalSize { inline_size: available_inline_size, block_size: AvailableSpace::MaxContent });
+    let raw_logical_size = parent_writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = parent_writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = parent_writing_mode.to_logical(raw_max_size);
+    let opposite_axis_depends_on_parent =
+        [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
+            .into_iter()
+            .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+    let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+        size,
+        min_size,
+        max_size,
+        aspect_ratio,
+        padding_border_sum,
+        parent_writing_mode.inline_axis(),
+        opposite_axis_depends_on_parent && aspect_ratio.is_some(),
+    );
+    let intrinsic = resolve_intrinsic_axis_constraints(
+        tree,
+        item.node_id,
+        ChildLayoutInput::new(
+            Size::NONE,
+            parent_size,
+            parent_writing_mode,
+            child_available_space,
+            SizingMode::ContentSize,
+            Line::TRUE,
+        )
+        .with_inline_auto_behavior(item.inline_auto_behavior)
+        .with_block_auto_behavior(AutoSizeBehavior::FitContent),
+        IntrinsicAxisInput {
+            preferred: raw_logical_size.inline_size,
+            min: raw_logical_min_size.inline_size,
+            max: raw_logical_max_size.inline_size,
+            available_space: available_inline_size,
+            axis: parent_writing_mode.inline_axis(),
+            ratio_content_contribution,
+        },
+    );
+    let mut logical_size = parent_writing_mode.to_logical(size);
+    let mut logical_min_size = parent_writing_mode.to_logical(min_size);
+    let mut logical_max_size = parent_writing_mode.to_logical(max_size);
+    logical_size.inline_size = logical_size.inline_size.or(intrinsic.preferred.value);
+    logical_min_size.inline_size = logical_min_size.inline_size.or(intrinsic.min.value);
+    logical_max_size.inline_size = logical_max_size.inline_size.or(intrinsic.max.value);
+    size = parent_writing_mode.to_physical(logical_size);
+    min_size = parent_writing_mode.to_physical(logical_min_size);
+    max_size = parent_writing_mode.to_physical(logical_max_size);
+    item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
 
-    item.size = size.or(item.size);
-    item.min_size = min_size.or(item.min_size);
-    item.max_size = max_size.or(item.max_size);
+    let resolved = resolve_size_constraints(SizeConstraintInput {
+        size,
+        min_size,
+        max_size,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode,
+        inline_auto_behavior: item.inline_auto_behavior,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
+        aspect_ratio,
+        padding_border: padding_border_sum,
+    });
+    let intrinsic_ratio_supplied_child_inline =
+        intrinsic.preferred.applied_aspect_ratio && parent_writing_mode.inline_axis() == writing_mode.inline_axis();
+    let inline_automatic_minimum = RatioDependentAutomaticMinimum::new(
+        resolved.inline_axis_constraints(writing_mode),
+        resolved.aspect_ratio_applied.get_abs(writing_mode.inline_axis()) || intrinsic_ratio_supplied_child_inline,
+        writing_mode.to_logical(raw_min_size).inline_size,
+        overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+        item.is_replaced,
+    );
+
+    item.size = resolved.size.or(item.size);
+    item.min_size = resolved.min_size.or(item.min_size);
+    item.max_size = resolved.max_size.or(item.max_size);
     item.inline_automatic_minimum = inline_automatic_minimum;
-    item.block_axis_constraints = block_axis_constraints;
+    item.block_axis_constraints = resolved.block_axis_constraints(writing_mode);
     item.padding = padding;
     item.border = border;
-    item.padding_border_sum = (padding + border).sum_axes();
+    item.padding_border_sum = padding_border_sum;
 }
 
 /// Merge the ratio-dependent min-intrinsic inline size at the child sizing
@@ -2412,18 +2489,33 @@ fn perform_absolute_layout_on_absolute_children(
             },
             vertical_margins_are_collapsible: Line::FALSE,
         };
+        let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+            style_size,
+            min_size,
+            max_size,
+            aspect_ratio,
+            padding_border_sum,
+            AbsoluteAxis::Horizontal,
+            aspect_ratio.is_some()
+                && [raw_size.height, raw_min_size.height, raw_max_size.height]
+                    .into_iter()
+                    .any(|value| value.may_have_percentage_dependence() || value.is_stretch()),
+        );
         let intrinsic = resolve_intrinsic_width_constraints(
             tree,
             item.node_id,
             intrinsic_inputs,
-            raw_size.width,
-            raw_min_size.width,
-            raw_max_size.width,
-            intrinsic_inputs.available_space.width,
+            IntrinsicWidthInput {
+                preferred: raw_size.width,
+                min: raw_min_size.width,
+                max: raw_max_size.width,
+                available_space: intrinsic_inputs.available_space.width,
+                ratio_content_contribution,
+            },
         );
-        style_size.width = style_size.width.or(intrinsic.preferred);
-        min_size.width = min_size.width.or(intrinsic.min);
-        max_size.width = max_size.width.or(intrinsic.max);
+        style_size.width = style_size.width.or(intrinsic.preferred.value);
+        min_size.width = min_size.width.or(intrinsic.min.value);
+        max_size.width = max_size.width.or(intrinsic.max.value);
 
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: style_size,

@@ -183,3 +183,43 @@ fn floated_ratio_dependent_box_observes_the_same_automatic_minimum() {
 
     assert_eq!(size, Size { width: 100.0, height: 100.0 });
 }
+
+#[test]
+fn vertical_intrinsic_inline_keyword_uses_the_ratio_content_contribution() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::length(0.0), height: Dimension::length(0.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(100.0), height: Dimension::min_content() },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(300.0), height: Dimension::length(300.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    for node in [container, item, content] {
+        tree.set_writing_mode(node, WritingMode::VerticalLr).unwrap();
+    }
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}

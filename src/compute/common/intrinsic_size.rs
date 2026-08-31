@@ -45,6 +45,47 @@ pub(crate) struct IntrinsicAxisValue {
     pub value: Option<f32>,
     /// Whether measuring the value observed a block-constraint dependency.
     pub depends_on_block_constraints: bool,
+    /// Whether this value came from the opposite axis through the preferred
+    /// aspect ratio rather than from raw intrinsic content measurement.
+    pub applied_aspect_ratio: bool,
+}
+
+/// A `SizeType::Content` contribution synthesized from the opposite axis.
+///
+/// This wrapper prevents a raw intrinsic measurement from being passed into
+/// the ratio slot merely because both values happen to carry the same numeric
+/// and cache metadata.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RatioDependentContentContribution(IntrinsicAxisValue);
+
+/// Resolve the `SizeType::Content` contribution supplied by a definite
+/// opposite-axis preferred size and a preferred aspect ratio.
+///
+/// Inputs are already-resolved border-box constraints. Clearing the queried
+/// axis before transfer ensures an authored preferred size in that axis does
+/// not masquerade as the content contribution used by intrinsic keywords.
+pub(crate) fn resolve_ratio_dependent_content_contribution(
+    preferred_size: Size<Option<f32>>,
+    min_size: Size<Option<f32>>,
+    max_size: Size<Option<f32>>,
+    aspect_ratio: Option<ResolvedAspectRatio>,
+    padding_border: Size<f32>,
+    axis: AbsoluteAxis,
+    depends_on_block_constraints: bool,
+) -> RatioDependentContentContribution {
+    let mut ratio_source = preferred_size.maybe_clamp(min_size, max_size);
+    match axis {
+        AbsoluteAxis::Horizontal => ratio_source.width = None,
+        AbsoluteAxis::Vertical => ratio_source.height = None,
+    }
+    let value = ratio_source
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border)
+        .get_abs(axis);
+    RatioDependentContentContribution(IntrinsicAxisValue {
+        value,
+        depends_on_block_constraints: value.is_some() && depends_on_block_constraints,
+        applied_aspect_ratio: value.is_some(),
+    })
 }
 
 /// Resolve a sizing value that may depend on the box's intrinsic content
@@ -59,12 +100,20 @@ fn resolve_intrinsic_axis_value(
     value: Dimension,
     available_space: AvailableSpace,
     axis: AbsoluteAxis,
+    ratio_content_contribution: RatioDependentContentContribution,
 ) -> IntrinsicAxisValue {
     if value.is_stretch() {
-        return IntrinsicAxisValue { value: available_space.into_option(), depends_on_block_constraints: false };
+        return IntrinsicAxisValue {
+            value: available_space.into_option(),
+            depends_on_block_constraints: false,
+            applied_aspect_ratio: false,
+        };
     }
     if !value.is_intrinsic() {
         return IntrinsicAxisValue::default();
+    }
+    if ratio_content_contribution.0.value.is_some() {
+        return ratio_content_contribution.0;
     }
 
     if value.is_min_content() {
@@ -72,6 +121,7 @@ fn resolve_intrinsic_axis_value(
         return IntrinsicAxisValue {
             value: Some(measured.size.get_abs(axis)),
             depends_on_block_constraints: measured.depends_on_block_constraints,
+            applied_aspect_ratio: false,
         };
     }
 
@@ -80,6 +130,7 @@ fn resolve_intrinsic_axis_value(
         return IntrinsicAxisValue {
             value: Some(max_content.size.get_abs(axis)),
             depends_on_block_constraints: max_content.depends_on_block_constraints,
+            applied_aspect_ratio: false,
         };
     }
 
@@ -94,6 +145,7 @@ fn resolve_intrinsic_axis_value(
         }),
         depends_on_block_constraints: min_content.depends_on_block_constraints
             || max_content.depends_on_block_constraints,
+        applied_aspect_ratio: false,
     }
 }
 
@@ -112,7 +164,15 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     axis: AbsoluteAxis,
 ) -> IntrinsicAxisValue {
     debug_assert_eq!(axis, tree.get_writing_mode(node_id).inline_axis());
-    resolve_intrinsic_axis_value(tree, node_id, inputs, value, available_space, axis)
+    resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        inputs,
+        value,
+        available_space,
+        axis,
+        RatioDependentContentContribution::default(),
+    )
 }
 
 /// Intrinsic components of preferred, minimum and maximum sizes in one axis.
@@ -123,14 +183,21 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct IntrinsicSizeConstraints {
     /// Intrinsic component of the preferred size.
-    pub preferred: Option<f32>,
+    pub preferred: IntrinsicAxisValue,
     /// Intrinsic component of the minimum size.
-    pub min: Option<f32>,
+    pub min: IntrinsicAxisValue,
     /// Intrinsic component of the maximum size.
-    pub max: Option<f32>,
-    /// Whether any measured contribution changes with the containing block's
-    /// block-size.
-    pub depends_on_block_constraints: bool,
+    pub max: IntrinsicAxisValue,
+}
+
+impl IntrinsicSizeConstraints {
+    /// Whether any resolved property observed a block-constraint dependency.
+    #[inline(always)]
+    pub(crate) fn depends_on_block_constraints(self) -> bool {
+        self.preferred.depends_on_block_constraints
+            || self.min.depends_on_block_constraints
+            || self.max.depends_on_block_constraints
+    }
 }
 
 /// A min-intrinsic automatic minimum activated by a ratio-derived preferred
@@ -182,6 +249,27 @@ pub(crate) struct IntrinsicAxisInput {
     pub available_space: AvailableSpace,
     /// Physical axis corresponding to the formatting context's logical axis.
     pub axis: AbsoluteAxis,
+    /// Ratio-dependent `SizeType::Content` result for intrinsic keywords.
+    pub ratio_content_contribution: RatioDependentContentContribution,
+}
+
+/// Authored physical-width constraints resolved by a formatting context.
+///
+/// Grouping these values makes the content-contribution source part of the
+/// sizing request, rather than an optional positional add-on that individual
+/// block, flex, grid, or absolute paths can accidentally omit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IntrinsicWidthInput {
+    /// Preferred width property.
+    pub preferred: Dimension,
+    /// Minimum width property.
+    pub min: Dimension,
+    /// Maximum width property.
+    pub max: Dimension,
+    /// Available border-box width after horizontal margins.
+    pub available_space: AvailableSpace,
+    /// Ratio-dependent `SizeType::Content` result for width keywords.
+    pub ratio_content_contribution: RatioDependentContentContribution,
 }
 
 /// Content-derived constraints for one logical block axis.
@@ -394,10 +482,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
-    preferred: Dimension,
-    min: Dimension,
-    max: Dimension,
-    available_width: AvailableSpace,
+    width_input: IntrinsicWidthInput,
 ) -> IntrinsicSizeConstraints {
     let child_input = ChildLayoutInput::new(
         inputs.known_dimensions,
@@ -414,7 +499,14 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         tree,
         node_id,
         child_input,
-        IntrinsicAxisInput { preferred, min, max, available_space: available_width, axis: AbsoluteAxis::Horizontal },
+        IntrinsicAxisInput {
+            preferred: width_input.preferred,
+            min: width_input.min,
+            max: width_input.max,
+            available_space: width_input.available_space,
+            axis: AbsoluteAxis::Horizontal,
+            ratio_content_contribution: width_input.ratio_content_contribution,
+        },
     )
 }
 
@@ -427,17 +519,35 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     inputs: ChildLayoutInput,
     axis_input: IntrinsicAxisInput,
 ) -> IntrinsicSizeConstraints {
-    let IntrinsicAxisInput { preferred, min, max, available_space, axis } = axis_input;
-    let preferred = resolve_intrinsic_axis_value(tree, node_id, inputs, preferred, available_space, axis);
-    let min = resolve_intrinsic_axis_value(tree, node_id, inputs, min, available_space, axis);
-    let max = resolve_intrinsic_axis_value(tree, node_id, inputs, max, available_space, axis);
+    let IntrinsicAxisInput { preferred, min, max, available_space, axis, ratio_content_contribution } = axis_input;
     IntrinsicSizeConstraints {
-        preferred: preferred.value,
-        min: min.value,
-        max: max.value,
-        depends_on_block_constraints: preferred.depends_on_block_constraints
-            || min.depends_on_block_constraints
-            || max.depends_on_block_constraints,
+        preferred: resolve_intrinsic_axis_value(
+            tree,
+            node_id,
+            inputs,
+            preferred,
+            available_space,
+            axis,
+            ratio_content_contribution,
+        ),
+        min: resolve_intrinsic_axis_value(
+            tree,
+            node_id,
+            inputs,
+            min,
+            available_space,
+            axis,
+            ratio_content_contribution,
+        ),
+        max: resolve_intrinsic_axis_value(
+            tree,
+            node_id,
+            inputs,
+            max,
+            available_space,
+            axis,
+            ratio_content_contribution,
+        ),
     }
 }
 
@@ -496,9 +606,12 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         raw_min_size,
         raw_max_size,
         margin,
-        transferred_preferred_width,
-        transferred_min_width,
-        transferred_max_width,
+        resolved_size,
+        resolved_min_size,
+        resolved_max_size,
+        aspect_ratio,
+        padding_border_size,
+        ratio_depends_on_block_constraints,
     ) = {
         let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
         let style = tree.get_core_container_style(node_id);
@@ -511,43 +624,60 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         let box_sizing_adjustment =
             if style.box_sizing() == BoxSizing::ContentBox { (padding + border).sum_axes() } else { Size::ZERO };
         let padding_border_size = (padding + border).sum_axes();
-        let box_sizing = style.box_sizing();
-        let transferred_width = |raw: Size<Dimension>| {
+        let resolve = |raw: Size<Dimension>| {
             raw.maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, box_sizing, padding_border_size)
                 .maybe_add(box_sizing_adjustment)
-                .width
         };
+        let ratio_depends_on_block_constraints = aspect_ratio.is_some()
+            && [raw_size.height, raw_min_size.height, raw_max_size.height]
+                .into_iter()
+                .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
         (
             raw_size,
             raw_min_size,
             raw_max_size,
             margin,
-            raw_size.width.is_intrinsic().then(|| transferred_width(raw_size)).flatten(),
-            raw_min_size.width.is_intrinsic().then(|| transferred_width(raw_min_size)).flatten(),
-            raw_max_size.width.is_intrinsic().then(|| transferred_width(raw_max_size)).flatten(),
+            resolve(raw_size),
+            resolve(raw_min_size),
+            resolve(raw_max_size),
+            aspect_ratio,
+            padding_border_size,
+            ratio_depends_on_block_constraints,
         )
     };
     let available_width = inputs.available_space.width.maybe_sub(margin.horizontal_axis_sum());
+    let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+        resolved_size,
+        resolved_min_size,
+        resolved_max_size,
+        aspect_ratio,
+        padding_border_size,
+        AbsoluteAxis::Horizontal,
+        ratio_depends_on_block_constraints,
+    );
 
     let intrinsic = resolve_intrinsic_width_constraints(
         tree,
         node_id,
         inputs,
-        raw_size.width,
-        raw_min_size.width,
-        raw_max_size.width,
-        available_width,
+        IntrinsicWidthInput {
+            preferred: raw_size.width,
+            min: raw_min_size.width,
+            max: raw_max_size.width,
+            available_space: available_width,
+            ratio_content_contribution,
+        },
     );
-    let applied_aspect_ratio = inputs.known_dimensions.width.is_none() && transferred_preferred_width.is_some();
-    let preferred = transferred_preferred_width.or(intrinsic.preferred);
-    let min_size = transferred_min_width.or(intrinsic.min);
-    let max_size = transferred_max_width.or(intrinsic.max);
+    let applied_aspect_ratio = inputs.known_dimensions.width.is_none() && intrinsic.preferred.applied_aspect_ratio;
 
-    inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
+    inputs.known_dimensions.width = inputs
+        .known_dimensions
+        .width
+        .or(intrinsic.preferred.value)
+        .maybe_clamp(intrinsic.min.value, intrinsic.max.value);
     ResolvedIntrinsicWidthInputs {
         inputs,
-        depends_on_block_constraints: intrinsic.depends_on_block_constraints,
+        depends_on_block_constraints: intrinsic.depends_on_block_constraints(),
         applied_aspect_ratio,
     }
 }

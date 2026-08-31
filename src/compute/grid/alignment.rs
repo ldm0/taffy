@@ -5,7 +5,9 @@ use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
+use crate::compute::common::intrinsic_size::{
+    resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
+};
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
@@ -245,18 +247,33 @@ pub(super) fn align_and_position_item(
         },
         vertical_margins_are_collapsible: Line::FALSE,
     };
+    let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+        inherent_size,
+        min_size,
+        max_size,
+        aspect_ratio,
+        padding_border_size,
+        crate::AbsoluteAxis::Horizontal,
+        aspect_ratio.is_some()
+            && [raw_size.height, raw_min_size.height, raw_max_size.height]
+                .into_iter()
+                .any(|value| value.may_have_percentage_dependence() || value.is_stretch()),
+    );
     let intrinsic = resolve_intrinsic_width_constraints(
         tree,
         node,
         intrinsic_inputs,
-        raw_size.width,
-        raw_min_size.width,
-        raw_max_size.width,
-        intrinsic_available_space,
+        IntrinsicWidthInput {
+            preferred: raw_size.width,
+            min: raw_min_size.width,
+            max: raw_max_size.width,
+            available_space: intrinsic_available_space,
+            ratio_content_contribution,
+        },
     );
-    inherent_size.width = inherent_size.width.or(intrinsic.preferred);
-    min_size.width = min_size.width.or(intrinsic.min);
-    max_size.width = max_size.width.or(intrinsic.max);
+    inherent_size.width = inherent_size.width.or(intrinsic.preferred.value);
+    min_size.width = min_size.width.or(intrinsic.min.value);
+    max_size.width = max_size.width.or(intrinsic.max.value);
     let resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
         min_size,

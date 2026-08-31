@@ -22,7 +22,10 @@ use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 #[cfg(feature = "content_size")]
 use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
-use super::common::intrinsic_size::{resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints};
+use super::common::intrinsic_size::{
+    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints,
+    resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
+};
 use super::common::used_size::{
     promote_stretched_inline_size_to_definite, resolve_inline_auto_size, resolve_used_size,
 };
@@ -970,16 +973,28 @@ fn generate_anonymous_flex_items(
                 available_space: child_available_space,
                 vertical_margins_are_collapsible: Line::FALSE,
             };
+            let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+                untransferred_size.maybe_add(box_sizing_adjustment),
+                min_size,
+                max_size,
+                aspect_ratio,
+                pb_sum,
+                AbsoluteAxis::Horizontal,
+                child_block_size_depends_on_parent && aspect_ratio.is_some(),
+            );
             let intrinsic = resolve_intrinsic_width_constraints(
                 tree,
                 child,
                 intrinsic_inputs,
-                raw_size.width,
-                raw_min_size.width,
-                raw_max_size.width,
-                available_width,
+                IntrinsicWidthInput {
+                    preferred: raw_size.width,
+                    min: raw_min_size.width,
+                    max: raw_max_size.width,
+                    available_space: available_width,
+                    ratio_content_contribution,
+                },
             );
-            if let Some(intrinsic_width) = intrinsic.preferred {
+            if let Some(intrinsic_width) = intrinsic.preferred.value {
                 untransferred_size.width = Some(intrinsic_width - box_sizing_adjustment.width);
                 // `flex-basis:auto` defers to the preferred main size. Once an
                 // intrinsic width has been measured, that indirection has a
@@ -992,9 +1007,9 @@ fn generate_anonymous_flex_items(
                     size.width = size.width.or(Some(intrinsic_width));
                 }
             }
-            min_size.width = min_size.width.or(intrinsic.min);
-            max_size.width = max_size.width.or(intrinsic.max);
-            depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+            min_size.width = min_size.width.or(intrinsic.min.value);
+            max_size.width = max_size.width.or(intrinsic.max.value);
+            depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
             let specified_size_suggestion = untransferred_size.maybe_add(box_sizing_adjustment);
             let constraint_input = SizeConstraintInput {
                 size,
@@ -2887,18 +2902,33 @@ fn perform_absolute_layout_on_absolute_children(
             },
             vertical_margins_are_collapsible: Line::FALSE,
         };
+        let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+            style_size,
+            min_size,
+            max_size,
+            aspect_ratio,
+            padding_border_sum,
+            AbsoluteAxis::Horizontal,
+            aspect_ratio.is_some()
+                && [raw_size.height, raw_min_size.height, raw_max_size.height]
+                    .into_iter()
+                    .any(|value| value.may_have_percentage_dependence() || value.is_stretch()),
+        );
         let intrinsic = resolve_intrinsic_width_constraints(
             tree,
             child,
             intrinsic_inputs,
-            raw_size.width,
-            raw_min_size.width,
-            raw_max_size.width,
-            intrinsic_inputs.available_space.width,
+            IntrinsicWidthInput {
+                preferred: raw_size.width,
+                min: raw_min_size.width,
+                max: raw_max_size.width,
+                available_space: intrinsic_inputs.available_space.width,
+                ratio_content_contribution,
+            },
         );
-        style_size.width = style_size.width.or(intrinsic.preferred);
-        min_size.width = min_size.width.or(intrinsic.min);
-        max_size.width = max_size.width.or(intrinsic.max);
+        style_size.width = style_size.width.or(intrinsic.preferred.value);
+        min_size.width = min_size.width.or(intrinsic.min.value);
+        max_size.width = max_size.width.or(intrinsic.max.value);
 
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: style_size,
