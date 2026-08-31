@@ -371,7 +371,9 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         SizingMode::ContentSize,
         inputs.vertical_margins_are_collapsible,
     )
-    .with_block_auto_behavior(inputs.block_auto_behavior);
+    .with_inline_auto_behavior(inputs.inline_auto_behavior)
+    .with_block_auto_behavior(inputs.block_auto_behavior)
+    .with_orthogonal_fallback(inputs.orthogonal_fallback);
     resolve_intrinsic_axis_constraints(
         tree,
         node_id,

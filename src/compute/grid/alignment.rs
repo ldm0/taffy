@@ -18,7 +18,9 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
-use crate::{AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, RequestedAxis, WritingMode};
+use crate::{
+    AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, OrthogonalFallback, RequestedAxis, WritingMode,
+};
 
 /// Final block-axis geometry and baseline data for a positioned grid item.
 ///
@@ -230,7 +232,9 @@ pub(super) fn align_and_position_item(
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::IntrinsicContribution,
         axis: RequestedAxis::Horizontal,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+        orthogonal_fallback: OrthogonalFallback::Suppress,
         known_dimensions: Size::NONE,
         definite_dimensions: Size::NONE,
         parent_size: grid_area_size.map(Some),
@@ -259,6 +263,7 @@ pub(super) fn align_and_position_item(
         max_size,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
         writing_mode: item_writing_mode,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
@@ -379,7 +384,8 @@ pub(super) fn align_and_position_item(
                 inset_modified_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .without_orthogonal_fallback(),
             AbsoluteBoxSizing { size: used_size, min_size, max_size },
         );
         used_size = sizing.size;
@@ -399,7 +405,8 @@ pub(super) fn align_and_position_item(
                 grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .without_orthogonal_fallback(),
         )
         .map(Some)
     } else {
@@ -415,7 +422,8 @@ pub(super) fn align_and_position_item(
             grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
-        ),
+        )
+        .without_orthogonal_fallback(),
     );
 
     // Resolve final size

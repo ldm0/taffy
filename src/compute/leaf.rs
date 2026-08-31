@@ -14,7 +14,7 @@ use core::unreachable;
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
-use super::common::used_size::{resolve_used_axis, resolve_used_size};
+use super::common::used_size::{resolve_inline_auto_size, resolve_used_axis, resolve_used_size};
 
 /// Node-level values resolved by the embedding before leaf layout begins.
 ///
@@ -190,6 +190,7 @@ where
                     .maybe_add(box_sizing_adjustment),
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode,
+                inline_auto_behavior: inputs.inline_auto_behavior,
                 block_auto_behavior: inputs.block_auto_behavior,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio: resolved_aspect_ratio,
@@ -205,13 +206,21 @@ where
             // other axis through the preferred ratio at the leaf boundary just
             // like an authored one-axis size.
             let size_before_ratio = known_dimensions.or(style_size);
-            let node_size = apply_preferred_aspect_ratio(
+            let size_after_ratio = apply_preferred_aspect_ratio(
                 size_before_ratio,
                 raw_size.map(|dimension| dimension.is_auto()),
                 writing_mode,
+                inputs.inline_auto_behavior,
                 inputs.block_auto_behavior,
                 resolved_aspect_ratio,
                 pb_sum,
+            );
+            let node_size = resolve_inline_auto_size(
+                size_after_ratio,
+                raw_size.map(|dimension| dimension.is_auto()),
+                writing_mode,
+                inputs.inline_auto_behavior,
+                available_space,
             );
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
                 && known_dimensions.width.is_none()

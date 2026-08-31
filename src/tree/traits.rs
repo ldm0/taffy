@@ -126,7 +126,10 @@
 //! }
 //! ```
 //!
-use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
+use super::{
+    ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, NodeId, RequestedAxis,
+    RunMode,
+};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
 use crate::geometry::{AbsoluteAxis, Rect, Size, WritingMode};
@@ -217,6 +220,24 @@ pub trait LayoutPartialTree: TraversePartialTree {
     fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> Option<ResolvedAspectRatio> {
         let style = self.get_core_container_style(node_id);
         style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()))
+    }
+
+    /// Return state shared by the active layout pass.
+    ///
+    /// Browser integrations should expose their document/layout-view state
+    /// here. The default keeps custom trees without a finite viewport
+    /// independent of document-global constraints.
+    fn get_layout_environment(&self) -> LayoutEnvironment {
+        LayoutEnvironment::NONE
+    }
+
+    /// Resolve tree-owned state at a parent-to-child dispatch boundary.
+    ///
+    /// Implementations should call this before intrinsic keyword resolution
+    /// and cache lookup in both layout and measurement dispatchers.
+    #[inline(always)]
+    fn prepare_child_layout_input(&self, node_id: NodeId, inputs: LayoutInput) -> LayoutInput {
+        inputs.for_child_writing_mode(self.get_writing_mode(node_id), self.get_layout_environment())
     }
 
     /// Resolve calc value

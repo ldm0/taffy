@@ -293,6 +293,7 @@ impl GridItem {
                 .maybe_add(box_sizing_adjustment),
             size_is_auto: self.size.map(|dimension| dimension.is_auto()),
             writing_mode: tree.get_writing_mode(self.node),
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
@@ -472,7 +473,8 @@ impl GridItem {
                 }),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .without_orthogonal_fallback(),
             axis.as_abs_naive().into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
@@ -519,7 +521,8 @@ impl GridItem {
                 }),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .without_orthogonal_fallback(),
             axis.as_abs_naive().into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
@@ -579,6 +582,7 @@ impl GridItem {
                 .maybe_add(box_sizing_adjustment),
             size_is_auto: self.size.map(|dimension| dimension.is_auto()),
             writing_mode: tree.get_writing_mode(self.node),
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: self.aspect_ratio,

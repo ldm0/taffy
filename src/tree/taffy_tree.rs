@@ -11,8 +11,8 @@ use crate::geometry::{Size, WritingMode};
 use crate::style::{AvailableSpace, Display, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
-    Cache, ClearState, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
-    RoundTree, RunMode, TraversePartialTree, TraverseTree,
+    Cache, ClearState, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, LayoutPartialTree,
+    NodeId, PrintTree, RoundTree, RunMode, TraversePartialTree, TraverseTree,
 };
 use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
@@ -168,6 +168,9 @@ pub struct TaffyTree<NodeContext = ()> {
 
     /// Layout mode configuration
     config: TaffyConfig,
+
+    /// State shared by the active layout pass.
+    layout_environment: LayoutEnvironment,
 }
 
 impl Default for TaffyTree {
@@ -216,19 +219,19 @@ impl<NodeContext> TraverseTree for TaffyTree<NodeContext> {}
 // CacheTree impl for TaffyTree
 impl<NodeContext> CacheTree for TaffyTree<NodeContext> {
     fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
-        self.nodes[node_id.into()].cache.get(input)
+        self.nodes[node_id.into()].cache.get_with_environment(input, self.layout_environment)
     }
 
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput) {
-        self.nodes[node_id.into()].cache.store(input, layout_output)
+        self.nodes[node_id.into()].cache.store_with_environment(input, layout_output, self.layout_environment)
     }
 
     fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.nodes[node_id.into()].cache.get_size(input)
+        self.nodes[node_id.into()].cache.get_size_with_environment(input, self.layout_environment)
     }
 
     fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.nodes[node_id.into()].cache.store_size(input, result)
+        self.nodes[node_id.into()].cache.store_size_with_environment(input, result, self.layout_environment)
     }
 
     fn cache_clear(&mut self, node_id: NodeId) {
@@ -302,6 +305,7 @@ where
         inputs: LayoutInput,
         #[cfg(feature = "block_layout")] block_ctx: Option<&mut BlockContext<'_>>,
     ) -> LayoutOutput {
+        let inputs = self.prepare_child_layout_input(node_id, inputs);
         // If RunMode is PerformHiddenLayout then this indicates that an ancestor node is `Display::None`
         // and thus that we should lay out this node using hidden layout regardless of it's own display style.
         if inputs.run_mode == RunMode::PerformHiddenLayout {
@@ -367,6 +371,7 @@ where
     /// contexts. The formatting algorithms still return a transitional combined
     /// result internally; only its measurement projection crosses this seam.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
+        let inputs = self.prepare_child_layout_input(node_id, inputs);
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
         let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
@@ -472,6 +477,11 @@ where
     }
 
     #[inline(always)]
+    fn get_layout_environment(&self) -> LayoutEnvironment {
+        self.taffy.layout_environment
+    }
+
+    #[inline(always)]
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
         self.taffy.nodes[node_id.into()].unrounded_layout = *layout;
     }
@@ -503,19 +513,23 @@ where
         FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId, Option<&mut NodeContext>, &Style) -> Size<f32>,
 {
     fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
-        self.taffy.nodes[node_id.into()].cache.get(input)
+        self.taffy.nodes[node_id.into()].cache.get_with_environment(input, self.taffy.layout_environment)
     }
 
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput) {
-        self.taffy.nodes[node_id.into()].cache.store(input, layout_output)
+        self.taffy.nodes[node_id.into()].cache.store_with_environment(
+            input,
+            layout_output,
+            self.taffy.layout_environment,
+        )
     }
 
     fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.taffy.nodes[node_id.into()].cache.get_size(input)
+        self.taffy.nodes[node_id.into()].cache.get_size_with_environment(input, self.taffy.layout_environment)
     }
 
     fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.taffy.nodes[node_id.into()].cache.store_size(input, result)
+        self.taffy.nodes[node_id.into()].cache.store_size_with_environment(input, result, self.taffy.layout_environment)
     }
 
     fn cache_clear(&mut self, node_id: NodeId) {
@@ -655,6 +669,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
             parents: SlotMap::with_capacity(capacity),
             node_context_data: SecondaryMap::with_capacity(capacity),
             config: TaffyConfig::default(),
+            layout_environment: LayoutEnvironment::NONE,
         }
     }
 
@@ -712,6 +727,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
         self.nodes.clear();
         self.children.clear();
         self.parents.clear();
+        self.layout_environment = LayoutEnvironment::NONE;
     }
 
     /// Remove a specific node from the tree and drop it
@@ -1028,6 +1044,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
             FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId, Option<&mut NodeContext>, &Style) -> Size<f32>,
     {
         let use_rounding = self.config.use_rounding;
+        self.layout_environment = LayoutEnvironment { initial_containing_block_size: available_space.into_options() };
         let mut taffy_view = TaffyView { taffy: self, measure_function };
         compute_root_layout(&mut taffy_view, node_id, available_space);
         if use_rounding {
@@ -1226,7 +1243,9 @@ mod tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
             block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            orthogonal_fallback: crate::OrthogonalFallback::UseInitialContainingBlock,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size { width: Some(200.0), height: Some(100.0) },
@@ -1262,7 +1281,9 @@ mod tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
             block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            orthogonal_fallback: crate::OrthogonalFallback::UseInitialContainingBlock,
             known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: Size::NONE,

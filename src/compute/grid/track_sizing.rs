@@ -566,7 +566,8 @@ fn resolve_item_baselines(
                     Size::MIN_CONTENT,
                     SizingMode::InherentSize,
                     Line::FALSE,
-                ),
+                )
+                .without_orthogonal_fallback(),
             );
 
             let baseline = measured_size_and_baselines.first_baselines.y;

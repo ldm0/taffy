@@ -93,6 +93,8 @@ pub(crate) struct SizeConstraintInput {
     pub size_is_auto: Size<bool>,
     /// Writing mode that defines the logical block axis.
     pub writing_mode: WritingMode,
+    /// How an authored logical inline-size of `auto` resolves in this space.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// How an authored logical block-size of `auto` resolves in this space.
     pub block_auto_behavior: AutoSizeBehavior,
     /// Whether opposite-axis min/max constraints transfer through the ratio.
@@ -119,6 +121,7 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         max_size,
         size_is_auto,
         writing_mode,
+        inline_auto_behavior,
         block_auto_behavior,
         transferred_sizes_mode,
         aspect_ratio,
@@ -155,6 +158,7 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         size,
         size_is_auto,
         writing_mode,
+        inline_auto_behavior,
         block_auto_behavior,
         aspect_ratio,
         padding_border,
@@ -167,29 +171,37 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size, constraint_sources }
 }
 
-/// Apply a preferred ratio while preserving the constraint space's ordering
-/// for an authored logical block-size of `auto`.
+/// Apply a preferred ratio while preserving the constraint space's auto-size
+/// ordering in both logical axes.
 pub(crate) fn apply_preferred_aspect_ratio(
     size: Size<Option<f32>>,
     size_is_auto: Size<bool>,
     writing_mode: WritingMode,
+    inline_auto_behavior: AutoSizeBehavior,
     block_auto_behavior: AutoSizeBehavior,
     aspect_ratio: Option<ResolvedAspectRatio>,
     padding_border: Size<f32>,
 ) -> Size<Option<f32>> {
     let ratio_resolved_size =
         size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
-    if block_auto_behavior != AutoSizeBehavior::StretchExplicit {
-        return ratio_resolved_size;
-    }
-
     let source = writing_mode.to_logical(size);
     let authored_auto = writing_mode.to_logical(size_is_auto);
     let mut resolved = writing_mode.to_logical(ratio_resolved_size);
-    if authored_auto.block_size && source.block_size.is_none() && resolved.block_size.is_some() {
-        // Explicit stretch resolves auto before preferred-ratio transfer. Keep
-        // the opposite-axis result but leave the block size to the formatting
-        // context.
+    if inline_auto_behavior == AutoSizeBehavior::StretchExplicit
+        && authored_auto.inline_size
+        && source.inline_size.is_none()
+        && resolved.inline_size.is_some()
+    {
+        // Explicit stretch resolves `auto` before preferred-ratio transfer.
+        // Keep the opposite-axis result and transferred constraints, but leave
+        // the preferred inline size to the containing formatting context.
+        resolved.inline_size = None;
+    }
+    if authored_auto.block_size
+        && source.block_size.is_none()
+        && resolved.block_size.is_some()
+        && block_auto_behavior == AutoSizeBehavior::StretchExplicit
+    {
         resolved.block_size = None;
     }
     writing_mode.to_physical(resolved)
@@ -271,6 +283,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_and_implicit_inline_stretch_preserve_ratio_order() {
+        let ratio = ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox);
+        let auto_width = Size { width: true, height: false };
+        let source = Size { width: None, height: Some(50.0) };
+
+        let implicit = apply_preferred_aspect_ratio(
+            source,
+            auto_width,
+            WritingMode::HorizontalTb,
+            AutoSizeBehavior::StretchImplicit,
+            AutoSizeBehavior::FitContent,
+            ratio,
+            Size::ZERO,
+        );
+        let explicit = apply_preferred_aspect_ratio(
+            source,
+            auto_width,
+            WritingMode::HorizontalTb,
+            AutoSizeBehavior::StretchExplicit,
+            AutoSizeBehavior::FitContent,
+            ratio,
+            Size::ZERO,
+        );
+
+        assert_eq!(implicit, Size { width: Some(100.0), height: Some(50.0) });
+        assert_eq!(explicit, Size { width: None, height: Some(50.0) });
+    }
+
+    #[test]
     fn explicit_constraints_win_over_conflicting_transferred_constraints() {
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: Size { width: Some(50.0), height: None },
@@ -278,6 +319,7 @@ mod tests {
             max_size: Size { width: None, height: Some(100.0) },
             size_is_auto: Size { width: false, height: true },
             writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(0.5, BoxSizing::BorderBox),
@@ -298,6 +340,7 @@ mod tests {
             max_size: Size { width: None, height: Some(100.0) },
             size_is_auto: Size { width: true, height: true },
             writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
@@ -316,6 +359,7 @@ mod tests {
             max_size: Size { width: Some(20.0), height: Some(100.0) },
             size_is_auto: Size { width: true, height: true },
             writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
             transferred_sizes_mode: TransferredSizesMode::Ignore,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),

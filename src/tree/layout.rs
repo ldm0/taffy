@@ -42,12 +42,28 @@ pub enum SizingPurpose {
     IntrinsicContribution,
 }
 
-/// How an authored `auto` size behaves in the logical block axis.
+/// Whether an orthogonal child may substitute the initial containing block
+/// when its available inline size is indefinite.
+///
+/// Most block-like parent/child boundaries use the CSS Writing Modes fallback.
+/// Formatting contexts that already own a finite item area may suppress it and
+/// preserve their own indefinite constraint.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub enum OrthogonalFallback {
+    /// Apply the normal initial-containing-block fallback when needed.
+    #[default]
+    UseInitialContainingBlock,
+    /// Preserve the containing formatting context's constraint unchanged.
+    Suppress,
+}
+
+/// How an authored `auto` size behaves in one logical axis.
 ///
 /// This belongs to the constraint space rather than style: the containing
-/// formatting context decides whether `auto` is content-sized or stretched
-/// when it supplies known dimensions. Keeping the resolution order explicit
-/// is required when a preferred aspect ratio can synthesize the block size.
+/// formatting context decides whether `auto` is content-sized or stretched.
+/// Keeping the resolution order explicit is required when a preferred aspect
+/// ratio can synthesize the size.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum AutoSizeBehavior {
@@ -162,6 +178,30 @@ impl TryFrom<RequestedAxis> for AbsoluteAxis {
     }
 }
 
+/// State owned by one layout pass rather than by any individual constraint
+/// space.
+///
+/// This mirrors Blink's `LayoutView`: nodes may consult the physical initial
+/// containing block while constructing an orthogonal child constraint space,
+/// but ordinary block/flex/grid inputs do not carry document-global state.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct LayoutEnvironment {
+    /// Physical size of the initial containing block.
+    pub initial_containing_block_size: Size<Option<f32>>,
+}
+
+impl LayoutEnvironment {
+    /// An environment without a finite initial containing block.
+    pub const NONE: Self = Self { initial_containing_block_size: Size::NONE };
+}
+
+impl Default for LayoutEnvironment {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// A struct containing the inputs constraints/hints for laying out a node, which are passed in by the parent
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -175,8 +215,12 @@ pub struct LayoutInput {
     pub sizing_purpose: SizingPurpose,
     /// Which axis we need the size of
     pub axis: RequestedAxis,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
+    /// Whether this boundary permits the orthogonal inline fallback.
+    pub orthogonal_fallback: OrthogonalFallback,
 
     /// Known dimensions represent dimensions (width/height) which should be taken as fixed when performing layout.
     /// For example, if known_dimensions.width is set to Some(WIDTH) then this means something like:
@@ -225,7 +269,9 @@ impl LayoutInput {
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: AutoSizeBehavior::FitContent,
+        orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
         vertical_margins_are_collapsible: Line::FALSE,
     };
 
@@ -237,7 +283,9 @@ impl LayoutInput {
             run_mode: self.run_mode,
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
+            orthogonal_fallback: self.orthogonal_fallback,
             writing_mode,
             parent_writing_mode: self.parent_writing_mode,
             known_size: writing_mode.to_logical(self.known_dimensions),
@@ -247,6 +295,48 @@ impl LayoutInput {
             requested_axis: self.axis,
             vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
+    }
+
+    /// Apply the CSS Writing Modes fallback at a parent-to-child boundary.
+    ///
+    /// The fallback makes an otherwise-indefinite orthogonal inline constraint
+    /// finite for wrapping and percentage resolution. It does not decide
+    /// whether `inline-size: auto` stretches; that is carried independently by
+    /// [`LayoutInput::inline_auto_behavior`]. Explicit intrinsic probes remain
+    /// min/max-content constrained.
+    #[inline(always)]
+    pub fn for_child_writing_mode(mut self, child_writing_mode: WritingMode, environment: LayoutEnvironment) -> Self {
+        if !child_writing_mode.is_orthogonal_to(self.parent_writing_mode)
+            || self.orthogonal_fallback == OrthogonalFallback::Suppress
+        {
+            return self;
+        }
+
+        let physical_inline_axis = child_writing_mode.inline_axis();
+        let immediate_size = self.parent_size.get_abs(physical_inline_axis);
+        let fallback_size = immediate_size.or(environment.initial_containing_block_size.get_abs(physical_inline_axis));
+        let Some(fallback_size) = fallback_size else {
+            return self;
+        };
+
+        let available_inline_size = self.available_space.get_abs(physical_inline_axis);
+        let is_intrinsic_inline_constraint = self.sizing_purpose == SizingPurpose::IntrinsicContribution
+            && self.axis.contains(physical_inline_axis)
+            && matches!(available_inline_size, AvailableSpace::MinContent | AvailableSpace::MaxContent);
+        if !matches!(available_inline_size, AvailableSpace::Definite(_)) && !is_intrinsic_inline_constraint {
+            match physical_inline_axis {
+                AbsoluteAxis::Horizontal => self.available_space.width = AvailableSpace::Definite(fallback_size),
+                AbsoluteAxis::Vertical => self.available_space.height = AvailableSpace::Definite(fallback_size),
+            }
+        }
+        if immediate_size.is_none() {
+            match physical_inline_axis {
+                AbsoluteAxis::Horizontal => self.parent_size.width = Some(fallback_size),
+                AbsoluteAxis::Vertical => self.parent_size.height = Some(fallback_size),
+            }
+        }
+
+        self
     }
 }
 
@@ -268,8 +358,12 @@ pub(crate) struct ChildLayoutInput {
     pub available_space: Size<AvailableSpace>,
     /// Whether authored size constraints participate in child sizing.
     pub sizing_mode: SizingMode,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
+    /// Orthogonal inline fallback policy for this exact child boundary.
+    pub orthogonal_fallback: OrthogonalFallback,
     /// Whether the child's physical vertical margins may collapse through the boundary.
     pub vertical_margins_are_collapsible: Line<bool>,
 }
@@ -291,15 +385,39 @@ impl ChildLayoutInput {
             parent_writing_mode,
             available_space,
             sizing_mode,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
             vertical_margins_are_collapsible,
         }
+    }
+
+    /// Set the containing formatting context's inline-axis auto behavior.
+    #[inline(always)]
+    pub const fn with_inline_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {
+        self.inline_auto_behavior = behavior;
+        self
     }
 
     /// Set the containing formatting context's block-axis auto behavior.
     #[inline(always)]
     pub const fn with_block_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {
         self.block_auto_behavior = behavior;
+        self
+    }
+
+    /// Keep an orthogonal item's indefinite axis owned by its formatting
+    /// context instead of substituting the initial containing block.
+    #[inline(always)]
+    pub const fn without_orthogonal_fallback(mut self) -> Self {
+        self.orthogonal_fallback = OrthogonalFallback::Suppress;
+        self
+    }
+
+    /// Set the orthogonal fallback policy for this exact child boundary.
+    #[inline(always)]
+    pub const fn with_orthogonal_fallback(mut self, policy: OrthogonalFallback) -> Self {
+        self.orthogonal_fallback = policy;
         self
     }
 
@@ -311,7 +429,9 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
+            orthogonal_fallback: self.orthogonal_fallback,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
             parent_size: self.parent_size,
@@ -329,7 +449,9 @@ impl ChildLayoutInput {
             sizing_mode: self.sizing_mode,
             sizing_purpose: SizingPurpose::Layout,
             axis: RequestedAxis::Both,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
+            orthogonal_fallback: self.orthogonal_fallback,
             known_dimensions: self.known_dimensions,
             definite_dimensions: self.known_dimensions,
             parent_size: self.parent_size,
@@ -355,8 +477,12 @@ pub struct ConstraintSpace {
     /// Whether this computation produces final layout or an intrinsic
     /// contribution.
     pub sizing_purpose: SizingPurpose,
+    /// Resolution behavior for an authored logical `inline-size: auto`.
+    pub inline_auto_behavior: AutoSizeBehavior,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
+    /// Orthogonal inline fallback policy retained by this boundary.
+    pub orthogonal_fallback: OrthogonalFallback,
     /// Writing mode whose logical axes own these sizes.
     pub writing_mode: WritingMode,
     /// Writing mode of the containing block that produced this space.
@@ -385,7 +511,9 @@ impl ConstraintSpace {
             sizing_mode: self.sizing_mode,
             sizing_purpose: self.sizing_purpose,
             axis: self.requested_axis,
+            inline_auto_behavior: self.inline_auto_behavior,
             block_auto_behavior: self.block_auto_behavior,
+            orthogonal_fallback: self.orthogonal_fallback,
             known_dimensions: self.writing_mode.to_physical(self.known_size),
             definite_dimensions: self.writing_mode.to_physical(self.definite_size),
             parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
@@ -437,7 +565,9 @@ mod constraint_space_tests {
             sizing_mode: SizingMode::InherentSize,
             sizing_purpose: SizingPurpose::IntrinsicContribution,
             axis: RequestedAxis::Horizontal,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
             known_dimensions: Size { width: Some(30.0), height: None },
             definite_dimensions: Size { width: Some(30.0), height: None },
             parent_size: Size { width: Some(100.0), height: Some(200.0) },
@@ -455,6 +585,37 @@ mod constraint_space_tests {
         assert!(space.requests_inline_size());
         assert!(!space.requests_block_size());
         assert_eq!(space.into_layout_input(), input);
+    }
+
+    #[test]
+    fn orthogonal_fallback_preserves_intrinsic_probes_and_auto_size_policy() {
+        let environment =
+            LayoutEnvironment { initial_containing_block_size: Size { width: Some(800.0), height: Some(600.0) } };
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Vertical,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
+            known_dimensions: Size::NONE,
+            definite_dimensions: Size::NONE,
+            parent_size: Size { width: Some(100.0), height: None },
+            parent_writing_mode: WritingMode::HorizontalTb,
+            available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MinContent },
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+
+        let adjusted = input.for_child_writing_mode(WritingMode::VerticalRl, environment);
+        assert_eq!(adjusted.parent_size.height, Some(600.0));
+        assert_eq!(adjusted.available_space.height, AvailableSpace::MinContent);
+        assert_eq!(adjusted.inline_auto_behavior, AutoSizeBehavior::FitContent);
+
+        let suppressed = LayoutInput { orthogonal_fallback: OrthogonalFallback::Suppress, ..input }
+            .for_child_writing_mode(WritingMode::VerticalRl, environment);
+        assert_eq!(suppressed.parent_size.height, None);
+        assert_eq!(suppressed.available_space.height, AvailableSpace::MinContent);
     }
 
     #[test]

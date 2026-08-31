@@ -1,6 +1,65 @@
 //! Shared resolution of final border-box sizes at layout-algorithm boundaries.
 
-use crate::{MaybeMath, Size};
+use crate::{AutoSizeBehavior, AvailableSpace, MaybeMath, Size, WritingMode};
+
+/// Resolve the containing formatting context's policy for an authored
+/// `inline-size: auto`.
+///
+/// This runs after preferred aspect-ratio transfer. Implicit stretch therefore
+/// preserves a ratio-derived inline size, while explicit stretch receives an
+/// unresolved inline size and fills the available space. A fallback available
+/// size for orthogonal writing modes remains only a fit-content wrapping cap
+/// when `behavior` is [`AutoSizeBehavior::FitContent`].
+#[inline(always)]
+pub(crate) fn resolve_inline_auto_size(
+    preferred_size: Size<Option<f32>>,
+    size_is_auto: Size<bool>,
+    writing_mode: WritingMode,
+    behavior: AutoSizeBehavior,
+    available_space: Size<AvailableSpace>,
+) -> Size<Option<f32>> {
+    if behavior == AutoSizeBehavior::FitContent {
+        return preferred_size;
+    }
+
+    let mut logical_preferred_size = writing_mode.to_logical(preferred_size);
+    let logical_size_is_auto = writing_mode.to_logical(size_is_auto);
+    let logical_available_space = writing_mode.to_logical(available_space);
+    if logical_size_is_auto.inline_size && logical_preferred_size.inline_size.is_none() {
+        logical_preferred_size.inline_size = match logical_available_space.inline_size {
+            AvailableSpace::Definite(size) => Some(size),
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+        };
+    }
+    writing_mode.to_physical(logical_preferred_size)
+}
+
+/// Record the resolved inline size as a descendant percentage basis when the
+/// containing formatting context stretched an authored automatic size.
+///
+/// Fit-content fallback sizes are deliberately excluded: they constrain the
+/// measurement but do not by themselves make the resulting auto size a fixed
+/// parent-supplied dimension.
+#[inline(always)]
+pub(crate) fn promote_stretched_inline_size_to_definite(
+    definite_dimensions: Size<Option<f32>>,
+    used_size: Size<Option<f32>>,
+    size_is_auto: Size<bool>,
+    writing_mode: WritingMode,
+    behavior: AutoSizeBehavior,
+) -> Size<Option<f32>> {
+    if behavior == AutoSizeBehavior::FitContent {
+        return definite_dimensions;
+    }
+
+    let mut logical_definite_size = writing_mode.to_logical(definite_dimensions);
+    let logical_used_size = writing_mode.to_logical(used_size);
+    let logical_size_is_auto = writing_mode.to_logical(size_is_auto);
+    if logical_size_is_auto.inline_size {
+        logical_definite_size.inline_size = logical_definite_size.inline_size.or(logical_used_size.inline_size);
+    }
+    writing_mode.to_physical(logical_definite_size)
+}
 
 /// Resolve one used border-box axis while preserving a fixed size supplied by
 /// the parent formatting context.
@@ -56,6 +115,69 @@ pub(crate) fn resolve_used_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_auto_policy_separates_fit_content_from_stretch() {
+        let available = Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::MaxContent };
+        let auto = Size { width: true, height: true };
+
+        assert_eq!(
+            resolve_inline_auto_size(
+                Size { width: Some(120.0), height: None },
+                auto,
+                WritingMode::HorizontalTb,
+                AutoSizeBehavior::StretchImplicit,
+                available,
+            ),
+            Size { width: Some(120.0), height: None },
+        );
+        assert_eq!(
+            resolve_inline_auto_size(
+                Size::NONE,
+                auto,
+                WritingMode::HorizontalTb,
+                AutoSizeBehavior::StretchExplicit,
+                available,
+            ),
+            Size { width: Some(300.0), height: None },
+        );
+        assert_eq!(
+            resolve_inline_auto_size(
+                Size::NONE,
+                auto,
+                WritingMode::HorizontalTb,
+                AutoSizeBehavior::FitContent,
+                available,
+            ),
+            Size::NONE,
+        );
+    }
+
+    #[test]
+    fn only_stretched_auto_inline_sizes_become_percentage_bases() {
+        let used = Size { width: Some(300.0), height: None };
+        let auto = Size { width: true, height: true };
+        assert_eq!(
+            promote_stretched_inline_size_to_definite(
+                Size::NONE,
+                used,
+                auto,
+                WritingMode::HorizontalTb,
+                AutoSizeBehavior::StretchImplicit,
+            ),
+            used,
+        );
+        assert_eq!(
+            promote_stretched_inline_size_to_definite(
+                Size::NONE,
+                used,
+                auto,
+                WritingMode::HorizontalTb,
+                AutoSizeBehavior::FitContent,
+            ),
+            Size::NONE,
+        );
+    }
 
     #[test]
     fn known_used_axis_is_not_reclamped_by_child_constraints() {
