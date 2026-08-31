@@ -1,4 +1,5 @@
 use taffy::prelude::*;
+use taffy::tree::DetailedLayoutInfo;
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 #[derive(Clone, Copy)]
@@ -65,4 +66,124 @@ fn unrelated_auto_min_track_does_not_enable_a_spanning_items_automatic_minimum()
 
     assert_eq!(item.size.width, 100.0);
     assert_eq!(unrelated_track_item.location.x, 100.0);
+}
+
+#[derive(Clone, Copy)]
+enum TrackAxis {
+    Columns,
+    Rows,
+}
+
+fn layout_single_auto_track(axis: TrackAxis, item_style: Style) -> (f32, Layout) {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let item = tree.new_leaf(item_style).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(10.0, 10.0),
+                grid_template_columns: match axis {
+                    TrackAxis::Columns => vec![minmax(auto(), auto())],
+                    TrackAxis::Rows => vec![length(10.0)],
+                },
+                grid_template_rows: match axis {
+                    TrackAxis::Columns => vec![length(10.0)],
+                    TrackAxis::Rows => vec![minmax(auto(), auto())],
+                },
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    let track_size = match axis {
+        TrackAxis::Columns => info.columns.sizes[0],
+        TrackAxis::Rows => info.rows.sizes[0],
+    };
+    (track_size, *tree.layout(item).unwrap())
+}
+
+#[test]
+fn definite_preferred_size_uses_its_clamped_min_content_contribution() {
+    let (track, item) = layout_single_auto_track(
+        TrackAxis::Columns,
+        Style {
+            size: Size::from_lengths(60.0, 10.0),
+            min_size: Size { width: length(90.0), height: auto() },
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(track, 90.0);
+    assert_eq!(item.size.width, 90.0);
+}
+
+#[test]
+fn smaller_minimum_does_not_replace_a_definite_preferred_size() {
+    let (track, item) = layout_single_auto_track(
+        TrackAxis::Columns,
+        Style {
+            size: Size::from_lengths(60.0, 10.0),
+            min_size: Size { width: length(40.0), height: auto() },
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(track, 60.0);
+    assert_eq!(item.size.width, 60.0);
+}
+
+#[test]
+fn ratio_transferred_auto_preferred_size_still_uses_the_used_minimum() {
+    let (track, item) = layout_single_auto_track(
+        TrackAxis::Columns,
+        Style {
+            size: Size { width: auto(), height: length(60.0) },
+            min_size: Size { width: length(90.0), height: auto() },
+            aspect_ratio: Some(1.0),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(track, 90.0);
+    assert_eq!(item.size.width, 90.0);
+}
+
+#[test]
+fn block_axis_uses_the_same_minimum_contribution_source_rules() {
+    let (track, item) = layout_single_auto_track(
+        TrackAxis::Rows,
+        Style {
+            size: Size::from_lengths(10.0, 60.0),
+            min_size: Size { width: auto(), height: length(90.0) },
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(track, 90.0);
+    assert_eq!(item.size.height, 90.0);
+}
+
+#[test]
+fn content_box_minimum_contribution_includes_padding_and_border() {
+    let (track, item) = layout_single_auto_track(
+        TrackAxis::Columns,
+        Style {
+            box_sizing: BoxSizing::ContentBox,
+            size: Size::from_lengths(60.0, 10.0),
+            min_size: Size { width: length(90.0), height: auto() },
+            padding: Rect { left: length(8.0), right: length(8.0), top: length(0.0), bottom: length(0.0) },
+            border: Rect { left: length(5.0), right: length(5.0), top: length(0.0), bottom: length(0.0) },
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(track, 116.0);
+    assert_eq!(item.size.width, 116.0);
 }
