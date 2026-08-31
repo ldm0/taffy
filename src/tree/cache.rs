@@ -1,8 +1,6 @@
 //! A cache for storing the results of layout computation
 
-#![allow(clippy::unusual_byte_groupings)]
-
-use crate::geometry::{LogicalSize, Size, WritingMode};
+use crate::geometry::{Line, LogicalSize, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
     AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, OrthogonalFallback, RunMode,
@@ -17,93 +15,71 @@ const CACHE_SIZE: usize = 9;
 /// probes several such constraints in one pass.
 const BLOCK_CONSTRAINT_CACHE_SIZE: usize = 8;
 
-// Manually written-out results of float to u32 bit casts because
-// `f32::to_bits` is not yet const at our MSRV.
+/// Lossless, equality-comparable representation of one available-space axis.
+///
+/// Keeping the enum tag separate from the float bits prevents an intrinsic
+/// constraint from aliasing a numerically non-finite definite constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+enum AvailableSpaceCacheKey {
+    /// A numeric constraint, retained by exact IEEE-754 bits.
+    Definite(u32),
+    /// An intrinsic minimum-content constraint.
+    MinContent,
+    /// An intrinsic maximum-content constraint.
+    MaxContent,
+}
 
-/// `f32::INFINITY` as a u32
-const INFINITY_BITS: u32 = 0b_0_11111111_00000000000000000000000_u32;
-/// `f32::NEG_INFINITY` as a u32
-const NEG_INFINITY_BITS: u32 = 0b_1_11111111_00000000000000000000000_u32;
-
-// The `CacheKey` encodes two f32s as a u64. We know that the f32s will always be
-// non-negative, so we pack two extra bits encoding the `RequestedAxis` into the
-// sign bits of the f32s. These constants help to encode and decode those bits.
-
-/// The sign bit of the first f32
-const SIGN_BIT_1: u64 = 1u64 << 63;
-/// The sign bit of the second f32
-const SIGN_BIT_2: u64 = 1u64 << 31;
-/// Mask of both sign bits (used to compute NON_SIGN_BITS_MASK)
-const BOTH_SIGN_BITS_MASK: u64 = SIGN_BIT_1 | SIGN_BIT_2;
-/// Mask of excluding the sign bits (used when setting/getting the size excluding the packed bits)
-const NON_SIGN_BITS_MASK: u64 = !BOTH_SIGN_BITS_MASK;
-
-/// Bits containing the inline-axis parent size. The requested-axis bits are
-/// retained separately when matching measurement entries.
-const INLINE_PARENT_SIZE_MASK: u64 = (u32::MAX as u64) << 32;
-
-/// Pack `Option<f32>` into `u32`
+/// Convert an optional float to a tagged, exact-bit cache component.
 #[inline(always)]
-fn option_cache_key(input: Option<f32>) -> u32 {
+fn option_cache_key(input: Option<f32>) -> Option<u32> {
+    input.map(f32::to_bits)
+}
+
+/// Convert a logical optional size to exact-bit cache components.
+#[inline(always)]
+fn logical_size_option_cache_key(input: LogicalSize<Option<f32>>) -> LogicalSize<Option<u32>> {
+    LogicalSize { inline_size: option_cache_key(input.inline_size), block_size: option_cache_key(input.block_size) }
+}
+
+/// Convert a physical optional size to exact-bit cache components.
+#[inline(always)]
+fn size_option_cache_key(input: Size<Option<f32>>) -> Size<Option<u32>> {
+    Size { width: option_cache_key(input.width), height: option_cache_key(input.height) }
+}
+
+/// Convert one available-space axis without conflating its enum variants.
+#[inline(always)]
+fn available_space_cache_key(input: AvailableSpace) -> AvailableSpaceCacheKey {
     match input {
-        Some(value) => value.to_bits(),
-        None => INFINITY_BITS,
+        AvailableSpace::Definite(value) => AvailableSpaceCacheKey::Definite(value.to_bits()),
+        AvailableSpace::MinContent => AvailableSpaceCacheKey::MinContent,
+        AvailableSpace::MaxContent => AvailableSpaceCacheKey::MaxContent,
     }
 }
 
-/// Pack a logical optional size into a cache key with inline-size first.
+/// Convert both physical available-space axes to tagged cache components.
 #[inline(always)]
-fn logical_size_option_cache_key(input: LogicalSize<Option<f32>>) -> u64 {
-    (option_cache_key(input.inline_size) as u64) << 32 | option_cache_key(input.block_size) as u64
+fn size_available_space_cache_key(input: Size<AvailableSpace>) -> Size<AvailableSpaceCacheKey> {
+    Size { width: available_space_cache_key(input.width), height: available_space_cache_key(input.height) }
 }
 
-/// Pack a physical optional size into a cache key with width first.
-#[inline(always)]
-fn size_option_cache_key(input: Size<Option<f32>>) -> u64 {
-    (option_cache_key(input.width) as u64) << 32 | option_cache_key(input.height) as u64
-}
-
-/// Pack `AvailableSpace` into `u32`
-#[inline(always)]
-fn available_space_cache_key(input: AvailableSpace) -> u32 {
-    match input {
-        AvailableSpace::Definite(value) => (-value).to_bits(),
-        AvailableSpace::MinContent => NEG_INFINITY_BITS,
-        AvailableSpace::MaxContent => INFINITY_BITS,
-    }
-}
-
-/// Pack `Size<AvailableSpace>` into `u64`
-#[inline(always)]
-#[allow(dead_code)]
-fn size_available_space_cache_key(input: Size<AvailableSpace>) -> u64 {
-    (available_space_cache_key(input.width) as u64) << 32 | available_space_cache_key(input.height) as u64
-}
-
-/// Encodes combination of a `known_dimension` (Option<f32>) and `AvailableSpace` in
-/// a single dimension into a cache key in a single dimension.
-#[inline(always)]
-fn mixed_cache_key(kd: Option<f32>, avs: AvailableSpace) -> u32 {
-    kd.map(|kd| kd.to_bits()).unwrap_or_else(|| available_space_cache_key(avs))
-}
-
-/// Encodes combination of a `known_dimension` (Option<f32>) and `AvailableSpace` in
-/// two dimensions into a cache key in a single dimension.
-#[inline(always)]
-fn size_mixed_cache_key(kd: Size<Option<f32>>, avs: Size<AvailableSpace>) -> u64 {
-    (mixed_cache_key(kd.width, avs.width) as u64) << 32 | mixed_cache_key(kd.height, avs.height) as u64
-}
-
-/// Space-optimised cache key that packs bits into as small a size as possible
+/// Complete, lossless constraint-space key for one layout operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 struct CacheKey {
-    /// The initial cached size of the node itself
-    kd_available_space: u64,
+    /// Dimensions fixed by the parent formatting context.
+    known_dimensions: Size<Option<u32>>,
+    /// Space offered by the parent, even on axes with known dimensions.
+    available_space: Size<AvailableSpaceCacheKey>,
+    /// Dimensions whose source is definite for descendant percentages.
+    definite_dimensions: Size<Option<u32>>,
     /// The containing block size in its own logical axes.
-    logical_parent_size: u64,
+    logical_parent_size: LogicalSize<Option<u32>>,
     /// Physical initial containing block inherited by descendants.
-    initial_containing_block_size: u64,
+    initial_containing_block_size: Size<Option<u32>>,
+    /// Physical axis requested by an intrinsic sizing operation.
+    requested_axis: RequestedAxis,
     /// Writing mode that owns the containing block size.
     parent_writing_mode: WritingMode,
     /// Whether inherent size styles participate in this computation.
@@ -116,39 +92,51 @@ struct CacheKey {
     block_auto_behavior: AutoSizeBehavior,
     /// Whether this boundary permits the orthogonal viewport fallback.
     orthogonal_fallback: OrthogonalFallback,
+    /// Physical block-axis margin collapse permissions at this boundary.
+    vertical_margins_are_collapsible: Line<bool>,
 }
 
 impl CacheKey {
     /// Construct a cache key for one node input and layout-pass environment.
     #[inline(always)]
     fn new(input: &LayoutInput, environment: LayoutEnvironment) -> Self {
-        // Pack axis enum into spare bits in the known_dimensions and available_space values
-        let extra_bits = match input.axis {
-            RequestedAxis::Horizontal => SIGN_BIT_1,
-            RequestedAxis::Vertical => SIGN_BIT_2,
-            RequestedAxis::Both => SIGN_BIT_1 | SIGN_BIT_2,
-        };
-
         Self {
-            kd_available_space: size_mixed_cache_key(input.known_dimensions, input.available_space),
-            logical_parent_size: (logical_size_option_cache_key(
-                input.parent_writing_mode.to_logical(input.parent_size),
-            ) & NON_SIGN_BITS_MASK)
-                | extra_bits,
+            known_dimensions: size_option_cache_key(input.known_dimensions),
+            available_space: size_available_space_cache_key(input.available_space),
+            definite_dimensions: size_option_cache_key(input.definite_dimensions),
+            logical_parent_size: logical_size_option_cache_key(input.parent_writing_mode.to_logical(input.parent_size)),
             initial_containing_block_size: size_option_cache_key(environment.initial_containing_block_size),
+            requested_axis: input.axis,
             parent_writing_mode: input.parent_writing_mode,
             sizing_mode: input.sizing_mode,
             sizing_purpose: input.sizing_purpose,
             inline_auto_behavior: input.inline_auto_behavior,
             block_auto_behavior: input.block_auto_behavior,
             orthogonal_fallback: input.orthogonal_fallback,
+            vertical_margins_are_collapsible: input.vertical_margins_are_collapsible,
         }
     }
 
+    /// Compare the observable inputs of a block-independent intrinsic result.
+    ///
+    /// Only the containing block's logical block-size may be omitted. The
+    /// result must still match every other constraint-space component,
+    /// including the node's own definite dimensions and available-space kind.
     #[inline(always)]
-    /// Return the inline parent size together with the requested-axis bits.
-    fn inline_parent_size_and_axis(&self) -> u64 {
-        self.logical_parent_size & (INLINE_PARENT_SIZE_MASK | BOTH_SIGN_BITS_MASK)
+    fn matches_block_independent_measurement(self, other: Self) -> bool {
+        self.known_dimensions == other.known_dimensions
+            && self.available_space == other.available_space
+            && self.definite_dimensions == other.definite_dimensions
+            && self.logical_parent_size.inline_size == other.logical_parent_size.inline_size
+            && self.initial_containing_block_size == other.initial_containing_block_size
+            && self.requested_axis == other.requested_axis
+            && self.parent_writing_mode == other.parent_writing_mode
+            && self.sizing_mode == other.sizing_mode
+            && self.sizing_purpose == other.sizing_purpose
+            && self.inline_auto_behavior == other.inline_auto_behavior
+            && self.block_auto_behavior == other.block_auto_behavior
+            && self.orthogonal_fallback == other.orthogonal_fallback
+            && self.vertical_margins_are_collapsible == other.vertical_margins_are_collapsible
     }
 }
 
@@ -319,16 +307,7 @@ impl Cache {
         debug_assert_eq!(input.run_mode, RunMode::ComputeSize);
         let key = CacheKey::new(input, environment);
         for entry in self.measure_entries.iter().flatten() {
-            if entry.key.kd_available_space == key.kd_available_space
-                && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
-                && entry.key.initial_containing_block_size == key.initial_containing_block_size
-                && entry.key.parent_writing_mode == key.parent_writing_mode
-                && entry.key.sizing_mode == key.sizing_mode
-                && entry.key.sizing_purpose == key.sizing_purpose
-                && entry.key.inline_auto_behavior == key.inline_auto_behavior
-                && entry.key.block_auto_behavior == key.block_auto_behavior
-                && entry.key.orthogonal_fallback == key.orthogonal_fallback
-            {
+            if entry.key.matches_block_independent_measurement(key) {
                 return Some(IntrinsicSizeResult {
                     size: entry.content.size,
                     depends_on_block_constraints: entry.content.depends_on_block_constraints,
@@ -541,6 +520,73 @@ mod tests {
         let suppressed = LayoutInput { orthogonal_fallback: OrthogonalFallback::Suppress, ..fallback };
         assert!(cache.get(&suppressed).is_none());
         assert_eq!(cache.get(&fallback).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_definite_dimensions() {
+        let mut cache = Cache::new();
+        let indefinite = LayoutInput {
+            known_dimensions: Size { width: None, height: Some(100.0) },
+            ..input(SizingPurpose::IntrinsicContribution)
+        };
+        cache.store(&indefinite, LayoutOutput::from_outer_size(Size { width: 40.0, height: 100.0 }));
+
+        let definite = LayoutInput { definite_dimensions: Size { width: None, height: Some(100.0) }, ..indefinite };
+
+        assert!(cache.get(&definite).is_none());
+        assert_eq!(cache.get(&indefinite).unwrap().size.width, 40.0);
+    }
+
+    #[test]
+    fn known_dimensions_do_not_hide_available_space() {
+        let mut cache = Cache::new();
+        let min_content = LayoutInput {
+            known_dimensions: Size { width: Some(60.0), height: None },
+            available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
+            ..input(SizingPurpose::IntrinsicContribution)
+        };
+        cache.store(&min_content, LayoutOutput::from_outer_size(Size { width: 60.0, height: 20.0 }));
+
+        let max_content = LayoutInput {
+            available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent },
+            ..min_content
+        };
+
+        assert!(cache.get(&max_content).is_none());
+        assert_eq!(cache.get(&min_content).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_available_space_does_not_alias_numeric_infinity() {
+        let mut cache = Cache::new();
+        let max_content = LayoutInput {
+            available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent },
+            ..input(SizingPurpose::IntrinsicContribution)
+        };
+        cache.store(&max_content, LayoutOutput::from_outer_size(Size { width: 60.0, height: 20.0 }));
+
+        let definite_infinity = LayoutInput {
+            available_space: Size {
+                width: AvailableSpace::Definite(f32::INFINITY),
+                height: AvailableSpace::MaxContent,
+            },
+            ..max_content
+        };
+
+        assert!(cache.get(&definite_infinity).is_none());
+        assert_eq!(cache.get(&max_content).unwrap().size.width, 60.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_margin_collapse_constraints() {
+        let mut cache = Cache::new();
+        let non_collapsing = input(SizingPurpose::IntrinsicContribution);
+        cache.store(&non_collapsing, LayoutOutput::from_outer_size(Size { width: 60.0, height: 20.0 }));
+
+        let collapsing = LayoutInput { vertical_margins_are_collapsible: Line::TRUE, ..non_collapsing };
+
+        assert!(cache.get(&collapsing).is_none());
+        assert_eq!(cache.get(&non_collapsing).unwrap().size.height, 20.0);
     }
 
     #[test]
