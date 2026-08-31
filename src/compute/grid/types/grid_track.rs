@@ -99,6 +99,20 @@ impl GridTrack {
         )
     }
 
+    /// Return the percentage basis used while initializing this track.
+    ///
+    /// Grid gaps resolve cyclic percentages against zero during intrinsic
+    /// sizing. Giving gutters a zero basis preserves the length component of
+    /// `calc(<length> + <percentage>)`, while ordinary percentage tracks stay
+    /// indefinite and are therefore treated as `auto`.
+    #[inline(always)]
+    pub fn initial_percentage_basis(&self, axis_inner_node_size: Option<f32>) -> Option<f32> {
+        match self.kind {
+            GridTrackKind::Gutter => Some(axis_inner_node_size.unwrap_or(0.0)),
+            GridTrackKind::Track => axis_inner_node_size,
+        }
+    }
+
     /// Mark a GridTrack as collapsed. Also sets both of the track's sizing functions
     /// to fixed zero-sized sizing functions.
     pub fn collapse(&mut self) {
@@ -163,5 +177,38 @@ impl GridTrack {
         } else {
             0.0
         }
+    }
+}
+
+#[cfg(all(test, feature = "calc"))]
+mod tests {
+    use super::*;
+
+    #[repr(align(8))]
+    struct CalcToken;
+
+    static CALC_TOKEN: CalcToken = CalcToken;
+
+    fn resolve_gap_calc(_: *const (), percentage_basis: f32) -> f32 {
+        20.0 + (0.05 * percentage_basis)
+    }
+
+    #[test]
+    fn indefinite_gutter_preserves_the_length_part_of_a_calc_gap() {
+        let calc = LengthPercentage::calc((&CALC_TOKEN as *const CalcToken).cast());
+        let gutter = GridTrack::gutter(calc);
+        let track = GridTrack::new(MinTrackSizingFunction::from(calc), MaxTrackSizingFunction::from(calc));
+
+        let gutter_basis = gutter.initial_percentage_basis(None);
+        assert_eq!(gutter_basis, Some(0.0));
+        assert_eq!(gutter.min_track_sizing_function.definite_value(gutter_basis, resolve_gap_calc), Some(20.0));
+
+        let track_basis = track.initial_percentage_basis(None);
+        assert_eq!(track_basis, None);
+        assert_eq!(track.min_track_sizing_function.definite_value(track_basis, resolve_gap_calc), None);
+
+        let definite_basis = gutter.initial_percentage_basis(Some(200.0));
+        assert_eq!(definite_basis, Some(200.0));
+        assert_eq!(gutter.min_track_sizing_function.definite_value(definite_basis, resolve_gap_calc), Some(30.0));
     }
 }

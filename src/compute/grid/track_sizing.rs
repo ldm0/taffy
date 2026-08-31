@@ -481,6 +481,8 @@ fn initialize_track_sizes(
     axis_inner_node_size: Option<f32>,
 ) {
     for track in axis_tracks.iter_mut() {
+        let percentage_basis = track.initial_percentage_basis(axis_inner_node_size);
+
         // For each track, if the track’s min track sizing function is:
         // - A fixed sizing function
         //     Resolve to an absolute length and use that size as the track’s initial base size.
@@ -489,7 +491,7 @@ fn initialize_track_sizes(
         //     Use an initial base size of zero.
         track.base_size = track
             .min_track_sizing_function
-            .definite_value(axis_inner_node_size, |val, basis| tree.calc(val, basis))
+            .definite_value(percentage_basis, |val, basis| tree.calc(val, basis))
             .unwrap_or(0.0);
 
         // For each track, if the track’s max track sizing function is:
@@ -501,7 +503,7 @@ fn initialize_track_sizes(
         //     Use an initial growth limit of infinity.
         track.growth_limit = track
             .max_track_sizing_function
-            .definite_value(axis_inner_node_size, |val, basis| tree.calc(val, basis))
+            .definite_value(percentage_basis, |val, basis| tree.calc(val, basis))
             .unwrap_or(f32::INFINITY);
 
         // In all cases, if the growth limit is less than the base size, increase the growth limit to match the base size.
