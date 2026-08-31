@@ -4,7 +4,10 @@ use crate::compute::common::absolute::{AbsoluteBlockSizeInput, AbsoluteBlockSize
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment, resolve_self_alignment_safety,
 };
-use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::common::aspect_ratio::{
+    resolve_formatting_context_size, resolve_size_constraints, FormattingContextSizeInput, SizeConstraintInput,
+    TransferredSizesMode,
+};
 use crate::compute::common::intrinsic_size::{
     resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
 };
@@ -324,63 +327,30 @@ pub(super) fn align_and_position_item(
             constraint_sources: resolved.block_axis_constraints(item_writing_mode),
         })
     });
-    let aspect_ratio_applied = resolved.aspect_ratio_applied;
     inherent_size = resolved.size;
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
 
-    // If node is absolutely positioned and width is not set explicitly, then deduce it
-    // from left, right and container_content_box if both are set.
-    let width = inherent_size.width.or_else(|| {
-        // Apply width derived from both the left and right properties of an absolutely
-        // positioned element being set
-        if position == Position::Absolute && !auto_size.horizontal.is_content_based(aspect_ratio_applied.width) {
-            if let (Some(left), Some(right)) = (inset_horizontal.start, inset_horizontal.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.width - left - right, 0.0));
-            }
+    let stretch_size = if position == Position::Absolute {
+        Size {
+            width: (inset_horizontal.start.is_some() && inset_horizontal.end.is_some())
+                .then_some(f32_max(inset_modified_available_size.width, 0.0)),
+            height: (inset_vertical.start.is_some() && inset_vertical.end.is_some())
+                .then_some(f32_max(inset_modified_available_size.height, 0.0)),
         }
-
-        // Apply width based on stretch sizing if:
-        //  - The alignment resolves auto sizing to stretch
-        //  - The node is not absolutely positioned
-        //  - The node does not have auto margins in this axis.
-        if !auto_size.horizontal.is_content_based(aspect_ratio_applied.width) && position != Position::Absolute {
-            return Some(grid_area_minus_item_margins_size.width);
-        }
-
-        None
-    });
-
-    // Reapply aspect ratio after stretch and absolute position width adjustments
-    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio_with_box_sizing(
+    } else {
+        grid_area_minus_item_margins_size.map(Some)
+    };
+    let Size { width, height } = resolve_formatting_context_size(FormattingContextSizeInput {
+        size: inherent_size,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode: item_writing_mode,
+        inline_auto_behavior,
+        block_auto_behavior,
+        stretch_size,
         aspect_ratio,
-        BoxSizing::BorderBox,
-        padding_border_size,
-    );
-
-    let height = height.or_else(|| {
-        if position == Position::Absolute && !auto_size.vertical.is_content_based(aspect_ratio_applied.height) {
-            if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
-            }
-        }
-
-        // Apply height based on stretch sizing if:
-        //  - The alignment resolves auto sizing to stretch
-        //  - The node is not absolutely positioned
-        //  - The node does not have auto margins in this axis.
-        if !auto_size.vertical.is_content_based(aspect_ratio_applied.height) && position != Position::Absolute {
-            return Some(grid_area_minus_item_margins_size.height);
-        }
-
-        None
+        padding_border: padding_border_size,
     });
-    // Reapply aspect ratio after stretch and absolute position height adjustments
-    let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio_with_box_sizing(
-        aspect_ratio,
-        BoxSizing::BorderBox,
-        padding_border_size,
-    );
 
     // Clamp size by min and max width/height. Content-dependent block-axis
     // constraints are resolved only now, once the absolute inline size and

@@ -1,6 +1,6 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
+use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, LogicalSize, ResolvedAspectRatio, Size, WritingMode};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -217,6 +217,105 @@ pub(crate) fn apply_preferred_aspect_ratio(
     {
         resolved.block_size = None;
     }
+    writing_mode.to_physical(resolved)
+}
+
+/// Inputs for resolving formatting-context-owned automatic sizes after
+/// authored preferred sizes and ratio transfers have been resolved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FormattingContextSizeInput {
+    /// Resolved preferred border-box size. Explicit-stretch axes may still be
+    /// unresolved because their available size belongs to the formatting
+    /// context.
+    pub size: Size<Option<f32>>,
+    /// Whether each physical preferred size was authored as `auto`.
+    pub size_is_auto: Size<bool>,
+    /// Writing mode that defines inline-before-block sizing order.
+    pub writing_mode: WritingMode,
+    /// Automatic inline-size behavior selected by the formatting context.
+    pub inline_auto_behavior: AutoSizeBehavior,
+    /// Automatic block-size behavior selected by the formatting context.
+    pub block_auto_behavior: AutoSizeBehavior,
+    /// Definite stretch fit supplied by the formatting context in each
+    /// physical axis. `None` means that stretch cannot resolve in that axis.
+    pub stretch_size: Size<Option<f32>>,
+    /// Used preferred aspect ratio and its sizing box.
+    pub aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Physical padding-and-border sums for ratio box conversion.
+    pub padding_border: Size<f32>,
+}
+
+/// Resolve stretch and preferred-ratio sizing in CSS logical-axis order.
+///
+/// Explicit stretch owns an automatic axis before ratio transfer. An implicit
+/// inline stretch happens only after a ratio has had a chance to use an
+/// authored opposite-axis size, and then supplies the inline basis from which
+/// an automatic block size may be transferred. Implicit block stretch is the
+/// final fallback. Keeping this ordering in one resolver prevents individual
+/// formatting contexts from replaying the ratio over an already-stretched
+/// axis.
+pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput) -> Size<Option<f32>> {
+    let FormattingContextSizeInput {
+        size,
+        size_is_auto,
+        writing_mode,
+        inline_auto_behavior,
+        block_auto_behavior,
+        stretch_size,
+        aspect_ratio,
+        padding_border,
+    } = input;
+    let mut resolved = writing_mode.to_logical(size);
+    let authored_auto = writing_mode.to_logical(size_is_auto);
+    let stretch = writing_mode.to_logical(stretch_size);
+
+    let unresolved_explicit_inline = authored_auto.inline_size
+        && inline_auto_behavior == AutoSizeBehavior::StretchExplicit
+        && stretch.inline_size.is_none();
+    let unresolved_explicit_block = authored_auto.block_size
+        && block_auto_behavior == AutoSizeBehavior::StretchExplicit
+        && stretch.block_size.is_none();
+
+    if authored_auto.inline_size && inline_auto_behavior == AutoSizeBehavior::StretchExplicit {
+        if let Some(size) = stretch.inline_size {
+            resolved.inline_size = Some(size);
+        }
+    }
+    if authored_auto.block_size && block_auto_behavior == AutoSizeBehavior::StretchExplicit {
+        if let Some(size) = stretch.block_size {
+            resolved.block_size = Some(size);
+        }
+    }
+
+    let apply_ratio = |logical_size: LogicalSize<Option<f32>>| {
+        let physical_size = writing_mode.to_physical(logical_size);
+        let ratio_size =
+            physical_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
+        let mut logical_size = writing_mode.to_logical(ratio_size);
+        if unresolved_explicit_inline {
+            logical_size.inline_size = None;
+        }
+        if unresolved_explicit_block {
+            logical_size.block_size = None;
+        }
+        logical_size
+    };
+
+    resolved = apply_ratio(resolved);
+    if authored_auto.inline_size
+        && inline_auto_behavior == AutoSizeBehavior::StretchImplicit
+        && resolved.inline_size.is_none()
+    {
+        resolved.inline_size = stretch.inline_size;
+    }
+    resolved = apply_ratio(resolved);
+    if authored_auto.block_size
+        && block_auto_behavior == AutoSizeBehavior::StretchImplicit
+        && resolved.block_size.is_none()
+    {
+        resolved.block_size = stretch.block_size;
+    }
+
     writing_mode.to_physical(resolved)
 }
 

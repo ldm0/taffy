@@ -8,8 +8,24 @@ fn layout_measured_item_with_parent_alignment(
     justify_items: Option<AlignItems>,
     child_style: Style,
 ) -> Layout {
+    layout_measured_item_with_context(
+        parent_display,
+        align_items,
+        justify_items,
+        child_style,
+        TestNodeContext::fixed(20.0, 10.0),
+    )
+}
+
+fn layout_measured_item_with_context(
+    parent_display: Display,
+    align_items: Option<AlignItems>,
+    justify_items: Option<AlignItems>,
+    child_style: Style,
+    child_context: TestNodeContext,
+) -> Layout {
     let mut tree = new_test_tree();
-    let child = tree.new_leaf_with_context(child_style, TestNodeContext::fixed(20.0, 10.0)).unwrap();
+    let child = tree.new_leaf_with_context(child_style, child_context).unwrap();
     let parent = tree
         .new_with_children(
             Style {
@@ -150,6 +166,61 @@ fn grid_normal_lets_a_preferred_ratio_precede_implicit_stretch() {
 
     assert_eq!(normal.size, Size { width: 40.0, height: 20.0 });
     assert_eq!(stretch.size, Size { width: 100.0, height: 20.0 });
+}
+
+#[test]
+fn grid_explicit_stretch_precedes_the_preferred_ratio_on_each_axis() {
+    let layout = |align_self, justify_self| {
+        layout_measured_item_with_context(
+            Display::Grid,
+            None,
+            None,
+            Style {
+                display: Display::Block,
+                item_is_replaced: true,
+                aspect_ratio: Some(0.5),
+                align_self: Some(align_self),
+                justify_self: Some(justify_self),
+                ..Default::default()
+            },
+            TestNodeContext::aspect_ratio(10.0, 2.0),
+        )
+    };
+
+    assert_eq!(layout(AlignSelf::STRETCH, AlignSelf::STRETCH).size, Size { width: 100.0, height: 80.0 });
+    assert_eq!(layout(AlignSelf::STRETCH, AlignSelf::NORMAL).size, Size { width: 40.0, height: 80.0 });
+    assert_eq!(layout(AlignSelf::NORMAL, AlignSelf::STRETCH).size, Size { width: 100.0, height: 200.0 });
+    assert_eq!(layout(AlignSelf::NORMAL, AlignSelf::NORMAL).size, Size { width: 10.0, height: 20.0 });
+}
+
+#[test]
+fn absolute_grid_explicit_stretch_requires_a_resolved_inset_axis() {
+    let layout = |inset, align_self, justify_self| {
+        layout_measured_item_with_context(
+            Display::Grid,
+            None,
+            None,
+            Style {
+                display: Display::Block,
+                position: Position::Absolute,
+                inset,
+                item_is_replaced: true,
+                aspect_ratio: Some(0.5),
+                align_self: Some(align_self),
+                justify_self: Some(justify_self),
+                ..Default::default()
+            },
+            TestNodeContext::aspect_ratio(10.0, 2.0),
+        )
+    };
+
+    let resolved = Rect::length(0.0);
+    assert_eq!(layout(resolved, AlignSelf::STRETCH, AlignSelf::STRETCH).size, Size { width: 100.0, height: 80.0 });
+    assert_eq!(layout(resolved, AlignSelf::STRETCH, AlignSelf::NORMAL).size, Size { width: 40.0, height: 80.0 });
+    assert_eq!(layout(resolved, AlignSelf::NORMAL, AlignSelf::STRETCH).size, Size { width: 100.0, height: 200.0 });
+    assert_eq!(layout(resolved, AlignSelf::NORMAL, AlignSelf::NORMAL).size, Size { width: 10.0, height: 20.0 });
+
+    assert_eq!(layout(Rect::auto(), AlignSelf::STRETCH, AlignSelf::STRETCH).size, Size { width: 10.0, height: 20.0 });
 }
 
 fn layout_absolute_grid_item(child_style: Style) -> Layout {
