@@ -1,4 +1,5 @@
 use taffy::prelude::*;
+use taffy::Overflow;
 
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
 ///
@@ -53,4 +54,161 @@ fn auto_flex_basis_uses_a_definite_stretched_cross_size_through_aspect_ratio() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
     assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+fn layout_ratio_flex_item_with_content(
+    mut item_style: Style,
+    flex_direction: FlexDirection,
+    mut content_style: Style,
+) -> Size<f32> {
+    let mut tree = TaffyTree::<()>::new();
+    content_style.display = Display::Block;
+    let content = tree.new_leaf(content_style).unwrap();
+    item_style.display = Display::Block;
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction,
+                size: Size { width: Dimension::length(300.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    tree.layout(item).unwrap().size
+}
+
+fn layout_ratio_flex_item_with_direction(item_style: Style, flex_direction: FlexDirection) -> Size<f32> {
+    layout_ratio_flex_item_with_content(
+        item_style,
+        flex_direction,
+        Style { size: Size { width: Dimension::length(100.0), height: Dimension::auto() }, ..Style::default() },
+    )
+}
+
+fn layout_ratio_flex_item(item_style: Style) -> Size<f32> {
+    layout_ratio_flex_item_with_direction(item_style, FlexDirection::Row)
+}
+
+fn ratio_flex_item_style() -> Style {
+    Style {
+        size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+        aspect_ratio: Some(0.5),
+        flex_basis: Dimension::length(0.0),
+        ..Style::default()
+    }
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-002.html.
+#[test]
+fn flex_item_ratio_size_does_not_bypass_its_content_based_automatic_minimum() {
+    let size = layout_ratio_flex_item(ratio_flex_item_style());
+
+    assert_eq!(size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-004.html.
+#[test]
+fn column_flex_item_ratio_size_encompasses_its_intrinsic_block_size() {
+    let size = layout_ratio_flex_item_with_content(
+        Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            aspect_ratio: Some(2.0),
+            flex_basis: Dimension::length(0.0),
+            ..Style::default()
+        },
+        FlexDirection::Column,
+        Style { size: Size { width: Dimension::auto(), height: Dimension::length(100.0) }, ..Style::default() },
+    );
+
+    assert_eq!(size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn flex_automatic_minimum_uses_the_final_stretched_cross_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let item = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            aspect_ratio: Some(0.5),
+            flex_basis: Dimension::length(0.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(300.0), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 50.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-039.html.
+#[test]
+fn transferred_cross_constraints_bound_the_flex_main_size() {
+    let size_from_cross_minimum = layout_ratio_flex_item_with_content(
+        Style {
+            min_size: Size { width: Dimension::length(0.0), height: Dimension::length(50.0) },
+            aspect_ratio: Some(2.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Style::default(),
+    );
+    assert_eq!(size_from_cross_minimum, Size { width: 100.0, height: 50.0 });
+
+    let size_capped_by_cross_maximum = layout_ratio_flex_item_with_content(
+        Style {
+            max_size: Size { width: Dimension::auto(), height: Dimension::length(50.0) },
+            aspect_ratio: Some(2.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Style { size: Size { width: Dimension::length(200.0), height: Dimension::auto() }, ..Style::default() },
+    );
+    assert_eq!(size_capped_by_cross_maximum, Size { width: 100.0, height: 50.0 });
+}
+
+#[test]
+fn flex_automatic_minimum_keeps_specified_and_ratio_dependent_suggestions_distinct() {
+    let mut specified = ratio_flex_item_style();
+    specified.size.width = Dimension::length(40.0);
+    let specified_size = layout_ratio_flex_item(specified);
+    assert_eq!(specified_size, Size { width: 40.0, height: 100.0 });
+
+    let mut capped = ratio_flex_item_style();
+    capped.max_size.width = Dimension::length(80.0);
+    let capped_size = layout_ratio_flex_item(capped);
+    assert_eq!(capped_size, Size { width: 80.0, height: 100.0 });
+
+    let mut replaced = ratio_flex_item_style();
+    replaced.item_is_replaced = true;
+    let replaced_size = layout_ratio_flex_item(replaced);
+    assert_eq!(replaced_size, Size { width: 50.0, height: 100.0 });
+}
+
+#[test]
+fn scrollable_flex_item_uses_zero_automatic_minimum() {
+    let mut scroll_container = ratio_flex_item_style();
+    scroll_container.overflow.x = Overflow::Hidden;
+    let size = layout_ratio_flex_item(scroll_container);
+
+    assert_eq!(size, Size { width: 0.0, height: 100.0 });
+
+    let mut clipped = ratio_flex_item_style();
+    clipped.overflow.x = Overflow::Clip;
+    let clipped_size = layout_ratio_flex_item(clipped);
+    assert_eq!(clipped_size, Size { width: 100.0, height: 100.0 });
 }

@@ -1,6 +1,6 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
+use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, ResolvedAspectRatio, Size, WritingMode};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,9 +54,22 @@ impl ResolvedAxisConstraints {
 }
 
 impl ResolvedSizeConstraints {
+    /// Return source-preserving constraints for one physical axis.
+    #[inline(always)]
+    pub(crate) fn axis_constraints(self, axis: AbsoluteAxis) -> ResolvedAxisConstraints {
+        self.constraint_sources.get_abs(axis)
+    }
+
+    /// Return source-preserving constraints for the logical inline axis.
+    #[inline(always)]
+    pub(crate) fn inline_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
+        self.axis_constraints(writing_mode.inline_axis())
+    }
+
     /// Return source-preserving constraints for the logical block axis.
+    #[inline(always)]
     pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
-        writing_mode.to_logical(self.constraint_sources).block_size
+        self.axis_constraints(writing_mode.block_axis())
     }
 }
 

@@ -157,12 +157,12 @@ struct FlexItem {
 
     /// The base size of this item
     size: Size<Option<f32>>,
-    /// The authored preferred size after aspect-ratio resolution.
+    /// Border-box preferred sizes resolved directly from authored properties.
     ///
-    /// A content-based flex basis ignores this in the flex base-size and
-    /// hypothetical cross-size calculations, but automatic minimum sizing
-    /// still uses it as the specified-size suggestion.
-    authored_size: Size<Option<f32>>,
+    /// Ratio-derived sizes are deliberately excluded: the flex automatic
+    /// minimum treats those as part of its content-size suggestion, not as a
+    /// specified-size suggestion.
+    specified_size_suggestion: Size<Option<f32>>,
     /// The preferred size before transferring a dimension through `aspect-ratio`
     /// or applying a content-box padding/border adjustment.
     ///
@@ -190,6 +190,8 @@ struct FlexItem {
     /// Whether this item's intrinsic contribution depends on the flex
     /// container's block-size.
     depends_on_block_constraints: bool,
+    /// Whether this item uses replaced-element automatic-minimum semantics.
+    is_replaced: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -265,6 +267,38 @@ impl FlexItem {
     fn is_scroll_container(&self) -> bool {
         self.overflow.x.is_scroll_container() | self.overflow.y.is_scroll_container()
     }
+}
+
+/// Resolve the content-based automatic minimum in one flex main axis.
+///
+/// Taffy's content-only measurement supplies the intrinsic contribution. A
+/// definite cross size can additionally provide a main size through the
+/// preferred ratio. Non-replaced boxes encompass the intrinsic contribution;
+/// replaced boxes choose the smaller suggestion. A specified-size suggestion
+/// and the applicable authored/transferred maximum then cap the result.
+/// Keeping these inputs separate prevents a ratio-derived size from being
+/// mistaken for an authored preferred size.
+///
+/// This matches Blink's split between `MinMaxSizesFunc(SizeType::kIntrinsic)`
+/// in an inline main axis and `BlockSizeFunc(SizeType::kContent)` in a block
+/// main axis.
+/// <https://www.w3.org/TR/css-flexbox-1/#min-size-auto>
+#[inline(always)]
+fn resolve_flex_automatic_minimum(
+    intrinsic_size_suggestion: f32,
+    specified_size_suggestion: Option<f32>,
+    ratio_dependent_size_suggestion: Option<f32>,
+    maximum_size: Option<f32>,
+    is_replaced: bool,
+    padding_border_sum: f32,
+) -> f32 {
+    let content_size_suggestion = match ratio_dependent_size_suggestion {
+        Some(ratio_dependent) if is_replaced => intrinsic_size_suggestion.min(ratio_dependent),
+        Some(ratio_dependent) => intrinsic_size_suggestion.max(ratio_dependent),
+        None => intrinsic_size_suggestion,
+    };
+
+    content_size_suggestion.maybe_min(specified_size_suggestion).maybe_min(maximum_size).max(padding_border_sum)
 }
 
 /// A line of [`FlexItem`] used for intermediate computation
@@ -907,6 +941,7 @@ fn generate_anonymous_flex_items(
                 constants.dir.cross_axis(),
             );
             let overflow = child_style.overflow();
+            let is_replaced = child_style.is_compressible_replaced();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
             drop(child_style);
@@ -960,9 +995,7 @@ fn generate_anonymous_flex_items(
             min_size.width = min_size.width.or(intrinsic.min);
             max_size.width = max_size.width.or(intrinsic.max);
             depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
-            let authored_size = untransferred_size
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
+            let specified_size_suggestion = untransferred_size.maybe_add(box_sizing_adjustment);
             let constraint_input = SizeConstraintInput {
                 size,
                 min_size,
@@ -986,7 +1019,7 @@ fn generate_anonymous_flex_items(
                 node: child,
                 order: index as u32,
                 size,
-                authored_size,
+                specified_size_suggestion,
                 untransferred_size,
                 min_size: constraints_without_transfer.min_size,
                 max_size: constraints_without_transfer.max_size,
@@ -996,6 +1029,7 @@ fn generate_anonymous_flex_items(
                 box_sizing,
                 used_flex_basis,
                 depends_on_block_constraints,
+                is_replaced,
 
                 inset,
                 margin,
@@ -1157,17 +1191,18 @@ fn determine_flex_base_size(
             }
             ckd
         };
+        // This must be derived after cross-axis min/max and stretch sizing.
+        // Storing it while the item is generated would retain a provisional
+        // cross size and make the automatic minimum depend on call order.
+        let ratio_resolved_size = child_known_dimensions.maybe_apply_aspect_ratio_with_box_sizing(
+            aspect_ratio,
+            BoxSizing::BorderBox,
+            padding_border,
+        );
+        let ratio_dependent_main_size = ratio_resolved_size.main(dir);
 
-        let content_ratio_size = if matches!(used_flex_basis, UsedFlexBasis::Content) {
-            child_known_dimensions
-                .maybe_sub(box_sizing_adjustment)
-                .maybe_max(Size::ZERO)
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, child.box_sizing, padding_border)
-                .maybe_add(box_sizing_adjustment)
-                .main(dir)
-        } else {
-            None
-        };
+        let content_ratio_size =
+            if matches!(used_flex_basis, UsedFlexBasis::Content) { ratio_dependent_main_size } else { None };
 
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
@@ -1340,10 +1375,14 @@ fn determine_flex_base_size(
 
             // 4.5. Automatic Minimum Size of Flex Items
             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
-            let clamped_min_content_size = min_content_main_size
-                .maybe_min(child.authored_size.main(dir))
-                .maybe_min(max_size_with_transfer.main(dir));
-            clamped_min_content_size.maybe_max(padding_border_axes_sums.main(dir))
+            resolve_flex_automatic_minimum(
+                min_content_main_size,
+                child.specified_size_suggestion.main(dir),
+                ratio_dependent_main_size,
+                max_size_with_transfer.main(dir),
+                child.is_replaced,
+                padding_border_axes_sums.main(dir).unwrap_or(0.0),
+            )
         });
 
         // Sizes transferred through the aspect ratio clamp the hypothetical main size,

@@ -1,6 +1,8 @@
 use super::test_tree::{TestNode, TestTree};
 use taffy::prelude::*;
-use taffy::ResolvedAspectRatio;
+#[cfg(feature = "float_layout")]
+use taffy::Float;
+use taffy::{Overflow, ResolvedAspectRatio, WritingMode};
 
 #[test]
 fn resolved_aspect_ratio_rejects_invalid_values() {
@@ -47,4 +49,137 @@ fn resolved_aspect_ratio_sizing_box_flows_through_block_flex_and_grid_items() {
         assert_eq!(tree.layout(1).size, Size { width: 100.0, height: 60.0 }, "{display:?} content-box ratio");
         assert_eq!(tree.layout(2).size, Size { width: 100.0, height: 50.0 }, "{display:?} border-box ratio");
     }
+}
+
+fn layout_block_ratio_item(writing_mode: WritingMode, mut item_style: Style, mut content_style: Style) -> Size<f32> {
+    let mut tree = TaffyTree::<()>::new();
+    item_style.display = Display::Block;
+    content_style.display = Display::Block;
+    let content = tree.new_leaf(content_style).unwrap();
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size { width: length(300.0), height: auto() }, ..Style::default() },
+            &[item],
+        )
+        .unwrap();
+    tree.set_writing_mode(content, writing_mode).unwrap();
+    tree.set_writing_mode(item, writing_mode).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    tree.layout(item).unwrap().size
+}
+
+fn horizontal_ratio_item_style() -> Style {
+    Style { size: Size { width: auto(), height: length(100.0) }, aspect_ratio: Some(0.5), ..Style::default() }
+}
+
+fn horizontal_ratio_content_style() -> Style {
+    Style { size: Size { width: length(100.0), height: auto() }, ..Style::default() }
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/block-aspect-ratio-015.html.
+#[test]
+fn ratio_dependent_inline_size_observes_the_content_based_automatic_minimum() {
+    let size = layout_block_ratio_item(
+        WritingMode::HorizontalTb,
+        horizontal_ratio_item_style(),
+        horizontal_ratio_content_style(),
+    );
+
+    assert_eq!(size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn ratio_dependent_automatic_minimum_contributes_to_a_content_sized_parent() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: length(100.0), height: auto() },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: auto(), height: length(100.0) },
+                aspect_ratio: Some(0.5),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree.new_with_children(Style { display: Display::Block, ..Style::default() }, &[item]).unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(container).unwrap().size.width, 100.0);
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// The automatic-minimum rule is logical-axis based, not width-specific.
+/// This is the vertical counterpart of WPT block-aspect-ratio-015.
+#[test]
+fn vertical_ratio_dependent_inline_size_observes_the_content_based_automatic_minimum() {
+    let size = layout_block_ratio_item(
+        WritingMode::VerticalLr,
+        Style { size: Size { width: length(100.0), height: auto() }, aspect_ratio: Some(2.0), ..Style::default() },
+        Style { size: Size { width: auto(), height: length(100.0) }, ..Style::default() },
+    );
+
+    assert_eq!(size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn authored_inline_constraints_control_the_ratio_dependent_automatic_minimum() {
+    let mut capped = horizontal_ratio_item_style();
+    capped.max_size.width = length(80.0);
+    let capped_size = layout_block_ratio_item(WritingMode::HorizontalTb, capped, horizontal_ratio_content_style());
+    assert_eq!(capped_size, Size { width: 80.0, height: 100.0 });
+
+    let mut disabled = horizontal_ratio_item_style();
+    disabled.min_size.width = length(0.0);
+    let disabled_size = layout_block_ratio_item(WritingMode::HorizontalTb, disabled, horizontal_ratio_content_style());
+    assert_eq!(disabled_size, Size { width: 50.0, height: 100.0 });
+
+    let transferred_maximum = Style {
+        size: Size { width: auto(), height: length(200.0) },
+        max_size: Size { width: auto(), height: length(100.0) },
+        aspect_ratio: Some(0.5),
+        ..Style::default()
+    };
+    let transferred_maximum_size =
+        layout_block_ratio_item(WritingMode::HorizontalTb, transferred_maximum, horizontal_ratio_content_style());
+    assert_eq!(transferred_maximum_size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn scroll_and_replaced_boxes_bypass_the_non_replaced_automatic_minimum() {
+    let mut scroll_container = horizontal_ratio_item_style();
+    scroll_container.overflow.x = Overflow::Hidden;
+    let scroll_size =
+        layout_block_ratio_item(WritingMode::HorizontalTb, scroll_container, horizontal_ratio_content_style());
+    assert_eq!(scroll_size, Size { width: 50.0, height: 100.0 });
+
+    let mut replaced = horizontal_ratio_item_style();
+    replaced.item_is_replaced = true;
+    let replaced_size = layout_block_ratio_item(WritingMode::HorizontalTb, replaced, horizontal_ratio_content_style());
+    assert_eq!(replaced_size, Size { width: 50.0, height: 100.0 });
+
+    let mut clipped = horizontal_ratio_item_style();
+    clipped.overflow.x = Overflow::Clip;
+    let clipped_size = layout_block_ratio_item(WritingMode::HorizontalTb, clipped, horizontal_ratio_content_style());
+    assert_eq!(clipped_size, Size { width: 100.0, height: 100.0 });
+}
+
+#[cfg(feature = "float_layout")]
+#[test]
+fn floated_ratio_dependent_box_observes_the_same_automatic_minimum() {
+    let mut floated = horizontal_ratio_item_style();
+    floated.float = Float::Left;
+    let size = layout_block_ratio_item(WritingMode::HorizontalTb, floated, horizontal_ratio_content_style());
+
+    assert_eq!(size, Size { width: 100.0, height: 100.0 });
 }

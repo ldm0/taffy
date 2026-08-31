@@ -17,7 +17,7 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, ResolvedAspectRatio};
 
 /// Measure one intrinsic contribution for a node in a physical axis.
-fn measure_intrinsic_axis(
+pub(crate) fn measure_intrinsic_axis(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     mut inputs: ChildLayoutInput,
@@ -131,6 +131,42 @@ pub(crate) struct IntrinsicSizeConstraints {
     /// Whether any measured contribution changes with the containing block's
     /// block-size.
     pub depends_on_block_constraints: bool,
+}
+
+/// A min-intrinsic automatic minimum activated by a ratio-derived preferred
+/// size in one axis.
+///
+/// Keeping the source-preserving constraints inside this type makes it
+/// impossible for a formatting context to apply the minimum with the wrong
+/// authored/transferred maximum ordering.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RatioDependentAutomaticMinimum {
+    /// Authored and transferred min/max sources retained until the intrinsic
+    /// contribution is known.
+    constraint_sources: ResolvedAxisConstraints,
+}
+
+impl RatioDependentAutomaticMinimum {
+    /// Capture the automatic-minimum state while authored style and ratio
+    /// provenance are both available.
+    #[inline(always)]
+    pub(crate) fn new(
+        constraint_sources: ResolvedAxisConstraints,
+        preferred_size_from_ratio: bool,
+        authored_min_size: Dimension,
+        is_scroll_container: bool,
+        is_replaced: bool,
+    ) -> Option<Self> {
+        (preferred_size_from_ratio && authored_min_size.is_auto() && !is_scroll_container && !is_replaced)
+            .then_some(Self { constraint_sources })
+    }
+
+    /// Merge a measured min-intrinsic contribution with authored and
+    /// ratio-transferred constraints in CSS sizing order.
+    #[inline(always)]
+    pub(crate) fn resolve(self, min_intrinsic_size: f32) -> (Option<f32>, Option<f32>) {
+        self.constraint_sources.resolve(None, None, Some(min_intrinsic_size))
+    }
 }
 
 /// Authored constraints and available space for one intrinsic sizing axis.
