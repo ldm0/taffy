@@ -12,6 +12,7 @@ mod hand_written {
     mod flex_writing_modes;
     mod floats;
     mod grid_detailed_layout_info;
+    mod grid_fit_content_growth_limits;
     mod intrinsic_width;
     mod logical_constraint_space;
     mod measure;
