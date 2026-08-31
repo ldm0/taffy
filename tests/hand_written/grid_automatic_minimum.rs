@@ -1,6 +1,6 @@
 use taffy::prelude::*;
 use taffy::tree::DetailedLayoutInfo;
-use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
 #[derive(Clone, Copy)]
 enum TrackScenario {
@@ -186,4 +186,52 @@ fn content_box_minimum_contribution_includes_padding_and_border() {
 
     assert_eq!(track, 116.0);
     assert_eq!(item.size.width, 116.0);
+}
+
+fn intrinsic_minimum_contribution(width: Dimension, min_width: Dimension) -> f32 {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                box_sizing: BoxSizing::ContentBox,
+                size: Size { width, height: length(10.0) },
+                min_size: Size { width: min_width, height: auto() },
+                border: Rect { left: length(5.0), right: length(5.0), top: length(0.0), bottom: length(0.0) },
+                ..Default::default()
+            },
+            TestNodeContext::ahem_text("aaaa\u{200b}aaaa".to_owned(), WritingMode::Horizontal),
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(10.0, 10.0),
+                grid_template_columns: vec![minmax(auto(), auto())],
+                grid_template_rows: vec![length(10.0)],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    info.columns.sizes[0]
+}
+
+#[test]
+fn max_content_preferred_size_uses_the_max_content_minimum_contribution() {
+    assert_eq!(intrinsic_minimum_contribution(Dimension::min_content(), auto()), 50.0);
+    assert_eq!(intrinsic_minimum_contribution(Dimension::max_content(), auto()), 90.0);
+}
+
+#[test]
+fn intrinsic_minimum_sizes_select_their_content_contribution() {
+    assert_eq!(intrinsic_minimum_contribution(auto(), Dimension::min_content()), 50.0);
+    assert_eq!(intrinsic_minimum_contribution(auto(), Dimension::max_content()), 90.0);
 }

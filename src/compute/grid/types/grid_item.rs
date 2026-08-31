@@ -2,6 +2,7 @@
 use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::common::intrinsic_size::resolve_intrinsic_axis_size;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
@@ -25,8 +26,10 @@ enum MinimumContributionSource {
     /// preferred size.
     UsedMinimum,
     /// Measure the ordinary min-content contribution for a definite or
-    /// intrinsic preferred size.
+    /// min-content preferred size.
     MinContent,
+    /// Measure the max-content contribution for a max-content preferred size.
+    MaxContent,
 }
 
 /// Represents a single grid item
@@ -235,8 +238,50 @@ impl GridItem {
 
         if preferred.is_auto() || depends_on_containing_block {
             MinimumContributionSource::UsedMinimum
+        } else if preferred.is_max_content() {
+            MinimumContributionSource::MaxContent
         } else {
             MinimumContributionSource::MinContent
+        }
+    }
+
+    /// Resolve an authored intrinsic `min-size` as the border-box value used
+    /// by Grid's minimum-contribution algorithm.
+    fn resolve_intrinsic_minimum_size(
+        &mut self,
+        tree: &mut impl LayoutPartialTree,
+        physical_axis: crate::AbsoluteAxis,
+        grid_area_size: Size<Option<f32>>,
+    ) -> Size<Option<f32>> {
+        let authored_minimum = self.min_size.get_abs(physical_axis);
+        if !authored_minimum.is_intrinsic() && !authored_minimum.is_stretch() {
+            return Size::NONE;
+        }
+
+        let available_space =
+            grid_area_size.map(|size| size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent));
+        let known_dimensions = self.known_dimensions(tree, grid_area_size);
+        let intrinsic_minimum = resolve_intrinsic_axis_size(
+            tree,
+            self.node,
+            ChildLayoutInput::new(
+                known_dimensions,
+                grid_area_size,
+                self.parent_writing_mode,
+                available_space,
+                SizingMode::ContentSize,
+                Line::FALSE,
+            )
+            .without_orthogonal_fallback(),
+            authored_minimum,
+            available_space.get_abs(physical_axis),
+            physical_axis,
+        );
+        self.depends_on_block_constraints |= intrinsic_minimum.depends_on_block_constraints;
+
+        match physical_axis {
+            crate::AbsoluteAxis::Horizontal => Size { width: intrinsic_minimum.value, height: None },
+            crate::AbsoluteAxis::Vertical => Size { width: None, height: intrinsic_minimum.value },
         }
     }
 
@@ -637,6 +682,9 @@ impl GridItem {
             MinimumContributionSource::MinContent => {
                 return self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
             }
+            MinimumContributionSource::MaxContent => {
+                return self.max_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
+            }
             MinimumContributionSource::UsedMinimum => {}
         }
 
@@ -650,15 +698,19 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+        let mut resolved_min_size = self
+            .min_size
+            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
+            .maybe_add(box_sizing_adjustment);
+        resolved_min_size =
+            resolved_min_size.or(self.resolve_intrinsic_minimum_size(tree, physical_axis, grid_area_size));
+
         let resolved = resolve_size_constraints(SizeConstraintInput {
             size: self
                 .size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment),
-            min_size: self
-                .min_size
-                .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-                .maybe_add(box_sizing_adjustment),
+            min_size: resolved_min_size,
             max_size: self
                 .max_size
                 .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))

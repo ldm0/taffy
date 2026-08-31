@@ -166,6 +166,22 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     axis: AbsoluteAxis,
 ) -> IntrinsicAxisValue {
     debug_assert_eq!(axis, tree.get_writing_mode(node_id).inline_axis());
+    resolve_intrinsic_axis_size(tree, node_id, inputs, value, available_space, axis)
+}
+
+/// Resolve one intrinsic sizing property at a formatting-context-owned axis.
+///
+/// This lower-level entry point is used when an algorithm needs the property
+/// value itself, rather than a preferred size already clamped by min/max
+/// constraints. The result is a border-box size.
+pub(crate) fn resolve_intrinsic_axis_size(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: ChildLayoutInput,
+    value: Dimension,
+    available_space: AvailableSpace,
+    axis: AbsoluteAxis,
+) -> IntrinsicAxisValue {
     let inputs = resolve_intrinsic_measurement_input(tree, node_id, inputs);
     resolve_intrinsic_axis_value(
         tree,
