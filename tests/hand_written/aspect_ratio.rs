@@ -2,7 +2,7 @@ use super::test_tree::{TestNode, TestTree};
 use taffy::prelude::*;
 #[cfg(feature = "float_layout")]
 use taffy::Float;
-use taffy::{Overflow, ResolvedAspectRatio, WritingMode};
+use taffy::{Overflow, Point, ResolvedAspectRatio, WritingMode};
 
 #[test]
 fn resolved_aspect_ratio_rejects_invalid_values() {
@@ -117,6 +117,41 @@ fn ratio_dependent_automatic_minimum_contributes_to_a_content_sized_parent() {
 
     assert_eq!(tree.layout(container).unwrap().size.width, 100.0);
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+/// Regression for WPT css/css-grid/alignment/grid-content-distribution-029.html.
+#[test]
+fn grid_ratio_block_size_observes_its_content_based_automatic_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let item = tree
+        .new_leaf(Style { size: Size { width: length(100.0), height: length(100.0) }, ..Style::default() })
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                max_size: Size { width: length(50.0), height: auto() },
+                aspect_ratio: Some(2.0),
+                align_content: Some(AlignContent::CENTER),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size { width: length(800.0), height: auto() }, ..Style::default() },
+            &[grid],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 50.0, height: 100.0 });
+    assert_eq!(tree.layout(item).unwrap().location, Point::ZERO);
 }
 
 /// The automatic-minimum rule is logical-axis based, not width-specific.

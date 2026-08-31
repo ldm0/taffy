@@ -429,22 +429,23 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
 
     // 6. Compute container size
-    let resolved_style_size = known_dimensions.or(preferred_size);
     let initial_column_container_size =
         column_track_sizing_result.constrained_available_space.unwrap_or(initial_column_sum);
     let initial_row_container_size = row_track_sizing_result.constrained_available_space.unwrap_or(initial_row_sum);
-    let mut container_border_box = Size {
-        width: resolved_style_size
-            .get(AbstractAxis::Inline)
-            .unwrap_or_else(|| initial_column_container_size + content_box_inset.horizontal_axis_sum())
-            .maybe_clamp(min_size.width, max_size.width)
-            .max(padding_border_size.width),
-        height: resolved_style_size
-            .get(AbstractAxis::Block)
-            .unwrap_or_else(|| initial_row_container_size + content_box_inset.vertical_axis_sum())
-            .maybe_clamp(min_size.height, max_size.height)
-            .max(padding_border_size.height),
+    let resolve_container_border_box = |content_based_size: Size<f32>| {
+        resolve_used_size(
+            known_dimensions,
+            preferred_size.or(content_based_size.map(Some)),
+            min_size,
+            max_size,
+            padding_border_size,
+        )
+        .unwrap_or(padding_border_size)
     };
+    let mut container_border_box = resolve_container_border_box(Size {
+        width: initial_column_container_size + content_box_inset.horizontal_axis_sum(),
+        height: initial_row_container_size + content_box_inset.vertical_axis_sum(),
+    });
     let mut container_content_box = Size {
         width: f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum()),
         height: f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum()),
@@ -575,23 +576,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     {
         let final_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
         let final_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
+        let final_container_border_box = resolve_container_border_box(Size {
+            width: final_column_sum + content_box_inset.horizontal_axis_sum(),
+            height: final_row_sum + content_box_inset.vertical_axis_sum(),
+        });
 
         if intrinsic_column_contribution_changed && !has_percentage_column {
-            container_border_box.width = resolved_style_size
-                .get(AbstractAxis::Inline)
-                .unwrap_or_else(|| final_column_sum + content_box_inset.horizontal_axis_sum())
-                .maybe_clamp(min_size.width, max_size.width)
-                .max(padding_border_size.width);
+            container_border_box.width = final_container_border_box.width;
             container_content_box.width =
                 f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum());
         }
 
         if intrinsic_row_contribution_changed && !has_percentage_row {
-            container_border_box.height = resolved_style_size
-                .get(AbstractAxis::Block)
-                .unwrap_or_else(|| final_row_sum + content_box_inset.vertical_axis_sum())
-                .maybe_clamp(min_size.height, max_size.height)
-                .max(padding_border_size.height);
+            container_border_box.height = final_container_border_box.height;
             container_content_box.height =
                 f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum());
         }
