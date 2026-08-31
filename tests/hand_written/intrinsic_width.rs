@@ -552,6 +552,136 @@ fn floated_intrinsic_and_stretch_widths_consume_margins_once() {
     assert_eq!(floated_keyword_width(Dimension::stretch()), 175.0);
 }
 
+fn percentage_block_chain(tree: &mut TaffyTree<()>) -> (NodeId, NodeId) {
+    let ratio_child = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        })
+        .unwrap();
+    let percentage_parent = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+                ..Style::default()
+            },
+            &[ratio_child],
+        )
+        .unwrap();
+    (percentage_parent, ratio_child)
+}
+
+fn containing_formatting_context(tree: &mut TaffyTree<()>, display: Display, child: NodeId) -> NodeId {
+    tree.new_with_children(
+        Style {
+            display,
+            size: Size { width: Dimension::length(640.0), height: Dimension::auto() },
+            ..Style::default()
+        },
+        &[child],
+    )
+    .unwrap()
+}
+
+fn intrinsic_percentage_fixture(
+    container_display: Display,
+    target_position: Position,
+    target_height: f32,
+) -> (TaffyTree<()>, NodeId, NodeId, NodeId, NodeId) {
+    let mut tree = TaffyTree::new();
+    tree.disable_rounding();
+    let (percentage_parent, ratio_child) = percentage_block_chain(&mut tree);
+    let target = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                position: target_position,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(target_height) },
+                ..Style::default()
+            },
+            &[percentage_parent],
+        )
+        .unwrap();
+    let root = containing_formatting_context(&mut tree, container_display, target);
+    (tree, root, target, percentage_parent, ratio_child)
+}
+
+/// Regression for WPT `css/css-sizing/aspect-ratio/intrinsic-size-006.html`.
+#[test]
+fn intrinsic_width_measurement_exposes_definite_block_geometry_to_descendant_percentages() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let (mut tree, root, target, percentage_parent, ratio_child) =
+            intrinsic_percentage_fixture(display, Position::Relative, 100.0);
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(target).unwrap().size, Size { width: 100.0, height: 100.0 }, "{display:?} target");
+        assert_eq!(
+            tree.layout(percentage_parent).unwrap().size,
+            Size { width: 100.0, height: 100.0 },
+            "{display:?} percentage parent",
+        );
+        assert_eq!(
+            tree.layout(ratio_child).unwrap().size,
+            Size { width: 100.0, height: 100.0 },
+            "{display:?} ratio child",
+        );
+    }
+}
+
+#[test]
+fn absolute_intrinsic_width_measurement_exposes_authored_block_geometry() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let (mut tree, root, target, percentage_parent, ratio_child) =
+            intrinsic_percentage_fixture(display, Position::Absolute, 100.0);
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(target).unwrap().size, Size { width: 100.0, height: 100.0 }, "{display:?} target");
+        assert_eq!(
+            tree.layout(percentage_parent).unwrap().size,
+            Size { width: 100.0, height: 100.0 },
+            "{display:?} percentage parent",
+        );
+        assert_eq!(
+            tree.layout(ratio_child).unwrap().size,
+            Size { width: 100.0, height: 100.0 },
+            "{display:?} ratio child",
+        );
+    }
+}
+
+/// Regression for WPT `css/css-sizing/aspect-ratio/intrinsic-size-008.html`.
+#[test]
+fn intrinsic_width_dependency_remeasures_after_definite_block_size_changes() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let (mut tree, root, target, _, _) = intrinsic_percentage_fixture(display, Position::Relative, 200.0);
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        assert_eq!(
+            tree.layout(target).unwrap().size,
+            Size { width: 200.0, height: 200.0 },
+            "{display:?} initial layout",
+        );
+
+        tree.set_style(
+            target,
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::min_content(), height: Dimension::length(100.0) },
+                ..Style::default()
+            },
+        )
+        .unwrap();
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(target).unwrap().size, Size { width: 100.0, height: 100.0 }, "{display:?} relayout",);
+    }
+}
+
 #[cfg(feature = "parse")]
 #[test]
 fn intrinsic_dimension_keywords_parse_without_colliding_with_grid_fit_content() {

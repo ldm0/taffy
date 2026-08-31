@@ -27,10 +27,12 @@ pub(crate) fn measure_intrinsic_axis(
     match axis {
         AbsoluteAxis::Horizontal => {
             inputs.known_dimensions.width = None;
+            inputs.definite_dimensions.width = None;
             inputs.available_space.width = constraint;
         }
         AbsoluteAxis::Vertical => {
             inputs.known_dimensions.height = None;
+            inputs.definite_dimensions.height = None;
             inputs.available_space.height = constraint;
         }
     }
@@ -164,6 +166,7 @@ pub(crate) fn resolve_intrinsic_preferred_axis_size(
     axis: AbsoluteAxis,
 ) -> IntrinsicAxisValue {
     debug_assert_eq!(axis, tree.get_writing_mode(node_id).inline_axis());
+    let inputs = resolve_intrinsic_measurement_input(tree, node_id, inputs);
     resolve_intrinsic_axis_value(
         tree,
         node_id,
@@ -460,9 +463,12 @@ pub(crate) fn measure_content_based_block_size(
 
     let writing_mode = tree.get_writing_mode(node_id);
     let mut known_logical_size = writing_mode.to_logical(child_input.known_dimensions);
+    let mut definite_logical_size = writing_mode.to_logical(child_input.definite_dimensions);
     let outer_inline_size = known_logical_size.inline_size;
     known_logical_size.block_size = None;
+    definite_logical_size.block_size = None;
     child_input.known_dimensions = writing_mode.to_physical(known_logical_size);
+    child_input.definite_dimensions = writing_mode.to_physical(definite_logical_size);
     child_input.sizing_mode = SizingMode::ContentSize;
     let measured =
         tree.measure_child_size_with_metadata(node_id, child_input, RequestedAxis::from(writing_mode.block_axis()));
@@ -492,6 +498,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         SizingMode::ContentSize,
         inputs.vertical_margins_are_collapsible,
     )
+    .with_definite_dimensions(inputs.definite_dimensions)
     .with_inline_auto_behavior(inputs.inline_auto_behavior)
     .with_block_auto_behavior(inputs.block_auto_behavior)
     .with_orthogonal_fallback(inputs.orthogonal_fallback);
@@ -519,6 +526,7 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     inputs: ChildLayoutInput,
     axis_input: IntrinsicAxisInput,
 ) -> IntrinsicSizeConstraints {
+    let inputs = resolve_intrinsic_measurement_input(tree, node_id, inputs);
     let IntrinsicAxisInput { preferred, min, max, available_space, axis, ratio_content_contribution } = axis_input;
     IntrinsicSizeConstraints {
         preferred: resolve_intrinsic_axis_value(
@@ -579,6 +587,90 @@ pub struct ResolvedIntrinsicWidthInputs {
     /// Whether resolving the preferred inline size synthesized it from the
     /// block axis through the node's preferred aspect ratio.
     pub applied_aspect_ratio: bool,
+}
+
+/// Initial border-box geometry available while measuring an intrinsic width.
+///
+/// `known_dimensions` controls the node's own measurement. The narrower
+/// `definite_dimensions` subset is the only geometry descendants may use to
+/// resolve percentages. Keeping both values together mirrors Blink's initial
+/// fragment geometry plus percentage-resolution constraint space, and avoids
+/// turning a merely known parent-imposed size into a definite CSS size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IntrinsicMeasurementGeometry {
+    /// Used border-box dimensions fixed while content is measured.
+    known_dimensions: Size<Option<f32>>,
+    /// Definite subset exposed to descendant percentage resolution.
+    definite_dimensions: Size<Option<f32>>,
+}
+
+impl IntrinsicMeasurementGeometry {
+    /// Combine parent-imposed geometry with directly resolved authored sizes.
+    ///
+    /// A parent-known axis overrides the authored preferred size. Its
+    /// definiteness must therefore come from the parent as well; otherwise a
+    /// directly authored length could incorrectly bless an overridden used
+    /// size as a descendant percentage basis.
+    #[inline(always)]
+    fn resolve(
+        parent_known: Size<Option<f32>>,
+        parent_definite: Size<Option<f32>>,
+        own_definite: Size<Option<f32>>,
+    ) -> Self {
+        let known_dimensions = parent_known.or(own_definite);
+        let definite_source = Size {
+            width: if parent_known.width.is_some() {
+                parent_definite.width
+            } else {
+                parent_definite.width.or(own_definite.width)
+            },
+            height: if parent_known.height.is_some() {
+                parent_definite.height
+            } else {
+                parent_definite.height.or(own_definite.height)
+            },
+        };
+        let definite_dimensions = Size {
+            width: definite_source.width.and(known_dimensions.width),
+            height: definite_source.height.and(known_dimensions.height),
+        };
+        Self { known_dimensions, definite_dimensions }
+    }
+}
+
+/// Build the child-owned initial geometry for an intrinsic contribution.
+///
+/// Formatting contexts own available space, alignment and any dimensions they
+/// fix explicitly. The measured node still owns direct authored sizing in the
+/// perpendicular axis. Resolve that geometry once at the intrinsic sizing
+/// boundary instead of requiring block, flex and grid to reconstruct it at
+/// each call site.
+fn resolve_intrinsic_measurement_input(
+    tree: &impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    mut inputs: ChildLayoutInput,
+) -> ChildLayoutInput {
+    let percentage_basis = inputs.parent_writing_mode.to_logical(inputs.parent_size).inline_size;
+    let own_definite_dimensions = {
+        let style = tree.get_core_container_style(node_id);
+        let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+        let box_sizing_adjustment =
+            if style.box_sizing() == BoxSizing::ContentBox { (padding + border).sum_axes() } else { Size::ZERO };
+        let resolve = |size: Size<Dimension>| {
+            size.maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
+                .maybe_add(box_sizing_adjustment)
+        };
+        resolve(style.size()).maybe_clamp(resolve(style.min_size()), resolve(style.max_size()))
+    };
+    let geometry = IntrinsicMeasurementGeometry::resolve(
+        inputs.known_dimensions,
+        inputs.definite_dimensions,
+        own_definite_dimensions,
+    );
+    inputs.known_dimensions = geometry.known_dimensions;
+    inputs.definite_dimensions = geometry.definite_dimensions;
+    inputs
 }
 
 /// Resolve intrinsic inline-size keywords while retaining dependency
@@ -679,5 +771,47 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
         inputs,
         depends_on_block_constraints: intrinsic.depends_on_block_constraints(),
         applied_aspect_ratio,
+    }
+}
+
+#[cfg(test)]
+mod intrinsic_measurement_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn authored_geometry_is_definite_when_the_parent_does_not_override_it() {
+        let geometry =
+            IntrinsicMeasurementGeometry::resolve(Size::NONE, Size::NONE, Size { width: None, height: Some(100.0) });
+
+        assert_eq!(geometry.known_dimensions, Size { width: None, height: Some(100.0) });
+        assert_eq!(geometry.definite_dimensions, Size { width: None, height: Some(100.0) });
+    }
+
+    #[test]
+    fn parent_override_exclusively_owns_definiteness() {
+        let indefinite_override = IntrinsicMeasurementGeometry::resolve(
+            Size { width: None, height: Some(80.0) },
+            Size::NONE,
+            Size { width: None, height: Some(100.0) },
+        );
+        assert_eq!(indefinite_override.known_dimensions.height, Some(80.0));
+        assert_eq!(indefinite_override.definite_dimensions.height, None);
+
+        let definite_override = IntrinsicMeasurementGeometry::resolve(
+            Size { width: None, height: Some(80.0) },
+            Size { width: None, height: Some(80.0) },
+            Size { width: None, height: Some(100.0) },
+        );
+        assert_eq!(definite_override.known_dimensions.height, Some(80.0));
+        assert_eq!(definite_override.definite_dimensions.height, Some(80.0));
+    }
+
+    #[test]
+    fn definite_geometry_is_always_a_subset_of_known_geometry() {
+        let geometry =
+            IntrinsicMeasurementGeometry::resolve(Size::NONE, Size { width: Some(75.0), height: None }, Size::NONE);
+
+        assert_eq!(geometry.known_dimensions, Size::NONE);
+        assert_eq!(geometry.definite_dimensions, Size::NONE);
     }
 }

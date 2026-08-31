@@ -350,6 +350,13 @@ impl LayoutInput {
 pub(crate) struct ChildLayoutInput {
     /// Child border-box dimensions that are already known.
     pub known_dimensions: Size<Option<f32>>,
+    /// Known child dimensions that are definite for descendant percentage resolution.
+    ///
+    /// This defaults to `known_dimensions`, because most parent formatting
+    /// algorithms pass sizes they have fixed themselves. Callers that know a
+    /// used size without making it definite must override this field through
+    /// [`Self::with_definite_dimensions`].
+    pub definite_dimensions: Size<Option<f32>>,
     /// Physical containing-block dimensions used to resolve child percentages.
     pub parent_size: Size<Option<f32>>,
     /// Writing mode that establishes the containing block's logical axes.
@@ -381,6 +388,7 @@ impl ChildLayoutInput {
     ) -> Self {
         Self {
             known_dimensions,
+            definite_dimensions: known_dimensions,
             parent_size,
             parent_writing_mode,
             available_space,
@@ -390,6 +398,13 @@ impl ChildLayoutInput {
             orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
             vertical_margins_are_collapsible,
         }
+    }
+
+    /// Set which known child dimensions descendants may use as percentage bases.
+    #[inline(always)]
+    pub const fn with_definite_dimensions(mut self, dimensions: Size<Option<f32>>) -> Self {
+        self.definite_dimensions = dimensions;
+        self
     }
 
     /// Set the containing formatting context's inline-axis auto behavior.
@@ -433,7 +448,7 @@ impl ChildLayoutInput {
             block_auto_behavior: self.block_auto_behavior,
             orthogonal_fallback: self.orthogonal_fallback,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
@@ -453,7 +468,7 @@ impl ChildLayoutInput {
             block_auto_behavior: self.block_auto_behavior,
             orthogonal_fallback: self.orthogonal_fallback,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
@@ -557,6 +572,29 @@ impl ConstraintSpace {
 #[cfg(test)]
 mod constraint_space_tests {
     use super::*;
+
+    #[test]
+    fn child_input_preserves_known_and_definite_dimensions_independently() {
+        let known_dimensions = Size { width: Some(120.0), height: Some(80.0) };
+        let definite_dimensions = Size { width: Some(120.0), height: None };
+        let child_input = ChildLayoutInput::new(
+            known_dimensions,
+            Size { width: Some(300.0), height: None },
+            WritingMode::HorizontalTb,
+            Size { width: AvailableSpace::Definite(120.0), height: AvailableSpace::MaxContent },
+            SizingMode::InherentSize,
+            Line::FALSE,
+        )
+        .with_definite_dimensions(definite_dimensions);
+
+        let measurement = child_input.into_measurement(RequestedAxis::Vertical);
+        assert_eq!(measurement.known_dimensions, known_dimensions);
+        assert_eq!(measurement.definite_dimensions, definite_dimensions);
+
+        let layout = child_input.into_layout();
+        assert_eq!(layout.known_dimensions, known_dimensions);
+        assert_eq!(layout.definite_dimensions, definite_dimensions);
+    }
 
     #[test]
     fn orthogonal_space_recovers_the_containing_blocks_inline_percentage_basis() {

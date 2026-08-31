@@ -2479,7 +2479,7 @@ fn perform_absolute_layout_on_absolute_children(
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: crate::AutoSizeBehavior::FitContent,
             orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
-            known_dimensions: Size { width: None, height: style_size.height },
+            known_dimensions: Size::NONE,
             definite_dimensions: Size::NONE,
             parent_size: area_size.map(Some),
             parent_writing_mode: writing_mode,
