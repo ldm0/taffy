@@ -205,6 +205,21 @@ impl GridItem {
         }
     }
 
+    /// Whether `min-size: auto` uses this item's content-based minimum in the
+    /// selected grid axis.
+    ///
+    /// Both track predicates are deliberately scoped to this item's span. A
+    /// flexible or auto-min track elsewhere in the grid cannot affect the
+    /// item's automatic minimum.
+    #[inline]
+    fn uses_content_based_automatic_minimum(&self, axis: AbstractAxis, axis_tracks: &[GridTrack]) -> bool {
+        let spanned_tracks = &axis_tracks[self.track_range_excluding_lines(axis)];
+        let spans_auto_min_track = spanned_tracks.iter().any(|track| track.min_track_sizing_function.is_auto());
+        let spans_multiple_tracks = self.span(axis) > 1;
+
+        spans_auto_min_track && (!spans_multiple_tracks || !self.crosses_flexible_track(axis))
+    }
+
     /// For an item spanning multiple tracks, the upper limit used to calculate its limited min-/max-content contribution is the
     /// sum of the fixed max track sizing functions of any tracks it spans, and is applied if it only spans such tracks.
     pub fn spanned_track_limit(
@@ -618,28 +633,8 @@ impl GridItem {
             .unwrap_or_else(|| {
                 // Automatic minimum size. See https://www.w3.org/TR/css-grid-1/#min-size-auto
 
-                // To provide a more reasonable default minimum size for grid items, the used value of its automatic minimum size
-                // in a given axis is the content-based minimum size if all of the following are true:
-                let item_axis_tracks = &axis_tracks[self.track_range_excluding_lines(axis)];
-
-                // it is not a scroll container
-                // TODO: support overflow property
-
-                // it spans at least one track in that axis whose min track sizing function is auto
-                let spans_auto_min_track = axis_tracks
-                    .iter()
-                    // TODO: should this be 'behaves as auto' rather than just literal auto?
-                    .any(|track| track.min_track_sizing_function.is_auto());
-
-                // if it spans more than one track in that axis, none of those tracks are flexible
-                let only_span_one_track = item_axis_tracks.len() == 1;
-                let spans_a_flexible_track = axis_tracks.iter().any(|track| track.max_track_sizing_function.is_fr());
-
-                let use_content_based_minimum =
-                    spans_auto_min_track && (only_span_one_track || !spans_a_flexible_track);
-
                 // Otherwise, the automatic minimum size is zero, as usual.
-                if use_content_based_minimum {
+                if self.uses_content_based_automatic_minimum(axis, axis_tracks) {
                     let mut minimum_contribution =
                         self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
 
