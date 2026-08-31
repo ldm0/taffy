@@ -15,6 +15,7 @@ mod hand_written {
     mod floats;
     mod grid_automatic_minimum;
     mod grid_detailed_layout_info;
+    mod grid_fit_content_growth_limits;
     mod grid_flexible_intrinsic_size;
     mod grid_track_rerun;
     mod intrinsic_width;

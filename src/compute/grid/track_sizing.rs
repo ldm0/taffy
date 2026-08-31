@@ -459,12 +459,13 @@ fn flush_planned_base_size_increases(tracks: &mut [GridTrack]) {
 fn flush_planned_growth_limit_increases(tracks: &mut [GridTrack], set_infinitely_growable: bool) {
     for track in tracks {
         if track.growth_limit_planned_increase > 0.0 {
+            let growth_limit_was_infinite = track.growth_limit == f32::INFINITY;
             track.growth_limit = if track.growth_limit == f32::INFINITY {
                 track.base_size + track.growth_limit_planned_increase
             } else {
                 track.growth_limit + track.growth_limit_planned_increase
             };
-            track.infinitely_growable = set_infinitely_growable;
+            track.infinitely_growable = set_infinitely_growable && growth_limit_was_infinite;
         } else {
             track.infinitely_growable = false;
         }
@@ -1154,8 +1155,7 @@ fn distribute_item_space_to_base_size(
     }
 }
 
-/// 11.5.1. Distributing Extra Space Across Spanned Tracks
-/// This is simplified (and faster) version of the algorithm for growth limits
+/// 11.5.1. Distributing Extra Space Across Spanned Tracks for growth limits
 /// https://www.w3.org/TR/css-grid-1/#extra-space
 fn distribute_item_space_to_growth_limit(
     space: f32,
@@ -1170,44 +1170,42 @@ fn distribute_item_space_to_growth_limit(
         return;
     }
 
-    // 1. Find the space to distribute
-    let track_sizes: f32 = tracks
-        .iter()
-        .map(|track| if track.growth_limit == f32::INFINITY { track.base_size } else { track.growth_limit })
-        .sum();
+    // 1. Find the space to distribute.
+    let track_sizes: f32 = tracks.iter().map(GridTrack::definite_growth_limit).sum();
     let extra_space: f32 = f32_max(0.0, space - track_sizes);
 
-    // 2. Distribute space up to limits:
-    // For growth limits the limit is either Infinity, or the growth limit itself. Which means that:
-    //   - If there are any tracks with infinite limits then all space will be distributed to those track(s).
-    //   - Otherwise no space will be distributed as part of this step
-    let number_of_growable_tracks = tracks
-        .iter()
-        .filter(|track| track_is_affected(track))
-        .filter(|track| {
-            track.infinitely_growable || track.fit_content_limited_growth_limit(axis_inner_node_size) == f32::INFINITY
-        })
-        .count();
-    if number_of_growable_tracks > 0 {
-        let item_incurred_increase = extra_space / number_of_growable_tracks as f32;
-        for track in tracks.iter_mut().filter(|track| track_is_affected(track)).filter(|track| {
-            track.infinitely_growable || track.fit_content_limited_growth_limit(axis_inner_node_size) == f32::INFINITY
-        }) {
-            track.item_incurred_increase = item_incurred_increase;
-        }
-    } else {
-        // 3. Distribute space beyond limits
-        // If space remains after all tracks are frozen, unfreeze and continue to distribute space to the item-incurred increase
-        // ...when handling any intrinsic growth limit: all affected tracks.
+    // 2. Distribute up to growth limits. A track whose growth limit is still
+    // infinite participates even when it has a finite fit-content() cap. A
+    // finite track participates here only when the previous intrinsic-maximum
+    // step marked it infinitely growable.
+    let remaining_space = distribute_space_up_to_limits(
+        extra_space,
+        tracks,
+        &track_is_affected,
+        |_| 1.0,
+        GridTrack::definite_growth_limit,
+        |track| {
+            if track.growth_limit != f32::INFINITY && !track.infinitely_growable {
+                track.definite_growth_limit()
+            } else {
+                track.fit_content_limit(axis_inner_node_size)
+            }
+        },
+    );
+
+    // 3. Distribute beyond limits. Once the first set of tracks is frozen,
+    // every affected intrinsic track may grow, but fit-content() continues to
+    // cap it at its argument.
+    if remaining_space > 0.0 {
         distribute_space_up_to_limits(
-            extra_space,
+            remaining_space,
             tracks,
             track_is_affected,
             |_| 1.0,
-            |track| if track.growth_limit == f32::INFINITY { track.base_size } else { track.growth_limit },
+            GridTrack::definite_growth_limit,
             move |track| track.fit_content_limit(axis_inner_node_size),
         );
-    };
+    }
 
     // 4. For each affected track, if the track’s item-incurred increase is larger than the track’s planned increase
     // set the track’s planned increase to that value.

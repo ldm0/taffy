@@ -128,7 +128,7 @@ impl GridTrack {
     }
 
     #[inline(always)]
-    /// Returns true if the track is flexible (has a Flex MaxTrackSizingFunction), else false.
+    /// Returns true if either track sizing function uses a percentage.
     pub fn uses_percentage(&self) -> bool {
         self.min_track_sizing_function.uses_percentage() || self.max_track_sizing_function.uses_percentage()
     }
@@ -151,7 +151,8 @@ impl GridTrack {
     }
 
     #[inline]
-    /// Returns true if the track is flexible (has a Flex MaxTrackSizingFunction), else false.
+    /// Resolve the `fit-content()` cap for this track, or infinity when the
+    /// track is not fit-content limited.
     pub fn fit_content_limit(&self, axis_available_grid_space: Option<f32>) -> f32 {
         match self.max_track_sizing_function.0.tag() {
             CompactLength::FIT_CONTENT_PX_TAG => self.max_track_sizing_function.0.value(),
@@ -164,9 +165,21 @@ impl GridTrack {
     }
 
     #[inline]
-    /// Returns true if the track is flexible (has a Flex MaxTrackSizingFunction), else false.
+    /// Clamp the current growth limit to the resolved `fit-content()` cap.
     pub fn fit_content_limited_growth_limit(&self, axis_available_grid_space: Option<f32>) -> f32 {
         f32_min(self.growth_limit, self.fit_content_limit(axis_available_grid_space))
+    }
+
+    /// Return the finite value used when distributing intrinsic contributions
+    /// to a growth limit. An indefinite growth limit starts at the track's
+    /// base size and can grow from there.
+    #[inline]
+    pub fn definite_growth_limit(&self) -> f32 {
+        if self.growth_limit == f32::INFINITY {
+            self.base_size
+        } else {
+            self.growth_limit
+        }
     }
 
     #[inline]
