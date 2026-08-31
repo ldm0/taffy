@@ -457,14 +457,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         height: AvailableSpace::Definite(container_content_box.height),
     };
 
-    // If only the container's size has been requested
-    if run_mode == RunMode::ComputeSize {
-        let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
-        return LayoutOutput::from_outer_size(container_border_box)
-            .with_block_constraint_dependency(depends_on_block_constraints)
-            .with_applied_aspect_ratio(applied_aspect_ratio);
-    }
-
     // 7. Resolve percentage track base sizes
     // In the case of an indefinitely sized container these resolve to zero during the "Initialise Tracks" step
     // and therefore need to be re-resolved here based on the content-sized content box of the container

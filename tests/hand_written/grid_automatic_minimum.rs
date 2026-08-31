@@ -1,4 +1,6 @@
+use taffy::geometry::Point;
 use taffy::prelude::*;
+use taffy::style::Overflow;
 use taffy::tree::DetailedLayoutInfo;
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
@@ -277,4 +279,175 @@ fn grid_item_percentages_resolve_against_the_final_grid_area() {
     };
     assert_eq!(info.columns.sizes, vec![3.0, 3.0, 4.0]);
     assert_eq!(info.rows.sizes, vec![1.0, 7.0, 2.0]);
+}
+
+#[test]
+fn percentage_preferred_size_does_not_replace_the_automatic_minimum() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let content = tree.new_leaf(Style { size: Size::from_lengths(100.0, 450.0), ..Default::default() }).unwrap();
+    let item = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size { width: auto(), height: percent(1.0) }, ..Default::default() },
+            &[content],
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(180.0, 200.0),
+                grid_template_columns: vec![length(180.0)],
+                grid_template_rows: vec![auto()],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    assert_eq!(info.rows.sizes, vec![450.0]);
+    assert_eq!(tree.layout(item).unwrap().size.height, 450.0);
+}
+
+#[derive(Debug, PartialEq)]
+struct NestedScrollLayout {
+    track: f32,
+    sidebar: f32,
+    controlled: f32,
+    wrapper: f32,
+    contents: f32,
+}
+
+fn nested_scroll_container_layout(wrapper_height: Dimension) -> NestedScrollLayout {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let tall_content = tree.new_leaf(Style { size: Size::from_lengths(100.0, 400.0), ..Default::default() }).unwrap();
+    let sidebar_contents = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                grid_row: Line { start: line(2), end: line(3) },
+                overflow: Point { x: Overflow::Scroll, y: Overflow::Scroll },
+                max_size: Size { width: auto(), height: percent(1.0) },
+                ..Default::default()
+            },
+            &[tall_content],
+        )
+        .unwrap();
+    let empty = tree.new_leaf(Style::default()).unwrap();
+    let wrapper = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: wrapper_height },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                grid_template_columns: vec![length(100.0)],
+                grid_template_rows: vec![length(50.0), fr(1.0)],
+                ..Default::default()
+            },
+            &[empty, sidebar_contents],
+        )
+        .unwrap();
+    let controlled = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                overflow: Point { x: Overflow::Scroll, y: Overflow::Scroll },
+                ..Default::default()
+            },
+            &[wrapper],
+        )
+        .unwrap();
+    let sidebar = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: auto(), height: percent(1.0) },
+                flex_grow: 1.0,
+                ..Default::default()
+            },
+            &[controlled],
+        )
+        .unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(180.0, 200.0),
+                grid_template_columns: vec![length(180.0)],
+                grid_template_rows: vec![auto()],
+                ..Default::default()
+            },
+            &[sidebar],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    NestedScrollLayout {
+        track: info.rows.sizes[0],
+        sidebar: tree.layout(sidebar).unwrap().size.height,
+        controlled: tree.layout(controlled).unwrap().size.height,
+        wrapper: tree.layout(wrapper).unwrap().size.height,
+        contents: tree.layout(sidebar_contents).unwrap().size.height,
+    }
+}
+
+#[test]
+fn nested_scroll_container_keeps_the_grid_items_automatic_minimum() {
+    assert_eq!(
+        nested_scroll_container_layout(auto()),
+        NestedScrollLayout { track: 450.0, sidebar: 450.0, controlled: 450.0, wrapper: 450.0, contents: 400.0 }
+    );
+}
+
+#[test]
+fn nested_scroll_container_resolves_percentages_after_its_block_size_becomes_definite() {
+    assert_eq!(
+        nested_scroll_container_layout(length(200.0)),
+        NestedScrollLayout { track: 200.0, sidebar: 200.0, controlled: 200.0, wrapper: 200.0, contents: 150.0 }
+    );
+}
+
+#[test]
+fn orthogonal_block_contribution_uses_the_resolved_inline_grid_area() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item = tree
+        .new_leaf_with_context(
+            Style::default(),
+            TestNodeContext::ahem_text("aaaaaaaaaa\u{200b}aaaaa".to_owned(), WritingMode::Vertical),
+        )
+        .unwrap();
+    tree.set_writing_mode(item, taffy::WritingMode::VerticalLr).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: length(100.0) },
+                grid_template_columns: vec![auto()],
+                grid_template_rows: vec![auto()],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    let intrinsic_parent =
+        tree.new_with_children(Style { display: Display::Flex, ..Default::default() }, &[grid]).unwrap();
+
+    tree.compute_layout_with_measure(intrinsic_parent, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(intrinsic_parent).unwrap().size.width, 20.0);
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 20.0, height: 100.0 });
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 20.0, height: 100.0 });
 }

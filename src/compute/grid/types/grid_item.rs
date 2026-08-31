@@ -564,6 +564,43 @@ impl GridItem {
         .sum_axes()
     }
 
+    /// Build the constraint used to measure an intrinsic contribution.
+    ///
+    /// Min- and max-content constraints describe an item's inline axis. When
+    /// the grid track direction maps to the item's block axis, browsers obtain
+    /// the contribution by laying the item out with an indefinite block size;
+    /// in Taffy's constraint model that is represented by `MaxContent`. Using
+    /// `MinContent` in the block axis can shrink nested flex and grid formatting
+    /// contexts before their block contribution has been measured.
+    fn intrinsic_contribution_available_space(
+        &mut self,
+        tree: &impl LayoutPartialTree,
+        axis: AbstractAxis,
+        available_space: Size<Option<f32>>,
+        inline_constraint: AvailableSpace,
+    ) -> Size<AvailableSpace> {
+        let track_axis = match axis {
+            AbstractAxis::Inline => self.parent_writing_mode.inline_axis(),
+            AbstractAxis::Block => self.parent_writing_mode.block_axis(),
+        };
+        let measures_item_inline_axis = track_axis == tree.get_writing_mode(self.node).inline_axis();
+        let constraint = if measures_item_inline_axis { inline_constraint } else { AvailableSpace::MaxContent };
+
+        // An orthogonal item's block contribution to a column can change once
+        // the grid's block size constrains the item's inline axis. Propagate
+        // that dependency so an intrinsic parent measurement is not reused for
+        // the final block constraint. This is Blink's
+        // `is_sizing_dependent_on_block_size` case in
+        // `BlockContributionSize`.
+        if axis == AbstractAxis::Inline && !measures_item_inline_axis {
+            self.depends_on_block_constraints = true;
+        }
+
+        available_space
+            .map(|size| size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent))
+            .with(axis, available_space.get(axis).map(AvailableSpace::Definite).unwrap_or(constraint))
+    }
+
     /// Compute the item's min content contribution from the provided parameters
     pub fn min_content_contribution(
         &mut self,
@@ -578,16 +615,15 @@ impl GridItem {
         // Spec:
         // https://www.w3.org/TR/css-grid-1/#grid-item-sizing
         // https://www.w3.org/TR/css-grid-1/#algo-overview
+        let contribution_available_space =
+            self.intrinsic_contribution_available_space(tree, axis, available_space, AvailableSpace::MinContent);
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
                 known_dimensions,
                 grid_area_size,
                 self.parent_writing_mode,
-                available_space.map(|opt| match opt {
-                    Some(size) => AvailableSpace::Definite(size),
-                    None => AvailableSpace::MinContent,
-                }),
+                contribution_available_space,
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
@@ -626,16 +662,15 @@ impl GridItem {
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
+        let contribution_available_space =
+            self.intrinsic_contribution_available_space(tree, axis, available_space, AvailableSpace::MaxContent);
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
                 known_dimensions,
                 grid_area_size,
                 self.parent_writing_mode,
-                available_space.map(|opt| match opt {
-                    Some(size) => AvailableSpace::Definite(size),
-                    None => AvailableSpace::MaxContent,
-                }),
+                contribution_available_space,
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
