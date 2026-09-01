@@ -1,7 +1,110 @@
-//! Conversion between physical baseline sets and a formatting context's
-//! logical block axis.
+//! Baseline projection, synthesis, and baseline-sharing group selection.
 
 use crate::geometry::{Point, Size, WritingDirection};
+use crate::{Direction, WritingMode};
+
+/// One of the two baseline-sharing groups that may occupy an alignment axis.
+/// The major group is placed toward the axis start and the minor group toward
+/// its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum BaselineGroup {
+    /// Baselines aligned toward the alignment axis start.
+    Major,
+    /// Baselines aligned toward the alignment axis end.
+    Minor,
+}
+
+/// Font baseline used when an alignment subject cannot expose a compatible
+/// fragment baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FontBaseline {
+    /// Alphabetic baseline synthesized on the line-under edge.
+    Alphabetic,
+    /// Central baseline synthesized halfway through the alignment axis.
+    Central,
+}
+
+impl FontBaseline {
+    /// Resolve the CSS initial baseline for a writing mode. Upright vertical
+    /// text uses the central baseline; horizontal and sideways text use the
+    /// alphabetic baseline.
+    pub(crate) fn for_writing_mode(writing_mode: WritingMode) -> Self {
+        match writing_mode {
+            WritingMode::VerticalRl | WritingMode::VerticalLr => Self::Central,
+            WritingMode::HorizontalTb | WritingMode::SidewaysRl | WritingMode::SidewaysLr => Self::Alphabetic,
+        }
+    }
+}
+
+/// Select the writing mode in which a child's baseline participates in an
+/// alignment context.
+///
+/// This implements CSS Box Alignment's baseline-generation rules. A flex row
+/// establishes a parallel alignment context; a flex column establishes a
+/// perpendicular one.
+pub(crate) fn determine_baseline_writing_mode(
+    container: WritingDirection,
+    child: WritingMode,
+    is_parallel_context: bool,
+) -> WritingMode {
+    let orthogonal_mode = if is_parallel_context {
+        container.mode
+    } else if child.is_horizontal() {
+        if container.direction == Direction::Ltr {
+            WritingMode::VerticalLr
+        } else {
+            WritingMode::VerticalRl
+        }
+    } else {
+        WritingMode::HorizontalTb
+    };
+    let child_is_parallel = !container.mode.is_orthogonal_to(child);
+
+    match (is_parallel_context, child_is_parallel) {
+        (true, true) | (false, false) => child,
+        (true, false) | (false, true) => orthogonal_mode,
+    }
+}
+
+/// Select the baseline-sharing group for a baseline writing mode.
+pub(crate) fn determine_baseline_group(
+    container: WritingDirection,
+    baseline_writing_mode: WritingMode,
+    is_parallel_context: bool,
+    is_last_baseline: bool,
+    is_flipped: bool,
+) -> BaselineGroup {
+    let mut start_group = BaselineGroup::Major;
+    let mut end_group = BaselineGroup::Minor;
+    if is_last_baseline {
+        core::mem::swap(&mut start_group, &mut end_group);
+    }
+    if is_flipped {
+        core::mem::swap(&mut start_group, &mut end_group);
+    }
+
+    if is_parallel_context {
+        debug_assert!(!container.mode.is_orthogonal_to(baseline_writing_mode));
+        return if baseline_writing_mode == container.mode { start_group } else { end_group };
+    }
+
+    match baseline_writing_mode {
+        WritingMode::HorizontalTb | WritingMode::VerticalLr | WritingMode::SidewaysLr => {
+            if container.direction == Direction::Ltr {
+                start_group
+            } else {
+                end_group
+            }
+        }
+        WritingMode::VerticalRl | WritingMode::SidewaysRl => {
+            if container.direction == Direction::Ltr {
+                end_group
+            } else {
+                start_group
+            }
+        }
+    }
+}
 
 /// Project a physical baseline into a formatting context's logical block axis.
 pub(crate) fn logical_block_baseline(
@@ -22,6 +125,57 @@ pub(crate) fn logical_block_baseline(
             },
         )
     }
+}
+
+/// Synthesize the baseline used when a child fragment has no compatible
+/// baseline in the formatting context's writing mode.
+pub(crate) fn synthesized_logical_baseline(
+    block_size: f32,
+    writing_direction: WritingDirection,
+    font_baseline: FontBaseline,
+) -> f32 {
+    match font_baseline {
+        FontBaseline::Central => block_size / 2.0,
+        FontBaseline::Alphabetic if writing_direction.mode.is_line_direction_flipped() => 0.0,
+        FontBaseline::Alphabetic => block_size,
+    }
+}
+
+/// Read a fragment baseline in a requested logical coordinate system.
+///
+/// Baseline coordinates are not interchangeable between different writing
+/// modes, even when they happen to occupy the same physical axis. This is the
+/// same compatibility boundary as Blink's
+/// `LogicalBoxFragment::IsWritingModeEqual`.
+pub(crate) fn fragment_logical_block_baseline(
+    baseline: Point<Option<f32>>,
+    child_size: Size<f32>,
+    fragment_writing_mode: WritingMode,
+    requested_writing_direction: WritingDirection,
+) -> Option<f32> {
+    if fragment_writing_mode != requested_writing_direction.mode {
+        return None;
+    }
+    logical_block_baseline(baseline, child_size, requested_writing_direction)
+}
+
+/// Read a compatible fragment baseline, or synthesize one in the requested
+/// logical coordinate system.
+pub(crate) fn fragment_logical_block_baseline_or_synthesize(
+    baseline: Point<Option<f32>>,
+    child_size: Size<f32>,
+    fragment_writing_mode: WritingMode,
+    requested_writing_direction: WritingDirection,
+    font_baseline: FontBaseline,
+) -> f32 {
+    fragment_logical_block_baseline(baseline, child_size, fragment_writing_mode, requested_writing_direction)
+        .unwrap_or_else(|| {
+            synthesized_logical_baseline(
+                requested_writing_direction.mode.to_logical(child_size).block_size,
+                requested_writing_direction,
+                font_baseline,
+            )
+        })
 }
 
 /// Materialize one logical block-axis baseline in physical coordinates.
@@ -49,7 +203,6 @@ pub(crate) fn physical_baseline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Direction, WritingMode};
 
     #[test]
     fn baseline_round_trips_through_reversed_vertical_block_flow() {
@@ -58,5 +211,117 @@ mod tests {
         let physical = physical_baseline(Some(30.0), size, writing_direction);
         assert_eq!(physical, Point { x: Some(70.0), y: None });
         assert_eq!(logical_block_baseline(physical, size, writing_direction), Some(30.0));
+    }
+
+    #[test]
+    fn fragment_baselines_require_the_exact_requested_writing_mode() {
+        let size = Size { width: 100.0, height: 40.0 };
+        let physical = Point { x: Some(30.0), y: None };
+        let requested = WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr);
+
+        assert_eq!(fragment_logical_block_baseline(physical, size, WritingMode::VerticalRl, requested), Some(70.0),);
+        assert_eq!(fragment_logical_block_baseline(physical, size, WritingMode::VerticalLr, requested), None,);
+    }
+
+    #[test]
+    fn alphabetic_synthesis_uses_the_line_under_edge() {
+        for (writing_mode, expected) in [
+            (WritingMode::HorizontalTb, 40.0),
+            (WritingMode::VerticalRl, 40.0),
+            (WritingMode::VerticalLr, 0.0),
+            (WritingMode::SidewaysRl, 40.0),
+            (WritingMode::SidewaysLr, 40.0),
+        ] {
+            assert_eq!(
+                synthesized_logical_baseline(
+                    40.0,
+                    WritingDirection::new(writing_mode, Direction::Ltr),
+                    FontBaseline::Alphabetic,
+                ),
+                expected,
+                "unexpected line-under edge for {writing_mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn central_synthesis_uses_the_axis_midpoint() {
+        for writing_mode in [
+            WritingMode::HorizontalTb,
+            WritingMode::VerticalRl,
+            WritingMode::VerticalLr,
+            WritingMode::SidewaysRl,
+            WritingMode::SidewaysLr,
+        ] {
+            assert_eq!(
+                synthesized_logical_baseline(
+                    40.0,
+                    WritingDirection::new(writing_mode, Direction::Ltr),
+                    FontBaseline::Central,
+                ),
+                20.0,
+            );
+        }
+    }
+
+    #[test]
+    fn perpendicular_baseline_modes_follow_the_container_inline_direction() {
+        assert_eq!(
+            determine_baseline_writing_mode(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+                WritingMode::HorizontalTb,
+                false,
+            ),
+            WritingMode::VerticalLr,
+        );
+        assert_eq!(
+            determine_baseline_writing_mode(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
+                WritingMode::HorizontalTb,
+                false,
+            ),
+            WritingMode::VerticalRl,
+        );
+    }
+
+    #[test]
+    fn perpendicular_ltr_and_rtl_baselines_join_the_major_group() {
+        assert_eq!(
+            determine_baseline_group(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr),
+                WritingMode::VerticalLr,
+                false,
+                false,
+                false,
+            ),
+            BaselineGroup::Major,
+        );
+        assert_eq!(
+            determine_baseline_group(
+                WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl),
+                WritingMode::VerticalRl,
+                false,
+                false,
+                false,
+            ),
+            BaselineGroup::Major,
+        );
+    }
+
+    #[test]
+    fn last_baselines_and_reversed_flow_swap_the_sharing_groups() {
+        let container = WritingDirection::new(WritingMode::VerticalRl, Direction::Ltr);
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, false, false),
+            BaselineGroup::Major,
+        );
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, true, false),
+            BaselineGroup::Minor,
+        );
+        assert_eq!(
+            determine_baseline_group(container, WritingMode::VerticalRl, true, true, true),
+            BaselineGroup::Major,
+        );
     }
 }

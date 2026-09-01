@@ -134,6 +134,16 @@ impl WritingMode {
         matches!(self, Self::HorizontalTb)
     }
 
+    /// Whether the line-under edge lies at logical block-start rather than
+    /// logical block-end.
+    ///
+    /// This is line-relative rather than flow-relative: `vertical-lr` flips
+    /// line-over/line-under while retaining left-to-right block progression.
+    #[inline(always)]
+    pub const fn is_line_direction_flipped(self) -> bool {
+        matches!(self, Self::VerticalLr)
+    }
+
     /// Whether this writing mode is orthogonal to `other`.
     #[inline(always)]
     pub const fn is_orthogonal_to(self, other: Self) -> bool {
@@ -292,6 +302,14 @@ impl<T: Copy> InBothAbstractAxis<T> {
         match axis {
             AbstractAxis::Inline => self.inline,
             AbstractAxis::Block => self.block,
+        }
+    }
+
+    /// Mutably borrow the value for `axis`.
+    pub const fn get_mut(&mut self, axis: AbstractAxis) -> &mut T {
+        match axis {
+            AbstractAxis::Inline => &mut self.inline,
+            AbstractAxis::Block => &mut self.block,
         }
     }
 }

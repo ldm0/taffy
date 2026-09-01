@@ -2,7 +2,7 @@
 //! <https://www.w3.org/TR/css-grid-1>
 use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::geometry::{Line, LogicalSize, Size};
-use crate::style::{AlignItems, AlignSelf, AvailableSpace, Position};
+use crate::style::{AlignItems, AvailableSpace, Position};
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RunMode,
     SizingMode,
@@ -24,7 +24,7 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::baseline::physical_baseline;
+use super::common::baseline::{physical_baseline, synthesized_logical_baseline, FontBaseline};
 use super::common::intrinsic_size::{
     apply_contained_intrinsic_size_constraints, resolve_node_size_constraints, AutomaticInlineSizeResolution,
     BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
@@ -341,6 +341,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     );
     for item in &mut items {
         item.aspect_ratio = tree.get_resolved_aspect_ratio(item.node);
+        item.resolve_baseline_context(tree.get_writing_mode(item.node));
     }
 
     // Extract track counts from previous step (auto-placement can expand the number of tracks)
@@ -527,8 +528,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Record this as a boolean (per-axis) on each item for later use in the track-sizing algorithm
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
 
-    // Determine if the grid has any baseline aligned items
-    let has_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
+    // Baseline alignment is independent in Grid's inline and block axes. Each
+    // track-sizing pass resolves only the shims that contribute in that axis.
+    let has_inline_baseline_aligned_item =
+        items.iter().any(|item| item.specifies_baseline_alignment(AbstractAxis::Inline));
+    let has_block_baseline_aligned_item =
+        items.iter().any(|item| item.specifies_baseline_alignment(AbstractAxis::Block));
 
     // Keep the original definiteness separate from the provisional numeric
     // sizes produced by intrinsic track sizing. A track collection may need a
@@ -551,7 +556,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         |track: &GridTrack, parent_size: Option<f32>, tree: &Tree| {
             track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
         },
-        has_baseline_aligned_item,
+        has_inline_baseline_aligned_item,
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.inline_size = inner_node_size.inline_size.or_else(|| initial_column_sum.into());
@@ -572,7 +577,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut columns,
         &mut items,
         |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
+        has_block_baseline_aligned_item,
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
 
@@ -687,7 +692,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut rows,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            has_baseline_aligned_item,
+            has_inline_baseline_aligned_item,
         );
 
         items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
@@ -704,7 +709,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut columns,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            false, // TODO: Support baseline alignment in the vertical axis
+            has_block_baseline_aligned_item,
         );
     }
 
@@ -747,7 +752,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut rows,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            has_baseline_aligned_item,
+            has_inline_baseline_aligned_item,
         );
     }
 
@@ -786,7 +791,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut columns,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            false, // TODO: Support baseline alignment in the vertical axis
+            has_block_baseline_aligned_item,
         );
     }
 
@@ -902,6 +907,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Position in-flow children (stored in items vector)
     for (index, item) in items.iter_mut().enumerate() {
+        let baseline_alignment = InBothAbstractAxis {
+            inline: item.final_baseline_alignment(AbstractAxis::Inline, &columns),
+            block: item.final_baseline_alignment(AbstractAxis::Block, &rows),
+        };
         let grid_area = flow.to_physical_rect(
             Line {
                 start: columns[item.column_indexes.start as usize + 1].offset,
@@ -919,14 +928,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             index as u32,
             grid_area,
             container_alignment_styles,
-            item.baseline_shim,
+            baseline_alignment,
+            item.baseline_fallback,
             direction,
             writing_mode,
             container_border_box,
             border,
             scrollbar_insets,
         );
-        item.block_offset = placement.block_offset;
+        item.baseline_block_offset = placement.baseline_block_offset;
         item.block_size = placement.block_size;
         item.first_baseline = placement.first_baseline;
         item.last_baseline = placement.last_baseline;
@@ -1059,7 +1069,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             );
             drop(child_style);
 
-            // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
             let placement = align_and_position_item(
                 tree,
@@ -1067,7 +1076,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 order,
                 grid_area,
                 container_alignment_styles,
-                0.0,
+                InBothAbstractAxis { inline: None, block: None },
+                InBothAbstractAxis { inline: None, block: None },
                 direction,
                 writing_mode,
                 container_border_box,
@@ -1091,12 +1101,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(
                 final_row_counts,
                 row_auto_repetition_count,
-                rows,
+                &rows,
             ),
             columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(
                 final_col_counts,
                 col_auto_repetition_count,
-                columns,
+                &columns,
             ),
             items: items.iter().map(DetailedGridItemsInfo::from_grid_item).collect(),
         },
@@ -1107,7 +1117,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         return LayoutOutput::from_outer_size(container_border_box);
     }
 
-    let (first_baseline, last_baseline) = grid_container_baselines(&items);
+    let (first_baseline, last_baseline) =
+        grid_container_baselines(&items, &rows, logical_container_border_box.block_size, flow);
 
     // The container's own padding at the end of the content is part of its scrollable
     // overflow region, so it is included in the in-flow content size.
@@ -1197,44 +1208,125 @@ fn size_grid_tracks_without_items<Tree: LayoutGridContainer>(
 /// grid order. Fallback selection uses the child's corresponding baseline and
 /// synthesizes one at its block-end border edge only when that baseline is
 /// absent.
-fn grid_container_baselines(items: &[GridItem]) -> (f32, f32) {
+fn grid_container_baselines(
+    items: &[GridItem],
+    rows: &[GridTrack],
+    container_block_size: f32,
+    flow: GridFlow,
+) -> (f32, f32) {
     debug_assert!(!items.is_empty());
 
-    let first_occupied_row = items.iter().map(|item| item.row_indexes.start).min().unwrap();
-    let first_item = items
+    let synthesize = |item: &GridItem| {
+        synthesized_logical_baseline(
+            item.block_size,
+            flow.writing_direction(),
+            FontBaseline::for_writing_mode(flow.writing_direction().mode),
+        )
+    };
+    let compare_in_flow_order = |axis: AbstractAxis, a: u16, b: u16| {
+        if flow.axis_is_reversed(axis) {
+            b.cmp(&a)
+        } else {
+            a.cmp(&b)
+        }
+    };
+    let first_occupied_track = |item: &GridItem, axis: AbstractAxis| {
+        let span = item.placement_indexes(axis);
+        if flow.axis_is_reversed(axis) {
+            span.end.saturating_sub(2)
+        } else {
+            span.start
+        }
+    };
+    let last_occupied_track = |item: &GridItem, axis: AbstractAxis| {
+        let span = item.placement_indexes(axis);
+        if flow.axis_is_reversed(axis) {
+            span.start
+        } else {
+            span.end.saturating_sub(2)
+        }
+    };
+
+    let first_occupied_row = items
         .iter()
-        .filter(|item| item.row_indexes.start == first_occupied_row && item.align_self == AlignSelf::BASELINE)
-        .min_by_key(|item| (item.column_indexes.start, item.source_order))
-        .or_else(|| {
-            items
-                .iter()
-                .filter(|item| item.row_indexes.start == first_occupied_row)
-                .min_by_key(|item| (item.column_indexes.start, item.source_order))
+        .map(|item| first_occupied_track(item, AbstractAxis::Block))
+        .min_by(|a, b| compare_in_flow_order(AbstractAxis::Block, *a, *b))
+        .unwrap();
+
+    let track_logical_bounds = |track_index: usize| {
+        let track = &rows[track_index];
+        let physical_bounds = Line { start: track.offset, end: track.offset + track.base_size };
+        if flow.axis_is_reversed(AbstractAxis::Block) {
+            Line {
+                start: container_block_size - physical_bounds.end,
+                end: container_block_size - physical_bounds.start,
+            }
+        } else {
+            physical_bounds
+        }
+    };
+    let track_baselines = |track_index: usize| {
+        let track = &rows[track_index];
+        let bounds = track_logical_bounds(track_index);
+        (
+            track.major_baseline.map(|baseline| bounds.start + baseline),
+            track.minor_baseline.map(|baseline| bounds.end - baseline),
+        )
+    };
+
+    let first_row_track_index = usize::from(first_occupied_row) + 1;
+    let (first_major_baseline, first_minor_baseline) = track_baselines(first_row_track_index);
+    let first_shared_baseline = first_major_baseline.or(first_minor_baseline);
+
+    let inline_first = |a: &&GridItem, b: &&GridItem| {
+        compare_in_flow_order(
+            AbstractAxis::Inline,
+            first_occupied_track(a, AbstractAxis::Inline),
+            first_occupied_track(b, AbstractAxis::Inline),
+        )
+        .then(a.source_order.cmp(&b.source_order))
+    };
+    let first_fallback_item = items
+        .iter()
+        .filter(|item| first_occupied_track(item, AbstractAxis::Block) == first_occupied_row)
+        .min_by(inline_first)
+        .unwrap();
+    let first_fallback_baseline = first_fallback_item.baseline_block_offset
+        + first_fallback_item.first_baseline.unwrap_or_else(|| synthesize(first_fallback_item));
+    let first_baseline = first_shared_baseline.unwrap_or(first_fallback_baseline);
+
+    let last_occupied_row = items
+        .iter()
+        .map(|item| last_occupied_track(item, AbstractAxis::Block))
+        .max_by(|a, b| compare_in_flow_order(AbstractAxis::Block, *a, *b))
+        .unwrap();
+    let last_row_track_index = usize::from(last_occupied_row) + 1;
+    let (last_major_baseline, last_minor_baseline) = track_baselines(last_row_track_index);
+    let last_shared_baseline = last_minor_baseline.or(last_major_baseline);
+
+    let inline_last = |a: &&GridItem, b: &&GridItem| {
+        compare_in_flow_order(
+            AbstractAxis::Inline,
+            last_occupied_track(a, AbstractAxis::Inline),
+            last_occupied_track(b, AbstractAxis::Inline),
+        )
+        .then(a.source_order.cmp(&b.source_order))
+    };
+    let last_fallback_item = items
+        .iter()
+        .max_by(|a, b| {
+            compare_in_flow_order(
+                AbstractAxis::Block,
+                last_occupied_track(a, AbstractAxis::Block),
+                last_occupied_track(b, AbstractAxis::Block),
+            )
+            .then(inline_last(a, b))
         })
         .unwrap();
-    let first_baseline = first_item.block_offset + first_item.first_baseline.unwrap_or(first_item.block_size);
+    let last_fallback_baseline = last_fallback_item.baseline_block_offset
+        + last_fallback_item.last_baseline.unwrap_or_else(|| synthesize(last_fallback_item));
 
-    // GridTrackVec stores one line/gutter slot on each side of a row track, so
-    // the start index of an item's last occupied row is two slots before its
-    // end index.
-    let last_occupied_row = items.iter().map(|item| item.row_indexes.end.saturating_sub(2)).max().unwrap();
-    let last_item = items
-        .iter()
-        .filter(|item| item.row_indexes.start == last_occupied_row && item.align_self == AlignSelf::BASELINE)
-        .max_by_key(|item| (item.column_indexes.end, item.source_order))
-        .or_else(|| items.iter().max_by_key(|item| (item.row_indexes.end, item.column_indexes.end, item.source_order)))
-        .unwrap();
-    let last_baseline =
-        if last_item.align_self == AlignSelf::BASELINE && last_item.row_indexes.start == last_occupied_row {
-            // Taffy currently supports first-baseline sharing groups. When such a
-            // group exists in the last occupied row, its shared major baseline is
-            // also the grid container's last baseline.
-            last_item.first_baseline.unwrap_or(last_item.block_size)
-        } else {
-            last_item.last_baseline.unwrap_or(last_item.block_size)
-        };
-
-    (first_baseline, last_item.block_offset + last_baseline)
+    (first_baseline, last_shared_baseline.unwrap_or(last_fallback_baseline))
 }
 
 /// Reverse non-gutter tracks in-place while preserving line/gutter slots.
@@ -1366,15 +1458,15 @@ impl DetailedGridTracksInfo {
     fn from_grid_tracks_and_track_count(
         track_count: TrackCounts,
         auto_repetitions: u16,
-        grid_tracks: Vec<GridTrack>,
+        grid_tracks: &[GridTrack],
     ) -> Self {
         DetailedGridTracksInfo {
             negative_implicit_tracks: track_count.negative_implicit,
             explicit_tracks: track_count.explicit,
             positive_implicit_tracks: track_count.positive_implicit,
             auto_repetitions,
-            gutters: DetailedGridTracksInfo::gutters_from_grid_track_layout(&grid_tracks),
-            sizes: DetailedGridTracksInfo::sizes_from_grid_track_layout(&grid_tracks),
+            gutters: DetailedGridTracksInfo::gutters_from_grid_track_layout(grid_tracks),
+            sizes: DetailedGridTracksInfo::sizes_from_grid_track_layout(grid_tracks),
         }
     }
 }
@@ -1420,7 +1512,27 @@ impl DetailedGridItemsInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Style;
+    use crate::{AlignSelf, LengthPercentage, MaxTrackSizingFunction, MinTrackSizingFunction, Style};
+
+    const HORIZONTAL_LTR_FLOW: GridFlow = GridFlow::new(crate::WritingMode::HorizontalTb, crate::Direction::Ltr);
+    const VERTICAL_RL_FLOW: GridFlow = GridFlow::new(crate::WritingMode::VerticalRl, crate::Direction::Ltr);
+
+    fn baseline_rows(rows: &[(f32, f32, Option<f32>, Option<f32>)]) -> Vec<GridTrack> {
+        let mut tracks = vec![GridTrack::gutter(LengthPercentage::length(0.0))];
+        for &(offset, size, major_baseline, minor_baseline) in rows {
+            let mut track = GridTrack::new(MinTrackSizingFunction::auto(), MaxTrackSizingFunction::auto());
+            track.offset = offset;
+            track.base_size = size;
+            track.major_baseline = major_baseline;
+            track.minor_baseline = minor_baseline;
+            tracks.push(track);
+
+            let mut gutter = GridTrack::gutter(LengthPercentage::length(0.0));
+            gutter.offset = offset + size;
+            tracks.push(gutter);
+        }
+        tracks
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn baseline_item(
@@ -1448,7 +1560,7 @@ mod tests {
         );
         item.row_indexes = row_indexes;
         item.column_indexes = column_indexes;
-        item.block_offset = block_offset;
+        item.baseline_block_offset = block_offset;
         item.block_size = block_size;
         item.first_baseline = first_baseline;
         item.last_baseline = last_baseline;
@@ -1480,7 +1592,8 @@ mod tests {
             ),
         ];
 
-        assert_eq!(grid_container_baselines(&items), (18.0, 82.0));
+        let rows = baseline_rows(&[(0.0, 40.0, None, None), (40.0, 60.0, None, None)]);
+        assert_eq!(grid_container_baselines(&items, &rows, 100.0, HORIZONTAL_LTR_FLOW), (18.0, 82.0));
     }
 
     #[test]
@@ -1528,6 +1641,47 @@ mod tests {
             ),
         ];
 
-        assert_eq!(grid_container_baselines(&items), (12.0, 58.0));
+        let rows = baseline_rows(&[(0.0, 40.0, Some(12.0), None), (40.0, 40.0, Some(18.0), None)]);
+        assert_eq!(grid_container_baselines(&items, &rows, 100.0, HORIZONTAL_LTR_FLOW), (12.0, 58.0));
+    }
+
+    #[test]
+    fn grid_container_prefers_major_then_minor_at_the_first_and_last_rows() {
+        let items = vec![
+            baseline_item(
+                0,
+                Line { start: 0, end: 2 },
+                Line { start: 0, end: 2 },
+                false,
+                0.0,
+                20.0,
+                Some(5.0),
+                Some(15.0),
+            ),
+            baseline_item(
+                1,
+                Line { start: 2, end: 4 },
+                Line { start: 0, end: 2 },
+                false,
+                40.0,
+                20.0,
+                Some(5.0),
+                Some(15.0),
+            ),
+        ];
+        let rows = baseline_rows(&[(0.0, 40.0, Some(12.0), Some(5.0)), (40.0, 40.0, Some(18.0), Some(7.0))]);
+
+        assert_eq!(grid_container_baselines(&items, &rows, 100.0, HORIZONTAL_LTR_FLOW), (12.0, 73.0));
+    }
+
+    #[test]
+    fn grid_container_projects_track_baselines_from_reversed_block_flow() {
+        let items = vec![
+            baseline_item(0, Line { start: 0, end: 2 }, Line { start: 0, end: 2 }, false, 70.0, 30.0, None, None),
+            baseline_item(1, Line { start: 2, end: 4 }, Line { start: 0, end: 2 }, false, 0.0, 40.0, None, None),
+        ];
+        let rows = baseline_rows(&[(0.0, 30.0, None, Some(5.0)), (60.0, 40.0, Some(10.0), None)]);
+
+        assert_eq!(grid_container_baselines(&items, &rows, 100.0, VERTICAL_RL_FLOW), (10.0, 95.0));
     }
 }

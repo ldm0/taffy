@@ -2,6 +2,7 @@
 use super::GridTrack;
 use crate::compute::common::alignment::resolve_self_alignment;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::common::baseline::{determine_baseline_group, determine_baseline_writing_mode, BaselineGroup};
 use crate::compute::common::intrinsic_size::resolve_intrinsic_axis_size;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
@@ -11,8 +12,51 @@ use crate::style::{
 };
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{AutoSizeBehavior, BoxSizing, GridItemStyle, LengthPercentage, WritingDirection};
+use crate::{AutoSizeBehavior, BoxSizing, GridItemStyle, LengthPercentage, WritingDirection, WritingMode};
 use core::ops::Range;
+
+/// The baseline coordinate system and sharing group for one grid axis.
+///
+/// Grid baseline alignment is independent in the inline and block axes. The
+/// context is resolved once from the container and item writing modes, then
+/// shared by track sizing, final alignment, and baseline propagation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::compute::grid) struct GridBaselineContext {
+    /// Writing mode in which the child's fragment baseline is interpreted.
+    pub writing_mode: WritingMode,
+    /// The start-side (major) or end-side (minor) sharing group.
+    pub group: BaselineGroup,
+}
+
+/// Shared track baseline used to position a final grid item fragment.
+///
+/// Intrinsic sizing uses `GridItem::baseline_shim`; final placement instead
+/// compares the final fragment against this stable track metric.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::compute::grid) struct GridBaselineAlignment {
+    /// Writing mode in which the final fragment baseline is requested.
+    pub writing_mode: WritingMode,
+    /// Start-side or end-side baseline-sharing group.
+    pub group: BaselineGroup,
+    /// Greatest baseline distance stored by the selected grid track.
+    pub track_baseline: f32,
+}
+
+impl GridBaselineContext {
+    /// Resolve the baseline coordinate system and sharing group for one item
+    /// alignment axis.
+    fn resolve(
+        container: WritingDirection,
+        child_writing_mode: WritingMode,
+        is_parallel_context: bool,
+        alignment: AlignSelf,
+    ) -> Self {
+        let writing_mode = determine_baseline_writing_mode(container, child_writing_mode, is_parallel_context);
+        let group =
+            determine_baseline_group(container, writing_mode, is_parallel_context, alignment.is_last_baseline(), false);
+        Self { writing_mode, group }
+    }
+}
 
 /// The authored sizing source Grid uses for an item's minimum contribution.
 ///
@@ -136,12 +180,17 @@ pub(in super::super) struct GridItem {
     pub align_self: AlignSelf,
     /// The item's justify_self property, or the parent's justify_items property is not set
     pub justify_self: AlignSelf,
-    /// The item's first baseline measured for baseline-sharing-group shims.
-    /// This is separate from the baselines retained from final item layout.
-    pub alignment_baseline: Option<f32>,
-    /// Shim for baseline alignment that acts like an extra top margin
-    /// TODO: Support last baseline and vertical text baselines
-    pub baseline_shim: f32,
+    /// Baseline coordinate systems and sharing groups for column/row alignment.
+    pub baseline_context: InBothAbstractAxis<GridBaselineContext>,
+    /// The selected baseline measured for each alignment axis. These are
+    /// separate from the baselines retained from final item layout.
+    pub alignment_baseline: InBothAbstractAxis<Option<f32>>,
+    /// Temporary baseline shims included in intrinsic size contributions. Final
+    /// placement reads the shared metric from the selected track instead.
+    pub baseline_shim: InBothAbstractAxis<f32>,
+    /// Used alignment when a synthesized baseline would make intrinsic track
+    /// sizing cyclic. `None` preserves the authored baseline alignment.
+    pub baseline_fallback: InBothAbstractAxis<Option<AlignSelf>>,
 
     /// The item's definite row-start and row-end (same as `row` field, except in a different coordinate system)
     /// (as indexes into the Vec<GridTrack> stored in a grid's AbstractAxisTracks)
@@ -172,8 +221,8 @@ pub(in super::super) struct GridItem {
     /// grid area's block-size.
     pub depends_on_block_constraints: bool,
 
-    /// Final logical block offset. Used to propagate the container's baseline.
-    pub block_offset: f32,
+    /// Normal-flow logical block offset used to propagate the container's baseline.
+    pub baseline_block_offset: f32,
     /// Final logical block size. Used to synthesize a missing baseline.
     pub block_size: f32,
     /// First logical block-axis baseline from the item's final layout.
@@ -192,6 +241,8 @@ impl GridItem {
         parent_alignment: InBothAbstractAxis<AlignItems>,
         source_order: u16,
     ) -> Self {
+        let align_self = style.align_self().unwrap_or(parent_alignment.block);
+        let justify_self = style.justify_self().unwrap_or(parent_alignment.inline);
         GridItem {
             node,
             parent_writing_direction,
@@ -211,10 +262,25 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_alignment.block),
-            justify_self: style.justify_self().unwrap_or(parent_alignment.inline),
-            alignment_baseline: None,
-            baseline_shim: 0.0,
+            align_self,
+            justify_self,
+            baseline_context: InBothAbstractAxis {
+                inline: GridBaselineContext::resolve(
+                    parent_writing_direction,
+                    parent_writing_direction.mode,
+                    false,
+                    justify_self,
+                ),
+                block: GridBaselineContext::resolve(
+                    parent_writing_direction,
+                    parent_writing_direction.mode,
+                    true,
+                    align_self,
+                ),
+            },
+            alignment_baseline: InBothAbstractAxis { inline: None, block: None },
+            baseline_shim: InBothAbstractAxis { inline: 0.0, block: 0.0 },
+            baseline_fallback: InBothAbstractAxis { inline: None, block: None },
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             column_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             crosses_flexible_row: false,            // Properly initialised later
@@ -226,11 +292,126 @@ impl GridItem {
             max_content_contribution_cache: LogicalSize { inline_size: None, block_size: None },
             minimum_contribution_cache: LogicalSize { inline_size: None, block_size: None },
             depends_on_block_constraints: false,
-            block_offset: 0.0,
+            baseline_block_offset: 0.0,
             block_size: 0.0,
             first_baseline: None,
             last_baseline: None,
         }
+    }
+
+    /// Resolve both baseline contexts from the item's inherited writing mode.
+    /// The layout tree owns that node-level state; the numeric Grid style
+    /// projection is not an authoritative substitute.
+    pub fn resolve_baseline_context(&mut self, child_writing_mode: WritingMode) {
+        self.baseline_context = InBothAbstractAxis {
+            inline: GridBaselineContext::resolve(
+                self.parent_writing_direction,
+                child_writing_mode,
+                false,
+                self.justify_self,
+            ),
+            block: GridBaselineContext::resolve(
+                self.parent_writing_direction,
+                child_writing_mode,
+                true,
+                self.align_self,
+            ),
+        };
+    }
+
+    /// Return the shared alignment context used by this item on `axis`.
+    /// Major baselines participate in the start-most spanned track and minor
+    /// baselines in the end-most one, after mapping logical flow to the
+    /// physical-low-to-high track vectors.
+    pub fn baseline_sharing_track_index(&self, axis: AbstractAxis) -> usize {
+        let span = self.placement_indexes(axis);
+        let group = self.baseline_context.get(axis).group;
+        let logical_start_is_physical_low = !self.parent_writing_direction.is_logical_axis_reversed(axis);
+        if (group == BaselineGroup::Major) == logical_start_is_physical_low {
+            usize::from(span.start) + 1
+        } else {
+            usize::from(span.end.saturating_sub(1))
+        }
+    }
+
+    /// Resolve the final baseline-alignment input from the selected track.
+    pub fn final_baseline_alignment(&self, axis: AbstractAxis, tracks: &[GridTrack]) -> Option<GridBaselineAlignment> {
+        if !self.participates_in_baseline_alignment(axis) {
+            return None;
+        }
+        let context = self.baseline_context.get(axis);
+        let track_baseline = tracks.get(self.baseline_sharing_track_index(axis))?.baseline(context.group)?;
+        Some(GridBaselineAlignment { writing_mode: context.writing_mode, group: context.group, track_baseline })
+    }
+
+    /// Return the authored self-alignment in one logical Grid axis.
+    pub fn alignment(&self, axis: AbstractAxis) -> AlignSelf {
+        match axis {
+            AbstractAxis::Inline => self.justify_self,
+            AbstractAxis::Block => self.align_self,
+        }
+    }
+
+    /// Return the alignment after applying Grid's cyclic baseline fallback.
+    pub fn used_alignment(&self, axis: AbstractAxis) -> AlignSelf {
+        self.baseline_fallback.get(axis).unwrap_or_else(|| self.alignment(axis))
+    }
+
+    /// Whether an in-flow auto margin suppresses self-alignment in `axis`.
+    fn has_auto_margin(&self, axis: AbstractAxis) -> bool {
+        let margin = self.parent_writing_direction.to_logical_box_strut(self.margin);
+        match axis {
+            AbstractAxis::Inline => margin.inline_start.is_auto() || margin.inline_end.is_auto(),
+            AbstractAxis::Block => margin.block_start.is_auto() || margin.block_end.is_auto(),
+        }
+    }
+
+    /// Whether this item requests baseline alignment after auto-margin
+    /// precedence is applied, but before cyclic sizing fallback.
+    pub fn specifies_baseline_alignment(&self, axis: AbstractAxis) -> bool {
+        self.alignment(axis).is_baseline() && !self.has_auto_margin(axis)
+    }
+
+    /// Whether this item participates in a resolved baseline-sharing group.
+    pub fn participates_in_baseline_alignment(&self, axis: AbstractAxis) -> bool {
+        self.used_alignment(axis).is_baseline() && !self.has_auto_margin(axis)
+    }
+
+    /// Update Grid's cyclic baseline fallback after measuring the fragment.
+    ///
+    /// A synthesized baseline cannot participate when the item's size in the
+    /// alignment axis depends on an intrinsically-sized track. Flexible tracks
+    /// count as intrinsic only while that Grid axis remains indefinite.
+    pub fn resolve_baseline_fallback(
+        &mut self,
+        axis: AbstractAxis,
+        child_writing_mode: WritingMode,
+        has_synthesized_baseline: bool,
+        axis_size_is_definite: bool,
+    ) {
+        let spans_content_sized_track =
+            self.crosses_intrinsic_track(axis) || (!axis_size_is_definite && self.crosses_flexible_track(axis));
+        let child_is_parallel = !self.parent_writing_direction.mode.is_orthogonal_to(child_writing_mode);
+        let size_axis_is_child_block = child_is_parallel == (axis == AbstractAxis::Block);
+        let logical_size = child_writing_mode.to_logical(self.size);
+        let logical_min_size = child_writing_mode.to_logical(self.min_size);
+        let logical_max_size = child_writing_mode.to_logical(self.max_size);
+        let sizes = if size_axis_is_child_block {
+            [logical_size.block_size, logical_min_size.block_size, logical_max_size.block_size]
+        } else {
+            [logical_size.inline_size, logical_min_size.inline_size, logical_max_size.inline_size]
+        };
+        let size_depends_on_track =
+            sizes.into_iter().any(|size| size.may_have_percentage_dependence() || size.is_stretch());
+        let fallback = if has_synthesized_baseline && spans_content_sized_track && size_depends_on_track {
+            Some(match self.baseline_context.get(axis).group {
+                BaselineGroup::Major => AlignSelf::START,
+                BaselineGroup::Minor => AlignSelf::END,
+            })
+        } else {
+            None
+        };
+        *self.baseline_fallback.get_mut(axis) = fallback;
     }
 
     /// This item's placement in the specified axis in OriginZero coordinates
@@ -539,17 +720,24 @@ impl GridItem {
     ) -> LogicalSize<f32> {
         let writing_direction = self.parent_writing_direction;
         let logical_margin = writing_direction.to_logical_box_strut(self.margin);
-        let resolved_logical_margin = crate::geometry::LogicalBoxStrut {
+        let mut resolved_logical_margin = crate::geometry::LogicalBoxStrut {
             inline_start: logical_margin.inline_start.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             inline_end: logical_margin.inline_end.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
             block_start: logical_margin
                 .block_start
-                .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis))
-                + self.baseline_shim,
+                .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis)),
             block_end: logical_margin
                 .block_end
                 .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis)),
         };
+        match self.baseline_context.inline.group {
+            BaselineGroup::Major => resolved_logical_margin.inline_start += self.baseline_shim.inline,
+            BaselineGroup::Minor => resolved_logical_margin.inline_end += self.baseline_shim.inline,
+        }
+        match self.baseline_context.block.group {
+            BaselineGroup::Major => resolved_logical_margin.block_start += self.baseline_shim.block,
+            BaselineGroup::Minor => resolved_logical_margin.block_end += self.baseline_shim.block,
+        }
         LogicalSize {
             inline_size: resolved_logical_margin.inline_start + resolved_logical_margin.inline_end,
             block_size: resolved_logical_margin.block_start + resolved_logical_margin.block_end,

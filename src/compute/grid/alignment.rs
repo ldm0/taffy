@@ -1,5 +1,5 @@
 //! Alignment of tracks and final positioning of items
-use super::types::GridTrack;
+use super::types::{GridBaselineAlignment, GridTrack};
 use crate::compute::common::absolute::{AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing};
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment, resolve_self_alignment_safety,
@@ -8,11 +8,15 @@ use crate::compute::common::aspect_ratio::{
     resolve_formatting_context_size, resolve_size_constraints, FormattingContextSizeInput, SizeConstraintInput,
     TransferredSizesMode,
 };
-use crate::compute::common::baseline::logical_block_baseline;
+use crate::compute::common::baseline::{
+    fragment_logical_block_baseline, fragment_logical_block_baseline_or_synthesize, BaselineGroup, FontBaseline,
+};
 use crate::compute::common::intrinsic_size::{
     resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
 };
-use crate::geometry::{InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size};
+use crate::geometry::{
+    AbstractAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size,
+};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
 };
@@ -25,7 +29,8 @@ use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 #[cfg(feature = "content_size")]
 use crate::compute::common::content_size::compute_content_size_contribution;
 use crate::{
-    AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, OrthogonalFallback, RequestedAxis, WritingMode,
+    AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, OrthogonalFallback, RequestedAxis, WritingDirection,
+    WritingMode,
 };
 
 use super::flow::GridFlow;
@@ -39,14 +44,26 @@ use super::flow::GridFlow;
 pub(super) struct GridItemPlacement {
     /// Contribution of the positioned item to the grid's scrollable content.
     pub(super) content_size_contribution: Size<f32>,
-    /// Used block-start position relative to the grid container.
-    pub(super) block_offset: f32,
+    /// Normal-flow block-start position used for baseline propagation. Relative
+    /// positioning moves the painted fragment, but not the baseline it contributes
+    /// to its parent formatting context.
+    pub(super) baseline_block_offset: f32,
     /// Used border-box block-size.
     pub(super) block_size: f32,
     /// First baseline relative to the item's border box.
     pub(super) first_baseline: Option<f32>,
     /// Last baseline relative to the item's border box.
     pub(super) last_baseline: Option<f32>,
+}
+
+/// Final placement in one Grid axis before and after relative positioning.
+struct AlignedAxisPlacement {
+    /// Used fragment position, including relative positioning.
+    offset: f32,
+    /// Position established by Grid alignment, before relative positioning.
+    normal_flow_offset: f32,
+    /// Resolved used margins in this axis.
+    margin: Line<f32>,
 }
 
 /// Align the grid tracks within the grid according to the align-content (rows) or
@@ -116,7 +133,8 @@ pub(super) fn align_and_position_item(
     order: u32,
     grid_area: Rect<f32>,
     container_alignment_styles: InBothAbstractAxis<Option<AlignItems>>,
-    baseline_shim: f32,
+    baseline_alignment: InBothAbstractAxis<Option<GridBaselineAlignment>>,
+    baseline_fallback: InBothAbstractAxis<Option<AlignSelf>>,
     direction: Direction,
     parent_writing_mode: WritingMode,
     container_border_box_size: Size<f32>,
@@ -225,8 +243,7 @@ pub(super) fn align_and_position_item(
         block_size: logical_grid_area_size
             .block_size
             .maybe_sub(logical_margin.block_start)
-            .maybe_sub(logical_margin.block_end)
-            - baseline_shim,
+            .maybe_sub(logical_margin.block_end),
     };
     let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
     let inset_modified_available_size = if position == Position::Absolute {
@@ -299,8 +316,21 @@ pub(super) fn align_and_position_item(
             normal_auto_size,
         ),
     };
-    let alignment_styles =
+    let mut alignment_styles =
         InBothAbstractAxis { inline: resolved_alignment.inline.position, block: resolved_alignment.block.position };
+    if let Some(fallback) = baseline_fallback.inline {
+        alignment_styles.inline = fallback;
+    }
+    if let Some(fallback) = baseline_fallback.block {
+        alignment_styles.block = fallback;
+    }
+    if position == Position::Absolute {
+        for alignment in [&mut alignment_styles.inline, &mut alignment_styles.block] {
+            if alignment.is_baseline() {
+                *alignment = if alignment.is_last_baseline() { AlignSelf::END } else { AlignSelf::START };
+            }
+        }
+    }
     let mut logical_auto_size =
         InBothAbstractAxis { inline: resolved_alignment.inline.auto_size, block: resolved_alignment.block.auto_size };
     if position != Position::Absolute {
@@ -433,7 +463,39 @@ pub(super) fn align_and_position_item(
 
     let physical_size = Size { width, height };
     let logical_size = flow.to_logical_size(physical_size);
-    let (inline_offset, inline_margin) = align_item_within_area(
+    let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+    let font_baseline = FontBaseline::for_writing_mode(parent_writing_mode);
+    let resolve_baseline_offset = |axis: AbstractAxis, alignment: AlignSelf, input: Option<GridBaselineAlignment>| {
+        let input = input?;
+        debug_assert!(alignment.is_baseline());
+
+        let baseline_writing_direction = WritingDirection::new(input.writing_mode, Direction::Ltr);
+        let fragment_baselines =
+            if alignment.is_last_baseline() { layout_output.last_baselines } else { layout_output.first_baselines };
+        let baseline_block_size = input.writing_mode.to_logical(physical_size).block_size;
+        let baseline_from_start = fragment_logical_block_baseline_or_synthesize(
+            fragment_baselines,
+            physical_size,
+            item_writing_mode,
+            baseline_writing_direction,
+            font_baseline,
+        );
+        let baseline_from_start =
+            if is_scroll_container { baseline_from_start.clamp(0.0, baseline_block_size) } else { baseline_from_start };
+        let item_baseline =
+            if alignment.is_last_baseline() { baseline_block_size - baseline_from_start } else { baseline_from_start };
+        let baseline_delta = input.track_baseline - item_baseline;
+
+        Some(match input.group {
+            BaselineGroup::Major => baseline_delta,
+            BaselineGroup::Minor => logical_grid_area_size.get(axis) - baseline_delta - logical_size.get(axis),
+        })
+    };
+    let baseline_offset = InBothAbstractAxis {
+        inline: resolve_baseline_offset(AbstractAxis::Inline, alignment_styles.inline, baseline_alignment.inline),
+        block: resolve_baseline_offset(AbstractAxis::Block, alignment_styles.block, baseline_alignment.block),
+    };
+    let inline_placement = align_item_within_area(
         Line {
             start: logical_grid_area_offset.inline_offset,
             end: logical_grid_area_offset.inline_offset + logical_grid_area_size.inline_size,
@@ -443,9 +505,9 @@ pub(super) fn align_and_position_item(
         position,
         Line { start: logical_inset.inline_start, end: logical_inset.inline_end },
         Line { start: logical_margin.inline_start, end: logical_margin.inline_end },
-        0.0,
+        baseline_offset.inline,
     );
-    let (block_offset, block_margin) = align_item_within_area(
+    let block_placement = align_item_within_area(
         Line {
             start: logical_grid_area_offset.block_offset,
             end: logical_grid_area_offset.block_offset + logical_grid_area_size.block_size,
@@ -455,16 +517,17 @@ pub(super) fn align_and_position_item(
         position,
         Line { start: logical_inset.block_start, end: logical_inset.block_end },
         Line { start: logical_margin.block_start, end: logical_margin.block_end },
-        baseline_shim,
+        baseline_offset.block,
     );
-    let logical_location = LogicalOffset { inline_offset, block_offset };
+    let logical_location =
+        LogicalOffset { inline_offset: inline_placement.offset, block_offset: block_placement.offset };
     let location = converter.to_physical_point(logical_location, physical_size);
 
     let resolved_margin = flow.writing_direction().to_physical_box_strut(LogicalBoxStrut {
-        inline_start: inline_margin.start,
-        inline_end: inline_margin.end,
-        block_start: block_margin.start,
-        block_end: block_margin.end,
+        inline_start: inline_placement.margin.start,
+        inline_end: inline_placement.margin.end,
+        block_start: block_placement.margin.start,
+        block_end: block_placement.margin.end,
     });
 
     tree.set_unrounded_layout(
@@ -506,51 +569,62 @@ pub(super) fn align_and_position_item(
     #[cfg(not(feature = "content_size"))]
     let contribution = Size::ZERO;
 
+    let resolve_baseline = |baselines| {
+        fragment_logical_block_baseline(baselines, physical_size, item_writing_mode, flow.writing_direction()).map(
+            |baseline| {
+                if overflow.x.is_scroll_container() || overflow.y.is_scroll_container() {
+                    baseline.clamp(0.0, logical_size.block_size)
+                } else {
+                    baseline
+                }
+            },
+        )
+    };
     GridItemPlacement {
         content_size_contribution: contribution,
-        block_offset: logical_location.block_offset,
+        baseline_block_offset: block_placement.normal_flow_offset,
         block_size: logical_size.block_size,
-        first_baseline: logical_block_baseline(layout_output.first_baselines, physical_size, flow.writing_direction()),
-        last_baseline: logical_block_baseline(layout_output.last_baselines, physical_size, flow.writing_direction()),
+        first_baseline: resolve_baseline(layout_output.first_baselines),
+        last_baseline: resolve_baseline(layout_output.last_baselines),
     }
 }
 
 /// Align and size a grid item along a single axis
 #[allow(clippy::too_many_arguments)]
-pub(super) fn align_item_within_area(
+fn align_item_within_area(
     grid_area: Line<f32>,
     alignment_style: AlignSelf,
     resolved_size: f32,
     position: Position,
     inset: Line<Option<f32>>,
     margin: Line<Option<f32>>,
-    baseline_shim: f32,
-) -> (f32, Line<f32>) {
+    baseline_offset: Option<f32>,
+) -> AlignedAxisPlacement {
     // Calculate grid area dimension in the axis
-    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0) + baseline_shim, end: margin.end.unwrap_or(0.0) };
+    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0), end: margin.end.unwrap_or(0.0) };
     let grid_area_size = f32_max(grid_area.end - grid_area.start, 0.0);
     let free_space = f32_max(grid_area_size - resolved_size - non_auto_margin.sum(), 0.0);
 
     // Expand auto margins to fill available space
     let auto_margin_count = margin.start.is_none() as u8 + margin.end.is_none() as u8;
     let auto_margin_size = if auto_margin_count > 0 { free_space / auto_margin_count as f32 } else { 0.0 };
-    let resolved_margin = Line {
-        start: margin.start.unwrap_or(auto_margin_size) + baseline_shim,
-        end: margin.end.unwrap_or(auto_margin_size),
-    };
+    let resolved_margin =
+        Line { start: margin.start.unwrap_or(auto_margin_size), end: margin.end.unwrap_or(auto_margin_size) };
 
     let overflows = resolved_size + non_auto_margin.sum() > grid_area_size;
     let alignment_keyword = resolve_self_alignment_safety(alignment_style, overflows);
 
     // Compute offset in the axis
     let alignment_based_offset = match alignment_keyword {
-        // TODO: Add support for baseline alignment. For now we treat it as "start".
         AlignItemsKeyword::Normal
         | AlignItemsKeyword::Start
         | AlignItemsKeyword::FlexStart
-        | AlignItemsKeyword::Baseline
         | AlignItemsKeyword::Stretch => resolved_margin.start,
         AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => grid_area_size - resolved_size - resolved_margin.end,
+        AlignItemsKeyword::Baseline => baseline_offset.unwrap_or(resolved_margin.start),
+        AlignItemsKeyword::LastBaseline => {
+            baseline_offset.unwrap_or(grid_area_size - resolved_size - resolved_margin.end)
+        }
         AlignItemsKeyword::Center => {
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }
@@ -569,11 +643,12 @@ pub(super) fn align_item_within_area(
         alignment_based_offset
     };
 
-    let mut start = grid_area.start + offset_within_area;
+    let normal_flow_offset = grid_area.start + offset_within_area;
+    let mut offset = normal_flow_offset;
     if position == Position::Relative {
         let relative_inset = inset.start.or(inset.end.map(|pos| -pos));
-        start += relative_inset.unwrap_or(0.0);
+        offset += relative_inset.unwrap_or(0.0);
     }
 
-    (start, resolved_margin)
+    AlignedAxisPlacement { offset, normal_flow_offset, margin: resolved_margin }
 }

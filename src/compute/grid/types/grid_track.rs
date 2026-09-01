@@ -1,5 +1,6 @@
 //! Contains GridTrack used to represent a single grid track (row/column) during layout
 use crate::{
+    compute::common::baseline::BaselineGroup,
     prelude::TaffyZero,
     style::{LengthPercentage, MaxTrackSizingFunction, MinTrackSizingFunction},
     util::sys::f32_min,
@@ -40,6 +41,12 @@ pub(in super::super) struct GridTrack {
     /// The size (width/height as applicable) of the track
     pub base_size: f32,
 
+    /// Greatest baseline distance in the track's start-side sharing group.
+    pub major_baseline: Option<f32>,
+
+    /// Greatest baseline distance in the track's end-side sharing group.
+    pub minor_baseline: Option<f32>,
+
     /// A temporary scratch value when sizing tracks
     /// Note: can be infinity
     pub growth_limit: f32,
@@ -73,6 +80,8 @@ impl GridTrack {
             max_track_sizing_function,
             offset: 0.0,
             base_size: 0.0,
+            major_baseline: None,
+            minor_baseline: None,
             growth_limit: 0.0,
             content_alignment_adjustment: 0.0,
             item_incurred_increase: 0.0,
@@ -119,6 +128,29 @@ impl GridTrack {
         self.is_collapsed = true;
         self.min_track_sizing_function = MinTrackSizingFunction::ZERO;
         self.max_track_sizing_function = MaxTrackSizingFunction::ZERO;
+    }
+
+    /// Clear baseline-sharing metrics before recomputing an axis.
+    pub fn reset_baselines(&mut self) {
+        self.major_baseline = None;
+        self.minor_baseline = None;
+    }
+
+    /// Store the greatest baseline distance observed for `group`.
+    pub fn set_baseline(&mut self, group: BaselineGroup, baseline: f32) {
+        let slot = match group {
+            BaselineGroup::Major => &mut self.major_baseline,
+            BaselineGroup::Minor => &mut self.minor_baseline,
+        };
+        *slot = Some(slot.map_or(baseline, |current| current.max(baseline)));
+    }
+
+    /// Return the shared baseline distance for `group`.
+    pub fn baseline(&self, group: BaselineGroup) -> Option<f32> {
+        match group {
+            BaselineGroup::Major => self.major_baseline,
+            BaselineGroup::Minor => self.minor_baseline,
+        }
     }
 
     #[inline(always)]
