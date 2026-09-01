@@ -110,6 +110,34 @@ fn grid_intrinsic_probes_keep_item_owned_sizes_out_of_known_dimensions() {
     );
 }
 
+#[test]
+fn grid_auto_repeat_uses_final_ratio_resolved_size_under_max_content_constraint() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+
+    let item = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                min_size: Size { width: auto(), height: length(60.0) },
+                aspect_ratio: Some(1.0),
+                grid_template_columns: vec![repeat(RepetitionCount::AutoFill, vec![length(50.0)])],
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The 60px block-axis minimum transfers through the 1:1 ratio. Grid then
+    // needs two 50px auto-repeat tracks, and the final 100px inline size
+    // transfers back to the block axis. Eager shared fit-content resolution
+    // would stop after the first 60px ratio transfer.
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
 fn layout_block_ratio_item(writing_mode: WritingMode, mut item_style: Style, mut content_style: Style) -> Size<f32> {
     let mut tree = TaffyTree::<()>::new();
     item_style.display = Display::Block;

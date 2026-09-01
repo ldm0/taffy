@@ -142,12 +142,17 @@ fn resolve_intrinsic_axis_value(
 
     let min_content = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
     let min_content_size = min_content.size.get_abs(axis);
-    let max_content_size = max_content.size.get_abs(axis);
+    // CSS intrinsic sizes are an ordered pair. Negative margins and
+    // compatibility algorithms can make their raw sums cross, in which case
+    // max-content encompasses min-content. Spell out the fit-content formula
+    // instead of relying on `f32::clamp`, whose precondition would turn this
+    // valid CSS case into a panic.
+    let max_content_size = max_content.size.get_abs(axis).max(min_content_size);
     IntrinsicAxisValue {
         value: Some(match available_space {
             AvailableSpace::MinContent => min_content_size,
             AvailableSpace::MaxContent => max_content_size,
-            AvailableSpace::Definite(limit) => limit.clamp(min_content_size, max_content_size),
+            AvailableSpace::Definite(limit) => limit.max(min_content_size).min(max_content_size),
         }),
         depends_on_block_constraints: min_content.depends_on_block_constraints
             || max_content.depends_on_block_constraints,
@@ -223,7 +228,7 @@ fn resolve_intrinsic_measurement_input(
     mut inputs: ChildLayoutInput,
 ) -> ChildLayoutInput {
     let percentage_basis = inputs.parent_writing_mode.to_logical(inputs.parent_size).inline_size;
-    let own_definite_dimensions = {
+    let (own_definite_dimensions, own_min_size, own_max_size) = {
         let style = tree.get_core_container_style(node_id);
         let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
@@ -233,7 +238,9 @@ fn resolve_intrinsic_measurement_input(
             size.maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
                 .maybe_add(box_sizing_adjustment)
         };
-        resolve(style.size()).maybe_clamp(resolve(style.min_size()), resolve(style.max_size()))
+        let min_size = resolve(style.min_size());
+        let max_size = resolve(style.max_size());
+        (resolve(style.size()).maybe_clamp(min_size, max_size), min_size, max_size)
     };
     let geometry = IntrinsicMeasurementGeometry::resolve(
         inputs.known_dimensions,
@@ -242,6 +249,12 @@ fn resolve_intrinsic_measurement_input(
     );
     inputs.known_dimensions = geometry.known_dimensions;
     inputs.definite_dimensions = geometry.definite_dimensions;
+    // The queried axis is replaced by its min/max-content constraint in
+    // `measure_intrinsic_axis`. On the perpendicular axis, however, authored
+    // min/max constraints still bound the layout opportunity. In particular,
+    // a wrapped column flexbox uses `max-block-size` as its line length while
+    // its inline contribution is being measured.
+    inputs.available_space = inputs.available_space.maybe_min(own_max_size).maybe_max(own_min_size);
     inputs
 }
 
@@ -334,8 +347,8 @@ impl RatioDependentAutomaticMinimum {
 /// Authored constraints and available space for one intrinsic sizing axis.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IntrinsicAxisInput {
-    /// Preferred size property in the selected axis.
-    pub preferred: Dimension,
+    /// Authored or formatting-context-selected preferred size source.
+    pub preferred: IntrinsicPreferredSize,
     /// Minimum size property in the selected axis.
     pub min: Dimension,
     /// Maximum size property in the selected axis.
@@ -346,6 +359,77 @@ pub(crate) struct IntrinsicAxisInput {
     pub axis: AbsoluteAxis,
     /// Ratio-dependent `SizeType::Content` result for intrinsic keywords.
     pub ratio_content_contribution: RatioDependentContentContribution,
+}
+
+/// Provenance of the preferred size supplied to intrinsic-axis resolution.
+///
+/// An automatic shrink-to-fit size is deliberately not rewritten into an
+/// authored `fit-content` value. Intrinsic contribution requests leave
+/// `inline-size: auto` authored and let the owning formatting algorithm compute
+/// the requested contribution. During final layout, this variant selects the
+/// fit-content formula even when the containing constraint is min-content or
+/// max-content. Blink retains the same distinction through
+/// `ConstraintSpace::InlineAutoBehavior` and the separate `auto_length` passed
+/// to `ResolveMainInlineLength`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum IntrinsicPreferredSize {
+    /// The preferred size comes directly from the computed style.
+    Authored(Dimension),
+    /// `inline-size:auto` is shrink-to-fit in this constraint space.
+    AutomaticFitContent,
+}
+
+impl IntrinsicPreferredSize {
+    /// Preserve an automatic fit-content decision made by the containing
+    /// formatting context while leaving all other values authored.
+    #[inline(always)]
+    fn for_node_inline_size(
+        authored: Dimension,
+        sizing_purpose: crate::tree::SizingPurpose,
+        auto_behavior: crate::AutoSizeBehavior,
+        automatic_resolution: AutomaticInlineSizeResolution,
+    ) -> Self {
+        if authored.is_auto()
+            && sizing_purpose == crate::tree::SizingPurpose::Layout
+            && auto_behavior == crate::AutoSizeBehavior::FitContent
+            && automatic_resolution == AutomaticInlineSizeResolution::FitContent
+        {
+            Self::AutomaticFitContent
+        } else {
+            Self::Authored(authored)
+        }
+    }
+}
+
+/// Selects which layer resolves an automatic inline size during final layout.
+///
+/// Most formatting algorithms can use the shared fit-content measurement.
+/// Grid defers because auto-repeat track counts are resolved from its final
+/// ratio-constrained size and may require an algorithm-owned rerun.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutomaticInlineSizeResolution {
+    /// Resolve `inline-size: auto` through the shared fit-content path.
+    FitContent,
+    /// Leave the automatic inline size to the formatting algorithm.
+    DeferToFormattingContext,
+}
+
+/// Resolve the preferred intrinsic value without erasing whether fit-content
+/// came from style or from the current formatting context.
+fn resolve_intrinsic_preferred_axis_value(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: ChildLayoutInput,
+    preferred: IntrinsicPreferredSize,
+    available_space: AvailableSpace,
+    axis: AbsoluteAxis,
+    ratio_content_contribution: RatioDependentContentContribution,
+) -> IntrinsicAxisValue {
+    let value = match preferred {
+        IntrinsicPreferredSize::Authored(value) => value,
+        IntrinsicPreferredSize::AutomaticFitContent => Dimension::fit_content(),
+    };
+    resolve_intrinsic_axis_value(tree, node_id, inputs, value, available_space, axis, ratio_content_contribution)
 }
 
 /// Authored physical-width constraints resolved by a formatting context.
@@ -669,7 +753,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         node_id,
         child_input,
         IntrinsicAxisInput {
-            preferred: width_input.preferred,
+            preferred: IntrinsicPreferredSize::Authored(width_input.preferred),
             min: width_input.min,
             max: width_input.max,
             available_space: width_input.available_space,
@@ -691,7 +775,7 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
     let inputs = resolve_intrinsic_measurement_input(tree, node_id, inputs);
     let IntrinsicAxisInput { preferred, min, max, available_space, axis, ratio_content_contribution } = axis_input;
     IntrinsicSizeConstraints {
-        preferred: resolve_intrinsic_axis_value(
+        preferred: resolve_intrinsic_preferred_axis_value(
             tree,
             node_id,
             inputs,
@@ -740,6 +824,8 @@ pub(crate) struct NodeSizeConstraintInput {
     pub padding_border_size: Size<f32>,
     /// Used preferred aspect ratio.
     pub aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Owner of automatic inline-size resolution for this formatting context.
+    pub automatic_inline_size_resolution: AutomaticInlineSizeResolution,
 }
 
 /// Child-owned initial geometry derived from style and a constraint space.
@@ -836,6 +922,7 @@ pub(crate) fn resolve_node_size_constraints(
         box_sizing_adjustment,
         padding_border_size,
         aspect_ratio,
+        automatic_inline_size_resolution,
     } = sizing;
     let writing_mode = tree.get_writing_mode(node_id);
     let inline_axis = writing_mode.inline_axis();
@@ -898,7 +985,12 @@ pub(crate) fn resolve_node_size_constraints(
         node_id,
         child_input,
         IntrinsicAxisInput {
-            preferred: logical_raw_size.inline_size,
+            preferred: IntrinsicPreferredSize::for_node_inline_size(
+                logical_raw_size.inline_size,
+                inputs.sizing_purpose,
+                inputs.inline_auto_behavior,
+                automatic_inline_size_resolution,
+            ),
             min: logical_raw_min_size.inline_size,
             max: logical_raw_max_size.inline_size,
             available_space: available_inline_size,
@@ -906,7 +998,6 @@ pub(crate) fn resolve_node_size_constraints(
             ratio_content_contribution,
         },
     );
-
     let mut logical_preferred_size = logical_direct_size;
     logical_preferred_size.inline_size = logical_preferred_size.inline_size.or(intrinsic.preferred.value);
     let mut logical_min_size = logical_direct_min_size;
@@ -1037,6 +1128,7 @@ pub fn resolve_leaf_node_sizing(
             },
             padding_border_size,
             aspect_ratio,
+            automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
         }
     };
     resolve_node_size_constraints(tree, node_id, inputs, sizing)

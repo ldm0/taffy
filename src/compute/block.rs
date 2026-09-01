@@ -28,8 +28,9 @@ use super::common::baseline::physical_baseline;
 use super::common::intrinsic_size::{
     measure_intrinsic_axis, resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
     resolve_intrinsic_width_constraints, resolve_node_size_constraints, resolve_ratio_dependent_content_contribution,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicWidthInput, NodeSizeConstraintInput,
-    RatioDependentAutomaticMinimum, ResolvedNodeSizing,
+    AutomaticInlineSizeResolution, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
+    IntrinsicPreferredSize, IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum,
+    ResolvedNodeSizing,
 };
 
 #[cfg(feature = "float_layout")]
@@ -463,6 +464,7 @@ pub fn compute_block_layout(
             box_sizing_adjustment,
             padding_border_size,
             aspect_ratio,
+            automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
         },
     );
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
@@ -997,7 +999,7 @@ fn generate_item_list(
                     child_node_id,
                     intrinsic_inputs,
                     IntrinsicAxisInput {
-                        preferred: raw_logical_size.inline_size,
+                        preferred: IntrinsicPreferredSize::Authored(raw_logical_size.inline_size),
                         min: raw_logical_min_size.inline_size,
                         max: raw_logical_max_size.inline_size,
                         available_space: available_inline_size,
@@ -1254,7 +1256,7 @@ fn resolve_block_item_final_style(
         .with_inline_auto_behavior(item.inline_auto_behavior)
         .with_block_auto_behavior(AutoSizeBehavior::FitContent),
         IntrinsicAxisInput {
-            preferred: raw_logical_size.inline_size,
+            preferred: IntrinsicPreferredSize::Authored(raw_logical_size.inline_size),
             min: raw_logical_min_size.inline_size,
             max: raw_logical_max_size.inline_size,
             available_space: available_inline_size,

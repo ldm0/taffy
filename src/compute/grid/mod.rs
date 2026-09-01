@@ -26,7 +26,8 @@ use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCo
 
 use super::common::baseline::physical_baseline;
 use super::common::intrinsic_size::{
-    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
+    resolve_node_size_constraints, AutomaticInlineSizeResolution, BlockSizeProperties, ContentBasedBlockSize,
+    NodeSizeConstraintInput,
 };
 use super::common::used_size::resolve_used_size;
 
@@ -175,6 +176,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             box_sizing_adjustment,
             padding_border_size,
             aspect_ratio,
+            automatic_inline_size_resolution: AutomaticInlineSizeResolution::DeferToFormattingContext,
         },
     );
     let mut min_size = node_sizing.min_size;
