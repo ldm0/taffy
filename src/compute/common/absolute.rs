@@ -1,6 +1,6 @@
 use crate::compute::common::aspect_ratio::ResolvedAxisConstraints;
 use crate::compute::common::intrinsic_size::{
-    measure_content_based_block_size, BlockSizeProperties, ContentBasedBlockSize,
+    resolve_content_based_block_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
 };
 #[cfg(any(feature = "block_layout", feature = "flexbox"))]
 use crate::geometry::AbsoluteAxis;
@@ -111,7 +111,7 @@ impl AbsoluteBlockSizeResolver {
         child_input: ChildLayoutInput,
         sizing: AbsoluteBoxSizing,
     ) -> AbsoluteBoxSizing {
-        let intrinsic = measure_content_based_block_size(tree, node, child_input, self.content_size);
+        let intrinsic = resolve_content_based_block_size_constraints(tree, node, child_input, self.content_size);
         let mut logical_size = self.writing_mode.to_logical(sizing.size);
         let mut logical_min_size = self.writing_mode.to_logical(sizing.min_size);
         let mut logical_max_size = self.writing_mode.to_logical(sizing.max_size);

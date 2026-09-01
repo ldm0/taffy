@@ -36,6 +36,9 @@ pub(crate) struct ResolvedAxisConstraints {
 }
 
 impl ResolvedAxisConstraints {
+    /// No authored or transferred constraints.
+    const NONE: Self = Self { authored_min: None, authored_max: None, transferred_min: None, transferred_max: None };
+
     /// Merge late-resolved authored constraints and an automatic minimum.
     pub(crate) fn resolve(
         self,
@@ -54,6 +57,15 @@ impl ResolvedAxisConstraints {
 }
 
 impl ResolvedSizeConstraints {
+    /// Empty constraint state used by content-only sizing operations.
+    pub(crate) const NONE: Self = Self {
+        size: Size::NONE,
+        aspect_ratio_applied: Size { width: false, height: false },
+        min_size: Size::NONE,
+        max_size: Size::NONE,
+        constraint_sources: Size { width: ResolvedAxisConstraints::NONE, height: ResolvedAxisConstraints::NONE },
+    };
+
     /// Return source-preserving constraints for one physical axis.
     #[inline(always)]
     pub(crate) fn axis_constraints(self, axis: AbsoluteAxis) -> ResolvedAxisConstraints {

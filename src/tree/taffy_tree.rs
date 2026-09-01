@@ -18,8 +18,8 @@ use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_cached_size, compute_hidden_layout,
-    compute_leaf_layout_with_aspect_ratio_and_writing_mode, compute_root_layout, round_layout,
+    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout_with_context,
+    compute_root_layout, resolve_leaf_node_sizing, round_layout, LeafLayoutContext,
 };
 use crate::CacheTree;
 
@@ -313,11 +313,6 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
-        let inputs = resolved.inputs;
-        let intrinsic_dependency = resolved.depends_on_block_constraints;
-        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
-
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
         //   - Else call the passed closure (below) to compute the result
@@ -331,7 +326,7 @@ where
             debug_log_node!(inputs);
 
             // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-            let output = match (display_mode, has_children) {
+            match (display_mode, has_children) {
                 (Display::None, _) => compute_hidden_layout(tree, node_id),
                 #[cfg(feature = "block_layout")]
                 (Display::Block, true) => compute_block_layout(tree, node_id, inputs, block_ctx),
@@ -342,6 +337,7 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
+                    let node_sizing = resolve_leaf_node_sizing(tree, node_id, inputs);
                     let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
                     let node_key = node_id.into();
                     let writing_mode = tree.taffy.nodes[node_key].writing_mode;
@@ -351,19 +347,20 @@ where
                     let measure_function = |known_dimensions, available_space| {
                         (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
                     };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    compute_leaf_layout_with_context(
                         inputs,
                         style,
-                        writing_mode,
-                        aspect_ratio,
+                        LeafLayoutContext::new(
+                            writing_mode,
+                            aspect_ratio,
+                            crate::style::resolve_scrollbar_insets(style),
+                        )
+                        .with_node_sizing(node_sizing),
                         |_, _| 0.0,
                         measure_function,
                     )
                 }
-            };
-            output
-                .with_block_constraint_dependency(intrinsic_dependency)
-                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
+            }
         })
     }
 
@@ -373,11 +370,6 @@ where
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         let inputs = self.prepare_child_layout_input(node_id, inputs);
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
-        let inputs = resolved.inputs;
-        let intrinsic_dependency = resolved.depends_on_block_constraints;
-        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
-
         compute_cached_size(self, node_id, inputs, |tree, node_id, inputs| {
             let display_mode = tree.taffy.nodes[node_id.into()].style.display;
             let has_children = tree.child_count(node_id) > 0;
@@ -392,6 +384,7 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
+                    let node_sizing = resolve_leaf_node_sizing(tree, node_id, inputs);
                     let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
                     let node_key = node_id.into();
                     let writing_mode = tree.taffy.nodes[node_key].writing_mode;
@@ -401,20 +394,21 @@ where
                     let measure_function = |known_dimensions, available_space| {
                         (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
                     };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    compute_leaf_layout_with_context(
                         inputs,
                         style,
-                        writing_mode,
-                        aspect_ratio,
+                        LeafLayoutContext::new(
+                            writing_mode,
+                            aspect_ratio,
+                            crate::style::resolve_scrollbar_insets(style),
+                        )
+                        .with_node_sizing(node_sizing),
                         |_, _| 0.0,
                         measure_function,
                     )
                 }
             };
-            output
-                .with_block_constraint_dependency(intrinsic_dependency)
-                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
-                .into_intrinsic_size_result()
+            output.into_intrinsic_size_result()
         })
     }
 }
@@ -1307,6 +1301,59 @@ mod tests {
         assert!(ratio_sized.applied_aspect_ratio);
         assert_eq!(externally_sized.size.width, 70.0);
         assert!(!externally_sized.applied_aspect_ratio);
+    }
+
+    #[test]
+    #[cfg(all(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+    fn formatting_context_sizing_keeps_parent_fixed_and_preferred_sizes_distinct() {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let content = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+            let node = taffy
+                .new_with_children(
+                    Style {
+                        display,
+                        size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
+                        aspect_ratio: Some(2.0),
+                        ..Style::default()
+                    },
+                    &[content],
+                )
+                .unwrap();
+            let input = LayoutInput {
+                run_mode: RunMode::ComputeSize,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
+                axis: RequestedAxis::Horizontal,
+                inline_auto_behavior: crate::AutoSizeBehavior::FitContent,
+                block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+                orthogonal_fallback: crate::OrthogonalFallback::UseInitialContainingBlock,
+                known_dimensions: Size::NONE,
+                definite_dimensions: Size::NONE,
+                parent_size: Size::NONE,
+                parent_writing_mode: crate::WritingMode::HorizontalTb,
+                available_space: Size::MAX_CONTENT,
+                vertical_margins_are_collapsible: Line::FALSE,
+            };
+
+            let mut layout_tree = taffy.as_layout_tree();
+            let preferred = layout_tree.compute_child_size(node, input);
+            let fixed = layout_tree.compute_child_size(
+                node,
+                LayoutInput {
+                    known_dimensions: Size { width: Some(70.0), height: None },
+                    definite_dimensions: Size { width: Some(70.0), height: None },
+                    ..input
+                },
+            );
+            let preferred_again = layout_tree.compute_child_size(node, input);
+
+            assert_eq!(preferred.size.width, 80.0, "{display:?}");
+            assert!(preferred.applied_aspect_ratio, "{display:?}");
+            assert_eq!(fixed.size.width, 70.0, "{display:?}");
+            assert!(!fixed.applied_aspect_ratio, "{display:?}");
+            assert_eq!(preferred_again, preferred, "{display:?}");
+        }
     }
 
     /// Test that adding `add_child()` works

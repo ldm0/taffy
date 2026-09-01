@@ -2,7 +2,7 @@
 mod root_constraints {
     use taffy::prelude::{FromLength, FromPercent};
     use taffy::style_helpers::{length, TaffyMaxContent};
-    use taffy::{AvailableSpace, Rect, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, Display, Rect, Size, Style, TaffyTree};
     use taffy_test_helpers::new_test_tree;
 
     #[test]
@@ -106,5 +106,28 @@ mod root_constraints {
 
         assert_eq!(layout.size.width, 40.0);
         assert_eq!(layout.size.height, 40.0);
+    }
+
+    #[test]
+    fn block_root_auto_fill_remains_subject_to_child_owned_constraints() {
+        let mut tree: TaffyTree<()> = TaffyTree::with_capacity(2);
+        let child = tree.new_leaf(Style::default()).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: taffy::style::Dimension::auto(), height: length(10.0) },
+                    max_size: Size { width: length(60.0), height: taffy::style::Dimension::auto() },
+                    margin: Rect { left: length(10.0), right: length(20.0), top: length(0.0), bottom: length(0.0) },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent })
+            .unwrap();
+
+        assert_eq!(tree.layout(root).unwrap().size.width, 60.0);
     }
 }

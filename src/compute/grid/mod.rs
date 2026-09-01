@@ -10,7 +10,7 @@ use crate::tree::{
 use crate::util::debug::debug_log;
 use crate::util::sys::{f32_max, f32_min, GridTrackVec, Vec};
 use crate::util::MaybeMath;
-use crate::util::{MaybeResolve, ResolveOrZero};
+use crate::util::ResolveOrZero;
 use crate::{
     style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
     JustifyContent, LayoutGridContainer, RequestedAxis,
@@ -24,8 +24,10 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-use super::common::used_size::{resolve_inline_auto_size, resolve_used_size};
+use super::common::intrinsic_size::{
+    resolve_node_size_constraints, BlockSizeProperties, ContentBasedBlockSize, NodeSizeConstraintInput,
+};
+use super::common::used_size::resolve_used_size;
 
 #[cfg(feature = "detailed_layout_info")]
 use types::GridTrackKind;
@@ -104,7 +106,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { known_dimensions, parent_size, available_space, run_mode, .. } = inputs;
+    let LayoutInput { available_space, run_mode, .. } = inputs;
 
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let scrollbar_insets = tree.get_scrollbar_insets(node);
@@ -121,45 +123,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let (min_size, max_size, preferred_size, size_is_auto, preferred_inline_from_aspect_ratio) =
-        match inputs.sizing_mode {
-            SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, Size { width: true, height: true }, false),
-            SizingMode::InherentSize => {
-                let raw_size = style.size();
-                let size_is_auto = raw_size.map(|dimension| dimension.is_auto());
-                let resolved = resolve_size_constraints(SizeConstraintInput {
-                    size: raw_size
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    min_size: style
-                        .min_size()
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    max_size: style
-                        .max_size()
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    size_is_auto,
-                    writing_mode,
-                    inline_auto_behavior: inputs.inline_auto_behavior,
-                    block_auto_behavior: inputs.block_auto_behavior,
-                    transferred_sizes_mode: TransferredSizesMode::Normal,
-                    aspect_ratio,
-                    padding_border: padding_border_size,
-                });
-                (
-                    resolved.min_size,
-                    resolved.max_size,
-                    resolved.size,
-                    size_is_auto,
-                    resolved.aspect_ratio_applied.get_abs(writing_mode.inline_axis()),
-                )
-            }
-        };
-    let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-        && known_dimensions.get_abs(writing_mode.inline_axis()).is_none()
-        && preferred_inline_from_aspect_ratio;
-
     let content_box_inset = padding_border + scrollbar_insets;
 
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
@@ -167,22 +130,51 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let align_items = style.align_items();
     let justify_items = style.justify_items();
 
-    // Note: we avoid accessing the grid rows/columns methods more than once as this can
-    // cause an expensive-ish computation
-    let grid_template_columns = style.grid_template_columns();
-    let grid_template_rows = style.grid_template_rows();
-    let grid_auto_columns = style.grid_auto_columns();
-    let grid_auto_rows = style.grid_auto_rows();
-
-    let preferred_size = resolve_inline_auto_size(
-        preferred_size,
-        size_is_auto,
-        writing_mode,
-        inputs.inline_auto_behavior,
-        available_space,
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let logical_raw_size = writing_mode.to_logical(raw_size);
+    let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
+    let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
+    let overflow = style.overflow();
+    let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+    let content_based_block_size = ContentBasedBlockSize::new(
+        BlockSizeProperties::new(
+            logical_raw_size.block_size,
+            logical_raw_min_size.block_size,
+            logical_raw_max_size.block_size,
+        ),
+        aspect_ratio,
+        padding_border_size,
+        inputs.block_auto_behavior.is_content_based(aspect_ratio.is_some()),
+        is_scroll_container,
+        false,
     );
-    let outer_node_size = resolve_used_size(known_dimensions, preferred_size, min_size, max_size, padding_border_size);
-    let constrained_available_space = outer_node_size
+    let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
+        && content_based_block_size.requires_resolution()
+        && inputs.axis.contains(writing_mode.block_axis());
+    drop(style);
+
+    let node_sizing = resolve_node_size_constraints(
+        tree,
+        node,
+        inputs,
+        NodeSizeConstraintInput {
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            box_sizing_adjustment,
+            padding_border_size,
+            aspect_ratio,
+        },
+    );
+    let mut min_size = node_sizing.min_size;
+    let mut max_size = node_sizing.max_size;
+    let mut preferred_size = node_sizing.preferred_size;
+    let outer_node_size = node_sizing.outer_size;
+    let definite_outer_node_size = node_sizing.definite_size;
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
+    let constrained_available_space = definite_outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
         .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));
 
@@ -200,19 +192,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let inner_min_size = min_size.maybe_sub(content_box_inset.sum_axes());
     let inner_max_size = max_size.maybe_sub(content_box_inset.sum_axes());
     let mut inner_node_size = Size {
-        width: outer_node_size.width.map(|space| space - content_box_inset.horizontal_axis_sum()),
-        height: outer_node_size.height.map(|space| space - content_box_inset.vertical_axis_sum()),
+        width: definite_outer_node_size.width.map(|space| space - content_box_inset.horizontal_axis_sum()),
+        height: definite_outer_node_size.height.map(|space| space - content_box_inset.vertical_axis_sum()),
     };
 
-    debug_log!("parent_size", dbg:parent_size);
     debug_log!("outer_node_size", dbg:outer_node_size);
     debug_log!("inner_node_size", dbg:inner_node_size);
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
+    if run_mode == RunMode::ComputeSize && !needs_content_based_block_resolution {
         if let Size { width: Some(width), height: Some(height) } = outer_node_size {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
@@ -220,6 +212,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         if inputs.axis == RequestedAxis::Horizontal {
             if let Some(width) = outer_node_size.width {
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
@@ -227,6 +220,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Absolutely positioned children do not take part in grid placement and do not create
     // implicit tracks, so they are excluded from the grid size estimate.
+    let style = tree.get_grid_container_style(node);
+    // Keep lazily projected track lists alive for the complete placement and
+    // initialization phase so style adapters compute them only once.
+    let grid_template_columns = style.grid_template_columns();
+    let grid_template_rows = style.grid_template_rows();
+    let grid_auto_columns = style.grid_auto_columns();
+    let grid_auto_rows = style.grid_auto_rows();
     let get_child_styles_iter = |node| {
         tree.child_ids(node).map(|child_node: NodeId| tree.get_grid_child_style(child_node)).filter(|style| {
             style.box_generation_mode() != BoxGenerationMode::None && style.position() != Position::Absolute
@@ -238,7 +238,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // This is very similar to the inner_node_size except if the inner_node_size is not definite but the node
     // has a min- or max- size style then that will be used in it's place.
-    let auto_fit_container_size = outer_node_size
+    let auto_fit_container_size = definite_outer_node_size
         .or(max_size)
         .or(min_size)
         .maybe_clamp(min_size, max_size)
@@ -251,7 +251,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Otherwise, if the grid container has a definite min size in the relevant axis:
     //   - then the number of repetitions is the smallest possible positive integer that fulfills that minimum requirement
     // Otherwise, the specified track list repeats only once.
-    let auto_repeat_fit_strategy = outer_node_size.or(max_size).map(|val| match val {
+    let auto_repeat_fit_strategy = definite_outer_node_size.or(max_size).map(|val| match val {
         Some(_) => AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
         None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
     });
@@ -432,9 +432,16 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let initial_column_container_size =
         column_track_sizing_result.constrained_available_space.unwrap_or(initial_column_sum);
     let initial_row_container_size = row_track_sizing_result.constrained_available_space.unwrap_or(initial_row_sum);
-    let resolve_container_border_box = |content_based_size: Size<f32>| {
+    let intrinsic_border_box_size = Size {
+        width: initial_column_container_size + content_box_inset.horizontal_axis_sum(),
+        height: initial_row_container_size + content_box_inset.vertical_axis_sum(),
+    };
+    let resolve_container_border_box = |preferred_size: Size<Option<f32>>,
+                                        min_size: Size<Option<f32>>,
+                                        max_size: Size<Option<f32>>,
+                                        content_based_size: Size<f32>| {
         resolve_used_size(
-            known_dimensions,
+            inputs.known_dimensions,
             preferred_size.or(content_based_size.map(Some)),
             min_size,
             max_size,
@@ -442,10 +449,24 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         )
         .unwrap_or(padding_border_size)
     };
-    let mut container_border_box = resolve_container_border_box(Size {
-        width: initial_column_container_size + content_box_inset.horizontal_axis_sum(),
-        height: initial_row_container_size + content_box_inset.vertical_axis_sum(),
-    });
+    let preliminary_container_border_box =
+        resolve_container_border_box(preferred_size, min_size, max_size, intrinsic_border_box_size);
+    if needs_content_based_block_resolution {
+        let logical_preliminary_size = writing_mode.to_logical(preliminary_container_border_box);
+        let logical_intrinsic_size = writing_mode.to_logical(intrinsic_border_box_size);
+        content_based_block_size
+            .resolve(writing_mode, Some(logical_preliminary_size.inline_size), logical_intrinsic_size.block_size)
+            .apply_to_block_axis(
+                writing_mode,
+                node_sizing.constraints.block_axis_constraints(writing_mode),
+                padding_border_size,
+                &mut preferred_size,
+                &mut min_size,
+                &mut max_size,
+            );
+    }
+    let mut container_border_box =
+        resolve_container_border_box(preferred_size, min_size, max_size, intrinsic_border_box_size);
     let mut container_content_box = Size {
         width: f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum()),
         height: f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum()),
@@ -483,16 +504,67 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         }
     }
 
+    let final_inner_min_size = min_size.maybe_sub(content_box_inset.sum_axes());
+    let final_inner_max_size = max_size.maybe_sub(content_box_inset.sum_axes());
+    let initial_logical_inner_size = writing_mode.to_logical(initial_inner_node_size);
+    let final_logical_preferred_size = writing_mode.to_logical(preferred_size);
+    let ratio_resolved_block_size_after_track_sizing = needs_content_based_block_resolution
+        && content_based_block_size.resolves_auto_size_from_ratio()
+        && initial_logical_inner_size.block_size.is_none()
+        && final_logical_preferred_size.block_size.is_some();
+
+    // A ratio-dependent automatic block size becomes definite only after the
+    // first pass establishes the final inline size. Re-run the complete
+    // columns-then-rows pipeline in that resolved constraint space so every
+    // track and cross-axis contribution observes the same final geometry.
+    if ratio_resolved_block_size_after_track_sizing {
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Inline);
+        clear_intrinsic_contribution_caches(&mut items, AbstractAxis::Block);
+        let _ = track_sizing_algorithm(
+            tree,
+            AbstractAxis::Inline,
+            final_inner_min_size.get(AbstractAxis::Inline),
+            final_inner_max_size.get(AbstractAxis::Inline),
+            justify_content,
+            align_content,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
+            &mut columns,
+            &mut rows,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            has_baseline_aligned_item,
+        );
+
+        items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
+        let _ = track_sizing_algorithm(
+            tree,
+            AbstractAxis::Block,
+            final_inner_min_size.get(AbstractAxis::Block),
+            final_inner_max_size.get(AbstractAxis::Block),
+            align_content,
+            justify_content,
+            resolved_available_grid_space,
+            resolved_inner_node_size,
+            &mut rows,
+            &mut columns,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            false, // TODO: Support baseline alignment in the vertical axis
+        );
+    }
+
     // An initially indefinite axis is sized one more time if its track
     // collection depends on the resolved available size (percentage or flex),
     // or if sizing the opposite axis changed an intrinsic contribution.
     let mut intrinsic_column_contribution_changed = false;
     let has_percentage_column = columns.iter().any(|track| track.uses_percentage());
     let has_percentage_row = rows.iter().any(|track| track.uses_percentage());
-    let mut rerun_column_sizing =
-        initial_inner_node_size.width.is_none() && columns.iter().any(GridTrack::depends_on_available_size);
+    let mut rerun_column_sizing = !ratio_resolved_block_size_after_track_sizing
+        && initial_inner_node_size.width.is_none()
+        && columns.iter().any(GridTrack::depends_on_available_size);
 
-    if !rerun_column_sizing {
+    if !rerun_column_sizing && !ratio_resolved_block_size_after_track_sizing {
         intrinsic_column_contribution_changed = refresh_intrinsic_min_content_contributions(
             tree,
             &mut items,
@@ -511,8 +583,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         let _ = track_sizing_algorithm(
             tree,
             AbstractAxis::Inline,
-            inner_min_size.get(AbstractAxis::Inline),
-            inner_max_size.get(AbstractAxis::Inline),
+            final_inner_min_size.get(AbstractAxis::Inline),
+            final_inner_max_size.get(AbstractAxis::Inline),
             justify_content,
             align_content,
             resolved_available_grid_space,
@@ -527,10 +599,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Block-axis sizing always observes the final column geometry. It must not
     // be conditional on whether columns happened to need their own rerun.
-    let mut rerun_row_sizing =
-        initial_inner_node_size.height.is_none() && rows.iter().any(GridTrack::depends_on_available_size);
+    let mut rerun_row_sizing = !ratio_resolved_block_size_after_track_sizing
+        && initial_inner_node_size.height.is_none()
+        && rows.iter().any(GridTrack::depends_on_available_size);
     let mut intrinsic_row_contribution_changed = false;
-    if !rerun_row_sizing {
+    if !rerun_row_sizing && !ratio_resolved_block_size_after_track_sizing {
         intrinsic_row_contribution_changed = refresh_intrinsic_min_content_contributions(
             tree,
             &mut items,
@@ -549,8 +622,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         let _ = track_sizing_algorithm(
             tree,
             AbstractAxis::Block,
-            inner_min_size.get(AbstractAxis::Block),
-            inner_max_size.get(AbstractAxis::Block),
+            final_inner_min_size.get(AbstractAxis::Block),
+            final_inner_max_size.get(AbstractAxis::Block),
             align_content,
             justify_content,
             resolved_available_grid_space,
@@ -568,10 +641,15 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     {
         let final_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
         let final_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
-        let final_container_border_box = resolve_container_border_box(Size {
-            width: final_column_sum + content_box_inset.horizontal_axis_sum(),
-            height: final_row_sum + content_box_inset.vertical_axis_sum(),
-        });
+        let final_container_border_box = resolve_container_border_box(
+            preferred_size,
+            min_size,
+            max_size,
+            Size {
+                width: final_column_sum + content_box_inset.horizontal_axis_sum(),
+                height: final_row_sum + content_box_inset.vertical_axis_sum(),
+            },
+        );
 
         if intrinsic_column_contribution_changed && !has_percentage_column {
             container_border_box.width = final_container_border_box.width;
@@ -590,7 +668,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(container_border_box)
-            .with_block_constraint_dependency(depends_on_block_constraints)
+            .with_block_constraint_dependency(depends_on_block_constraints || node_sizing.depends_on_block_constraints)
             .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 

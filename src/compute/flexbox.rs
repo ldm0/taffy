@@ -23,11 +23,8 @@ use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput,
 #[cfg(feature = "content_size")]
 use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 use super::common::intrinsic_size::{
-    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints,
-    resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
-};
-use super::common::used_size::{
-    promote_stretched_inline_size_to_definite, resolve_inline_auto_size, resolve_used_size,
+    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
+    resolve_ratio_dependent_content_contribution, IntrinsicWidthInput, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
@@ -411,7 +408,7 @@ pub fn compute_flexbox_layout(
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let LayoutInput { known_dimensions, parent_size, run_mode, .. } = inputs;
+    let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let style = tree.get_flexbox_container_style(node);
 
@@ -423,127 +420,74 @@ pub fn compute_flexbox_layout(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
-    let (min_size, max_size, clamped_style_size, size_is_auto, preferred_inline_from_aspect_ratio) =
-        match inputs.sizing_mode {
-            SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, Size { width: true, height: true }, false),
-            SizingMode::InherentSize => {
-                let raw_size = style.size();
-                let size_is_auto = raw_size.map(|dimension| dimension.is_auto());
-                let resolved = resolve_size_constraints(SizeConstraintInput {
-                    size: raw_size
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    min_size: style
-                        .min_size()
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    max_size: style
-                        .max_size()
-                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment),
-                    size_is_auto,
-                    writing_mode,
-                    inline_auto_behavior: inputs.inline_auto_behavior,
-                    block_auto_behavior: inputs.block_auto_behavior,
-                    transferred_sizes_mode: TransferredSizesMode::Normal,
-                    aspect_ratio,
-                    padding_border: padding_border_sum,
-                });
-                let min_size = resolved.min_size;
-                let max_size = resolved.max_size;
-                let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
-                (
-                    min_size,
-                    max_size,
-                    preferred_size,
-                    size_is_auto,
-                    resolved.aspect_ratio_applied.get_abs(writing_mode.inline_axis()),
-                )
-            }
-        };
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    let flex_direction = style.flex_direction();
+    drop(style);
 
-    // If both min and max in a given axis are set and max <= min then this determines the size in that axis
-    let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
-        (Some(min), Some(max)) if max <= min => Some(min),
-        _ => None,
-    });
-    let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-        && known_dimensions.get_abs(writing_mode.inline_axis()).is_none()
-        && min_max_definite_size.get_abs(writing_mode.inline_axis()).is_none()
-        && preferred_inline_from_aspect_ratio;
-
-    let synthesized_size = resolve_inline_auto_size(
-        min_max_definite_size.or(clamped_style_size),
-        size_is_auto,
-        writing_mode,
-        inputs.inline_auto_behavior,
-        inputs.available_space,
+    let node_sizing = resolve_node_size_constraints(
+        tree,
+        node,
+        inputs,
+        NodeSizeConstraintInput {
+            raw_size,
+            raw_min_size,
+            raw_max_size,
+            box_sizing_adjustment,
+            padding_border_size: padding_border_sum,
+            aspect_ratio,
+        },
     );
-
-    // The size of the container should be floored by the padding and border
-    let styled_based_known_dimensions =
-        resolve_used_size(known_dimensions, synthesized_size, min_size, max_size, padding_border_sum);
-    let definite_dimensions = promote_stretched_inline_size_to_definite(
-        inputs.definite_dimensions,
-        styled_based_known_dimensions,
-        size_is_auto,
-        writing_mode,
-        inputs.inline_auto_behavior,
-    );
+    let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
+    let node_outer_size = node_sizing.outer_size;
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
     if run_mode == RunMode::ComputeSize {
-        if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
+        if let Size { width: Some(width), height: Some(height) } = node_outer_size {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
         // We can also short-circuit if the width is known and only the width has been requested.
         if inputs.axis == RequestedAxis::Horizontal {
-            if let Some(width) = styled_based_known_dimensions.width {
+            if let Some(width) = node_outer_size.width {
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
     }
 
-    // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
-    // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
-        if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
-            return LayoutOutput::from_outer_size(Size { width, height })
-                .with_applied_aspect_ratio(applied_aspect_ratio);
-        }
-    }
-
-    debug_log!("FLEX:", dbg:style.flex_direction());
-    drop(style);
-
-    compute_preliminary(
-        tree,
-        node,
-        LayoutInput { known_dimensions: styled_based_known_dimensions, definite_dimensions, ..inputs },
-    )
-    .with_applied_aspect_ratio(applied_aspect_ratio)
+    debug_log!("FLEX:", dbg:flex_direction);
+    compute_preliminary(tree, node, inputs, node_sizing)
+        .with_block_constraint_dependency(node_sizing.depends_on_block_constraints)
+        .with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Compute a preliminary size for an item
-fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+fn compute_preliminary(
+    tree: &mut impl LayoutFlexboxContainer,
+    node: NodeId,
+    inputs: LayoutInput,
+    node_sizing: ResolvedNodeSizing,
+) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
 
     // Define some general constants we will need for the remainder of the algorithm.
-    let aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let scrollbar_insets = tree.get_scrollbar_insets(node);
     let mut constants = compute_constants(
         tree,
         tree.get_flexbox_container_style(node),
         scrollbar_insets,
         inputs,
-        aspect_ratio,
+        node_sizing,
         writing_mode,
     );
-    let LayoutInput { known_dimensions, available_space, run_mode, .. } = inputs;
+    let LayoutInput { available_space, run_mode, .. } = inputs;
+    let node_outer_size = node_sizing.outer_size;
 
     // 9. Flex Layout Algorithm
 
@@ -553,7 +497,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
 
     // 2. Determine the available main and cross space for the flex items
     debug_log!("determine_available_space");
-    let available_space = determine_available_space(known_dimensions, available_space, &constants);
+    let available_space = determine_available_space(node_sizing.definite_size, available_space, &constants);
 
     // 1. Generate anonymous flex items as described in §4 Flex Items. Intrinsic
     // preferred/min/max widths need the resolved container space, so item
@@ -627,15 +571,15 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // Calculate child baselines. This function is internally smart and only computes child baselines
     // if they are necessary.
     debug_log!("calculate_children_base_lines");
-    calculate_children_base_lines(tree, known_dimensions, available_space, &mut flex_lines, &constants);
+    calculate_children_base_lines(tree, node_outer_size, available_space, &mut flex_lines, &constants);
 
     // 8. Calculate the cross size of each flex line.
     debug_log!("calculate_cross_size");
-    calculate_cross_size(&mut flex_lines, known_dimensions, &constants);
+    calculate_cross_size(&mut flex_lines, node_outer_size, &constants);
 
     // 9. Handle 'align-content: stretch'.
     debug_log!("handle_align_content_stretch");
-    handle_align_content_stretch(&mut flex_lines, known_dimensions, &constants);
+    handle_align_content_stretch(&mut flex_lines, node_outer_size, &constants);
 
     // 10. Collapse visibility:collapse items. If any flex items have visibility: collapse,
     //     note the cross size of the line they’re in as the item’s strut size, and restart
@@ -670,7 +614,7 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
 
     // 15. Determine the flex container’s used cross size.
     debug_log!("determine_container_cross_size");
-    let total_line_cross_size = determine_container_cross_size(&flex_lines, known_dimensions, &mut constants);
+    let total_line_cross_size = determine_container_cross_size(&flex_lines, node_outer_size, &mut constants);
 
     // We have the container size.
     // If our caller does not care about performing layout we are done now.
@@ -760,10 +704,10 @@ fn compute_constants(
     style: impl FlexboxContainerStyle,
     scrollbar_insets: Rect<f32>,
     inputs: LayoutInput,
-    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
+    node_sizing: ResolvedNodeSizing,
     writing_mode: WritingMode,
 ) -> AlgoConstants {
-    let LayoutInput { known_dimensions, parent_size, sizing_mode, .. } = inputs;
+    let LayoutInput { sizing_mode, .. } = inputs;
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let authored_direction = style.flex_direction();
     let flex_wrap = style.flex_wrap();
@@ -777,13 +721,9 @@ fn compute_constants(
     let is_wrap = matches!(flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
     let is_wrap_reverse = flow.cross_axis_reversed;
 
-    let aspect_ratio = if sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-    let padding_border_sum = padding.sum_axes() + border.sum_axes();
-    let box_sizing = style.box_sizing();
-    let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
     let align_items = style.align_items().unwrap_or(AlignItems::NORMAL).resolve_normal(AlignItems::STRETCH);
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
@@ -792,7 +732,7 @@ fn compute_constants(
 
     let content_box_inset = padding + border + scrollbar_insets;
 
-    let node_outer_size = known_dimensions;
+    let node_outer_size = node_sizing.outer_size;
     let node_inner_size = node_outer_size.maybe_sub(content_box_inset.sum_axes());
     let logical_inner_size = writing_mode.to_logical(node_inner_size.or(Size::zero()));
     let raw_gap = style.gap();
@@ -810,26 +750,6 @@ fn compute_constants(
 
     let container_size = Size::zero();
     let inner_container_size = Size::zero();
-    let raw_size = style.size();
-    let resolved_constraints = resolve_size_constraints(SizeConstraintInput {
-        size: raw_size.maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment),
-        min_size: style
-            .min_size()
-            .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment),
-        max_size: style
-            .max_size()
-            .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_add(box_sizing_adjustment),
-        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-        writing_mode,
-        inline_auto_behavior: inputs.inline_auto_behavior,
-        block_auto_behavior: inputs.block_auto_behavior,
-        transferred_sizes_mode: TransferredSizesMode::Normal,
-        aspect_ratio,
-        padding_border: padding_border_sum,
-    });
-
     AlgoConstants {
         dir,
         inline_direction,
@@ -845,8 +765,8 @@ fn compute_constants(
         is_wrap,
         is_wrap_reverse,
         writing_mode,
-        min_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.min_size } else { Size::NONE },
-        max_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.max_size } else { Size::NONE },
+        min_size: if sizing_mode == SizingMode::InherentSize { node_sizing.min_size } else { Size::NONE },
+        max_size: if sizing_mode == SizingMode::InherentSize { node_sizing.max_size } else { Size::NONE },
         margin,
         border,
         gap,

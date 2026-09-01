@@ -34,33 +34,6 @@ pub(crate) fn resolve_inline_auto_size(
     writing_mode.to_physical(logical_preferred_size)
 }
 
-/// Record the resolved inline size as a descendant percentage basis when the
-/// containing formatting context stretched an authored automatic size.
-///
-/// Fit-content fallback sizes are deliberately excluded: they constrain the
-/// measurement but do not by themselves make the resulting auto size a fixed
-/// parent-supplied dimension.
-#[inline(always)]
-pub(crate) fn promote_stretched_inline_size_to_definite(
-    definite_dimensions: Size<Option<f32>>,
-    used_size: Size<Option<f32>>,
-    size_is_auto: Size<bool>,
-    writing_mode: WritingMode,
-    behavior: AutoSizeBehavior,
-) -> Size<Option<f32>> {
-    if behavior == AutoSizeBehavior::FitContent {
-        return definite_dimensions;
-    }
-
-    let mut logical_definite_size = writing_mode.to_logical(definite_dimensions);
-    let logical_used_size = writing_mode.to_logical(used_size);
-    let logical_size_is_auto = writing_mode.to_logical(size_is_auto);
-    if logical_size_is_auto.inline_size {
-        logical_definite_size.inline_size = logical_definite_size.inline_size.or(logical_used_size.inline_size);
-    }
-    writing_mode.to_physical(logical_definite_size)
-}
-
 /// Resolve one used border-box axis while preserving a fixed size supplied by
 /// the parent formatting context.
 ///
@@ -148,32 +121,6 @@ mod tests {
                 WritingMode::HorizontalTb,
                 AutoSizeBehavior::FitContent,
                 available,
-            ),
-            Size::NONE,
-        );
-    }
-
-    #[test]
-    fn only_stretched_auto_inline_sizes_become_percentage_bases() {
-        let used = Size { width: Some(300.0), height: None };
-        let auto = Size { width: true, height: true };
-        assert_eq!(
-            promote_stretched_inline_size_to_definite(
-                Size::NONE,
-                used,
-                auto,
-                WritingMode::HorizontalTb,
-                AutoSizeBehavior::StretchImplicit,
-            ),
-            used,
-        );
-        assert_eq!(
-            promote_stretched_inline_size_to_definite(
-                Size::NONE,
-                used,
-                auto,
-                WritingMode::HorizontalTb,
-                AutoSizeBehavior::FitContent,
             ),
             Size::NONE,
         );

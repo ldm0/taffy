@@ -242,3 +242,81 @@ fn row_rerun_refreshes_every_intrinsic_item_before_track_sizing() {
     assert_eq!(tree.layout(second).unwrap().size, Size { width: 20.0, height: 20.0 });
     assert_eq!(tree.layout(second).unwrap().location.y, 20.0);
 }
+
+#[test]
+fn final_auto_repeat_inline_size_reresolves_ratio_dependent_block_size() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let child =
+        tree.new_leaf(Style { grid_column: Line { start: line(2), end: line(3) }, ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                min_size: Size { width: auto(), height: length(60.0) },
+                aspect_ratio: Some(1.0),
+                grid_template_columns: vec![repeat("auto-fill", vec![length(50.0)])],
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    // The transferred minimum admits one track, then the explicitly placed
+    // item creates a second. The final inline size must become the ratio basis
+    // for the automatic block size rather than leaving the provisional 60px.
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(child).unwrap().location.x, 50.0);
+    assert_eq!(tree.layout(child).unwrap().size.width, 50.0);
+}
+
+#[test]
+fn aspect_ratio_resolved_block_size_stretches_auto_row() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let stretched = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(100.0), height: auto() },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            },
+            &[stretched],
+        )
+        .unwrap();
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(stretched).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn aspect_ratio_resolved_vertical_block_size_stretches_auto_track() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let stretched = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: auto(), height: length(100.0) },
+                aspect_ratio: Some(1.0),
+                ..Default::default()
+            },
+            &[stretched],
+        )
+        .unwrap();
+    for node in [grid, stretched] {
+        tree.set_writing_mode(node, taffy::WritingMode::VerticalRl).unwrap();
+    }
+
+    tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(stretched).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
