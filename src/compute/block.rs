@@ -435,6 +435,8 @@ pub fn compute_block_layout(
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+    let size_containment = tree.get_size_containment(node_id);
+    let scrollbar_insets = tree.get_scrollbar_insets(node_id);
     let style = tree.get_block_container_style(node_id);
 
     // Pull these out earlier to avoid borrowing issues
@@ -464,6 +466,8 @@ pub fn compute_block_layout(
             box_sizing_adjustment,
             padding_border_size,
             aspect_ratio,
+            contained_outer_size: size_containment
+                .resolve_outer_size(Size::ZERO, padding_border_size + scrollbar_insets.sum_axes()),
             automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
         },
     );

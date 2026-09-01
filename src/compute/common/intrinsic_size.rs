@@ -11,6 +11,40 @@ use super::aspect_ratio::{
     SizeConstraintInput, TransferredSizesMode,
 };
 use super::used_size::{resolve_inline_auto_size, resolve_used_size};
+
+/// Substitute a contained intrinsic border-box size for authored intrinsic
+/// sizing keywords, then reapply the source-ordered minimum/maximum clamp.
+///
+/// The logical inline path may already have measured the same contribution;
+/// assignment rather than fallback is deliberate so containment remains the
+/// authoritative content source in either physical axis.
+pub(crate) fn apply_contained_intrinsic_size_constraints(
+    mut resolved: ResolvedSizeConstraints,
+    raw_size: Size<Dimension>,
+    raw_min_size: Size<Dimension>,
+    raw_max_size: Size<Dimension>,
+    contained_outer_size: Size<Option<f32>>,
+) -> ResolvedSizeConstraints {
+    if raw_size.width.is_intrinsic() && contained_outer_size.width.is_some() {
+        resolved.size.width = contained_outer_size.width;
+        resolved.aspect_ratio_applied.width = false;
+    }
+    if raw_size.height.is_intrinsic() && contained_outer_size.height.is_some() {
+        resolved.size.height = contained_outer_size.height;
+        resolved.aspect_ratio_applied.height = false;
+    }
+    let late_min_size = Size {
+        width: raw_min_size.width.is_intrinsic().then_some(contained_outer_size.width).flatten(),
+        height: raw_min_size.height.is_intrinsic().then_some(contained_outer_size.height).flatten(),
+    };
+    let late_max_size = Size {
+        width: raw_max_size.width.is_intrinsic().then_some(contained_outer_size.width).flatten(),
+        height: raw_max_size.height.is_intrinsic().then_some(contained_outer_size.height).flatten(),
+    };
+    resolved.apply_late_authored_constraints(late_min_size, late_max_size);
+    resolved.size = resolved.size.maybe_clamp(resolved.min_size, resolved.max_size);
+    resolved
+}
 use crate::geometry::{AbsoluteAxis, LogicalSize, Size, WritingMode};
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
 use crate::tree::{
@@ -612,6 +646,13 @@ pub(crate) struct ContentBasedBlockSize {
     is_scroll_container: bool,
     /// Whether replaced sizing bypasses the non-replaced automatic minimum.
     is_replaced: bool,
+    /// Formatting-context-selected intrinsic border-box substitute.
+    ///
+    /// Size containment normally replaces descendant contributions before
+    /// this resolver runs. Grid is the exception: its substitute is derived
+    /// from tracks sized without items, so it only becomes available after
+    /// track initialization.
+    intrinsic_border_box_override: Option<f32>,
 }
 
 impl ContentBasedBlockSize {
@@ -625,7 +666,26 @@ impl ContentBasedBlockSize {
         is_scroll_container: bool,
         is_replaced: bool,
     ) -> Self {
-        Self { properties, aspect_ratio, padding_border, auto_size_is_content_based, is_scroll_container, is_replaced }
+        Self {
+            properties,
+            aspect_ratio,
+            padding_border,
+            auto_size_is_content_based,
+            is_scroll_container,
+            is_replaced,
+            intrinsic_border_box_override: None,
+        }
+    }
+
+    /// Replace the real intrinsic block contribution at the formatting
+    /// context boundary.
+    #[inline(always)]
+    pub(crate) const fn with_intrinsic_border_box_override(
+        mut self,
+        intrinsic_border_box_override: Option<f32>,
+    ) -> Self {
+        self.intrinsic_border_box_override = intrinsic_border_box_override;
+        self
     }
 
     /// Whether content-based block-axis properties need to be resolved.
@@ -654,13 +714,14 @@ impl ContentBasedBlockSize {
     /// Whether the real intrinsic block contribution is required.
     #[inline(always)]
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
-        self.properties.uses_intrinsic_size()
-            || self.properties.applies_automatic_minimum(
-                self.aspect_ratio.is_some(),
-                self.auto_size_is_content_based,
-                self.is_scroll_container,
-                self.is_replaced,
-            )
+        self.intrinsic_border_box_override.is_none()
+            && (self.properties.uses_intrinsic_size()
+                || self.properties.applies_automatic_minimum(
+                    self.aspect_ratio.is_some(),
+                    self.auto_size_is_content_based,
+                    self.is_scroll_container,
+                    self.is_replaced,
+                ))
     }
 
     /// Resolve the content-derived block-axis constraints.
@@ -679,7 +740,7 @@ impl ContentBasedBlockSize {
         );
         let ratio_block_size = writing_mode.to_logical(ratio_size).block_size;
         self.properties.resolve(
-            intrinsic_border_box_size,
+            self.intrinsic_border_box_override.unwrap_or(intrinsic_border_box_size),
             ratio_block_size,
             self.auto_size_is_content_based,
             self.is_scroll_container,
@@ -824,6 +885,9 @@ pub(crate) struct NodeSizeConstraintInput {
     pub padding_border_size: Size<f32>,
     /// Used preferred aspect ratio.
     pub aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Formatting-context-selected size-containment substitute, including
+    /// decoration.
+    pub contained_outer_size: Size<Option<f32>>,
     /// Owner of automatic inline-size resolution for this formatting context.
     pub automatic_inline_size_resolution: AutomaticInlineSizeResolution,
 }
@@ -909,7 +973,8 @@ pub(crate) fn resolve_node_size_constraints(
 ) -> ResolvedNodeSizing {
     if inputs.sizing_mode == SizingMode::ContentSize {
         return ResolvedNodeSizing {
-            outer_size: inputs.known_dimensions,
+            preferred_size: sizing.contained_outer_size,
+            outer_size: inputs.known_dimensions.or(sizing.contained_outer_size),
             definite_size: inputs.definite_dimensions,
             ..ResolvedNodeSizing::NONE
         };
@@ -922,6 +987,7 @@ pub(crate) fn resolve_node_size_constraints(
         box_sizing_adjustment,
         padding_border_size,
         aspect_ratio,
+        contained_outer_size,
         automatic_inline_size_resolution,
     } = sizing;
     let writing_mode = tree.get_writing_mode(node_id);
@@ -1025,6 +1091,13 @@ pub(crate) fn resolve_node_size_constraints(
             AbsoluteAxis::Vertical => resolved.aspect_ratio_applied.height = true,
         }
     }
+    let resolved = apply_contained_intrinsic_size_constraints(
+        resolved,
+        raw_size,
+        raw_min_size,
+        raw_max_size,
+        contained_outer_size,
+    );
 
     let min_max_definite_size = resolved.min_size.zip_map(resolved.max_size, |min, max| match (min, max) {
         (Some(min), Some(max)) if max <= min => Some(min),
@@ -1036,7 +1109,8 @@ pub(crate) fn resolve_node_size_constraints(
         writing_mode,
         inputs.inline_auto_behavior,
         available_space,
-    );
+    )
+    .or(contained_outer_size.maybe_clamp(resolved.min_size, resolved.max_size));
     let size_before_fixed_ratio = resolve_used_size(
         inputs.known_dimensions,
         preferred_size,
@@ -1113,6 +1187,8 @@ pub fn resolve_leaf_node_sizing(
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let sizing = {
         let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
+        let size_containment = tree.get_size_containment(node_id);
+        let scrollbar_insets = tree.get_scrollbar_insets(node_id);
         let style = tree.get_core_container_style(node_id);
         let padding = style.padding().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
         let border = style.border().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
@@ -1128,6 +1204,8 @@ pub fn resolve_leaf_node_sizing(
             },
             padding_border_size,
             aspect_ratio,
+            contained_outer_size: size_containment
+                .resolve_outer_size(Size::ZERO, padding_border_size + scrollbar_insets.sum_axes()),
             automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
         }
     };

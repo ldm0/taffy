@@ -8,7 +8,7 @@ use slotmap::{DefaultKey, SlotMap};
 #[cfg(feature = "block_layout")]
 use crate::block::BlockContext;
 use crate::geometry::{Size, WritingMode};
-use crate::style::{AvailableSpace, Display, Style};
+use crate::style::{AvailableSpace, Display, SizeContainment, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
     Cache, ClearState, IntrinsicSizeResult, Layout, LayoutEnvironment, LayoutInput, LayoutOutput, LayoutPartialTree,
@@ -100,6 +100,9 @@ struct NodeData {
     /// The inherited writing mode that owns this node's logical axes.
     pub(crate) writing_mode: WritingMode,
 
+    /// Used size-containment state at this layout-node boundary.
+    pub(crate) size_containment: SizeContainment,
+
     /// The always unrounded results of the layout computation. We must store this separately from the rounded
     /// layout to avoid errors from rounding already-rounded values. See <https://github.com/DioxusLabs/taffy/issues/501>.
     pub(crate) unrounded_layout: Layout,
@@ -126,6 +129,7 @@ impl NodeData {
         Self {
             style,
             writing_mode: WritingMode::HorizontalTb,
+            size_containment: SizeContainment::NONE,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
@@ -468,6 +472,11 @@ where
     #[inline(always)]
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.taffy.nodes[node_id.into()].writing_mode
+    }
+
+    #[inline(always)]
+    fn get_size_containment(&self, node_id: NodeId) -> SizeContainment {
+        self.taffy.nodes[node_id.into()].size_containment
     }
 
     #[inline(always)]
@@ -966,6 +975,19 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn writing_mode(&self, node: NodeId) -> TaffyResult<WritingMode> {
         Ok(self.nodes[node.into()].writing_mode)
+    }
+
+    /// Sets the used size-containment state at this node boundary.
+    #[inline]
+    pub fn set_size_containment(&mut self, node: NodeId, size_containment: SizeContainment) -> TaffyResult<()> {
+        self.nodes[node.into()].size_containment = size_containment;
+        self.mark_dirty(node)
+    }
+
+    /// Gets the used size-containment state at this node boundary.
+    #[inline]
+    pub fn size_containment(&self, node: NodeId) -> TaffyResult<SizeContainment> {
+        Ok(self.nodes[node.into()].size_containment)
     }
 
     /// Return this node layout relative to its parent

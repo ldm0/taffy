@@ -34,5 +34,6 @@ mod hand_written {
     mod scroll_size;
     mod scrollbar_insets;
     mod serde;
+    mod size_containment;
     mod test_tree;
 }

@@ -472,6 +472,8 @@ pub fn compute_flexbox_layout(
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { run_mode, .. } = inputs;
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
+    let size_containment = tree.get_size_containment(node);
+    let scrollbar_insets = tree.get_scrollbar_insets(node);
     let style = tree.get_flexbox_container_style(node);
 
     // Pull these out earlier to avoid borrowing issues
@@ -500,6 +502,8 @@ pub fn compute_flexbox_layout(
             box_sizing_adjustment,
             padding_border_size: padding_border_sum,
             aspect_ratio,
+            contained_outer_size: size_containment
+                .resolve_outer_size(Size::ZERO, padding_border_sum + scrollbar_insets.sum_axes()),
             automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
         },
     );

@@ -54,6 +54,13 @@ impl ResolvedAxisConstraints {
         let used_max = merge_maximum(authored_max, self.transferred_max, used_min);
         (used_min, used_max)
     }
+
+    /// Add late-resolved values of authored intrinsic sizing keywords.
+    fn with_late_authored_constraints(mut self, min: Option<f32>, max: Option<f32>) -> Self {
+        self.authored_min = maximum_constraint(self.authored_min, min);
+        self.authored_max = minimum_constraint(self.authored_max, max);
+        self
+    }
 }
 
 impl ResolvedSizeConstraints {
@@ -65,6 +72,19 @@ impl ResolvedSizeConstraints {
         max_size: Size::NONE,
         constraint_sources: Size { width: ResolvedAxisConstraints::NONE, height: ResolvedAxisConstraints::NONE },
     };
+
+    /// Merge values of authored intrinsic min/max keywords that became known
+    /// after the initial length/percentage resolution.
+    pub(crate) fn apply_late_authored_constraints(&mut self, min_size: Size<Option<f32>>, max_size: Size<Option<f32>>) {
+        self.constraint_sources.width =
+            self.constraint_sources.width.with_late_authored_constraints(min_size.width, max_size.width);
+        self.constraint_sources.height =
+            self.constraint_sources.height.with_late_authored_constraints(min_size.height, max_size.height);
+        let (min_width, max_width) = self.constraint_sources.width.resolve(None, None, None);
+        let (min_height, max_height) = self.constraint_sources.height.resolve(None, None, None);
+        self.min_size = Size { width: min_width, height: min_height };
+        self.max_size = Size { width: max_width, height: max_height };
+    }
 
     /// Return source-preserving constraints for one physical axis.
     #[inline(always)]
