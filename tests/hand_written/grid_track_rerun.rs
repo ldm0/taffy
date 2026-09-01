@@ -273,6 +273,47 @@ fn final_auto_repeat_inline_size_reresolves_ratio_dependent_block_size() {
 }
 
 #[test]
+fn percentage_minimum_transfers_through_ratio_before_auto_repeat() {
+    let mut tree = TaffyTree::<()>::new();
+    tree.disable_rounding();
+    let hidden = tree.new_leaf(Style { display: Display::None, ..Default::default() }).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                min_size: Size { width: auto(), height: percent(0.6) },
+                aspect_ratio: Some(1.0),
+                grid_template_columns: vec![repeat("auto-fill", vec![length(50.0)])],
+                ..Default::default()
+            },
+            &[hidden],
+        )
+        .unwrap();
+    let percentage_container = tree
+        .new_with_children(
+            Style { display: Display::Block, size: Size { width: auto(), height: percent(1.0) }, ..Default::default() },
+            &[grid],
+        )
+        .unwrap();
+    let sizing_container = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: Dimension::min_content(), height: length(100.0) },
+                ..Default::default()
+            },
+            &[percentage_container],
+        )
+        .unwrap();
+
+    tree.compute_layout(sizing_container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(sizing_container).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(percentage_container).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
 fn aspect_ratio_resolved_block_size_stretches_auto_row() {
     let mut tree = TaffyTree::<()>::new();
     tree.disable_rounding();

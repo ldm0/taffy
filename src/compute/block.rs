@@ -598,6 +598,7 @@ fn compute_inner(
                     &mut items,
                     available_inline_size,
                     writing_direction,
+                    container_content_box_size,
                 );
                 (
                     (intrinsic_inline_size + logical_content_box_inset.inline_axis_sum())
@@ -1089,8 +1090,10 @@ fn determine_content_based_container_inline_size(
     items: &mut [BlockItem],
     available_inline_size: AvailableSpace,
     parent_writing_direction: WritingDirection,
+    parent_inner_size: LogicalSize<Option<f32>>,
 ) -> (f32, bool) {
     let parent_writing_mode = parent_writing_direction.mode;
+    let parent_size = parent_writing_mode.to_physical(parent_inner_size);
 
     let mut max_child_inline_size = 0.0;
     #[cfg(feature = "float_layout")]
@@ -1114,7 +1117,7 @@ fn determine_content_based_container_inline_size(
             known_dimensions,
             ChildLayoutInput::new(
                 known_dimensions,
-                Size::NONE,
+                parent_size,
                 parent_writing_mode,
                 contribution_available_space,
                 SizingMode::ContentSize,
@@ -1133,7 +1136,7 @@ fn determine_content_based_container_inline_size(
                     item.node_id,
                     ChildLayoutInput::new(
                         known_dimensions,
-                        Size::NONE,
+                        parent_size,
                         parent_writing_mode,
                         contribution_available_space,
                         SizingMode::InherentSize,
