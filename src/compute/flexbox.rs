@@ -2812,6 +2812,7 @@ fn perform_absolute_layout_on_absolute_children(
             (None, Some(right)) => inset_relative_size.width - right,
             (None, None) => inset_relative_size.width,
         } - non_auto_margin_width;
+        let child_available_width = f32_max(available_width + non_auto_margin_width, 0.0);
         let intrinsic_inputs = LayoutInput {
             run_mode: RunMode::ComputeSize,
             sizing_mode: SizingMode::InherentSize,
@@ -2825,7 +2826,7 @@ fn perform_absolute_layout_on_absolute_children(
             parent_size: constants.node_inner_size,
             parent_writing_mode: constants.writing_mode,
             available_space: Size {
-                width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
+                width: AvailableSpace::Definite(child_available_width),
                 height: AvailableSpace::Definite(container_height),
             },
             vertical_margins_are_collapsible: Line::FALSE,
@@ -2850,7 +2851,7 @@ fn perform_absolute_layout_on_absolute_children(
                 preferred: raw_size.width,
                 min: raw_min_size.width,
                 max: raw_max_size.width,
-                available_space: intrinsic_inputs.available_space.width,
+                available_space: AvailableSpace::Definite(f32_max(available_width, 0.0)),
                 ratio_content_contribution,
             },
         );
@@ -2917,7 +2918,7 @@ fn perform_absolute_layout_on_absolute_children(
                     constants.node_inner_size,
                     constants.writing_mode,
                     Size {
-                        width: AvailableSpace::Definite(available_width),
+                        width: AvailableSpace::Definite(child_available_width),
                         height: AvailableSpace::Definite(
                             container_height.maybe_clamp(min_size.height, max_size.height),
                         ),
@@ -2939,7 +2940,7 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(f32_max(available_width, 0.0)),
+                    width: AvailableSpace::Definite(child_available_width),
                     height: AvailableSpace::Definite(container_height),
                 },
                 SizingMode::InherentSize,

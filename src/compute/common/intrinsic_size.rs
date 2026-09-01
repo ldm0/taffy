@@ -869,10 +869,18 @@ pub(crate) fn resolve_node_size_constraints(
         inline_axis,
         opposite_axis_depends_on_parent && aspect_ratio.is_some(),
     );
-    // Parent formatting contexts pass the border-box opportunity remaining
-    // after margins. Keeping that contract here prevents leaf, container and
-    // custom-tree paths from independently subtracting the same margin.
-    let available_inline_size = inputs.available_space.get_abs(inline_axis);
+    // Like Blink's ConstraintSpace, LayoutInput carries the margin-box
+    // opportunity. Node-owned sizing removes its own non-auto margins before
+    // resolving stretch and fit-content. Keeping this at the node boundary
+    // gives leaf and container algorithms the same contract while allowing a
+    // parent formatting context to position the resulting margin box.
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
+    let margin = tree
+        .get_core_container_style(node_id)
+        .margin()
+        .resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+    let available_space = inputs.available_space.maybe_sub(margin.sum_axes());
+    let available_inline_size = available_space.get_abs(inline_axis);
     let child_input = ChildLayoutInput::new(
         inputs.known_dimensions,
         inputs.parent_size,
@@ -936,7 +944,7 @@ pub(crate) fn resolve_node_size_constraints(
         size_is_auto,
         writing_mode,
         inputs.inline_auto_behavior,
-        inputs.available_space,
+        available_space,
     );
     let size_before_fixed_ratio = resolve_used_size(
         inputs.known_dimensions,
@@ -979,7 +987,7 @@ pub(crate) fn resolve_node_size_constraints(
         size_is_auto,
         writing_mode,
         inputs.inline_auto_behavior,
-        inputs.available_space,
+        available_space,
     );
     let definite_size =
         used_definite_size(outer_size, inputs.known_dimensions, inputs.definite_dimensions, own_definite_size);

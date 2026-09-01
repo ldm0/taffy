@@ -248,8 +248,10 @@ pub struct LayoutInput {
     /// after the physical constraints have been projected into an orthogonal
     /// child's coordinate space.
     pub parent_writing_mode: WritingMode,
-    /// Available space represents an amount of space to layout into, and is used as a soft constraint
-    /// for the purpose of wrapping.
+    /// Physical margin-box opportunity offered by the parent formatting
+    /// context. The child resolves and removes its own non-auto margins before
+    /// using the remainder as a border-box sizing or wrapping constraint.
+    /// This matches Blink's `ConstraintSpace::AvailableSize` contract.
     pub available_space: Size<AvailableSpace>,
     /// Specific to CSS Block layout. Used for correctly computing margin collapsing. You probably want to set this to `Line::FALSE`.
     pub vertical_margins_are_collapsible: Line<bool>,
@@ -361,7 +363,8 @@ pub(crate) struct ChildLayoutInput {
     pub parent_size: Size<Option<f32>>,
     /// Writing mode that establishes the containing block's logical axes.
     pub parent_writing_mode: WritingMode,
-    /// Physical available space offered by the parent formatting algorithm.
+    /// Physical margin-box opportunity offered by the parent formatting
+    /// algorithm. Child-owned sizing removes non-auto margins exactly once.
     pub available_space: Size<AvailableSpace>,
     /// Whether authored size constraints participate in child sizing.
     pub sizing_mode: SizingMode,

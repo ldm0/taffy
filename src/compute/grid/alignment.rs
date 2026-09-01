@@ -218,6 +218,8 @@ pub(super) fn align_and_position_item(
     } else {
         grid_area_minus_item_margins_size
     };
+    let non_auto_margin = margin.map(|value| value.unwrap_or(0.0));
+    let child_available_size = inset_modified_available_size + non_auto_margin.sum_axes();
     let intrinsic_available_space = AvailableSpace::Definite(f32_max(inset_modified_available_size.width, 0.0));
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
@@ -231,10 +233,7 @@ pub(super) fn align_and_position_item(
         definite_dimensions: Size::NONE,
         parent_size: grid_area_size.map(Some),
         parent_writing_mode,
-        available_space: Size {
-            width: intrinsic_available_space,
-            height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
-        },
+        available_space: child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
         vertical_margins_are_collapsible: Line::FALSE,
     };
     let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
@@ -364,7 +363,7 @@ pub(super) fn align_and_position_item(
                 used_size,
                 grid_area_size.map(Some),
                 parent_writing_mode,
-                inset_modified_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
+                child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
@@ -385,7 +384,7 @@ pub(super) fn align_and_position_item(
                 Size { width, height },
                 grid_area_size.map(Option::Some),
                 parent_writing_mode,
-                grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+                child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
                 SizingMode::InherentSize,
                 Line::FALSE,
             )
@@ -402,7 +401,7 @@ pub(super) fn align_and_position_item(
             size,
             grid_area_size.map(Option::Some),
             parent_writing_mode,
-            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
             SizingMode::InherentSize,
             Line::FALSE,
         )

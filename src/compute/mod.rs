@@ -66,8 +66,8 @@ use crate::tree::{
 };
 use crate::util::debug::{debug_log, debug_log_node, debug_pop_node, debug_push_node};
 use crate::util::sys::round;
-use crate::util::{MaybeMath, ResolveOrZero};
-use crate::{AbsoluteAxis, AutoSizeBehavior, CacheTree, RequestedAxis};
+use crate::util::ResolveOrZero;
+use crate::{AutoSizeBehavior, CacheTree, RequestedAxis};
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
@@ -88,24 +88,13 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         vertical_margins_are_collapsible: Line::FALSE,
     };
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
-    let mut root_available_space = available_space;
     let mut root_inline_auto_behavior = AutoSizeBehavior::FitContent;
 
     #[cfg(feature = "block_layout")]
     {
         let style = tree.get_core_container_style(root);
-        let inline_axis = root_writing_mode.inline_axis();
-        if style.is_block() {
-            let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-            let available_inline_space =
-                available_space.get_abs(inline_axis).maybe_sub(margin.grid_axis_sum(inline_axis));
-            match inline_axis {
-                AbsoluteAxis::Horizontal => root_available_space.width = available_inline_space,
-                AbsoluteAxis::Vertical => root_available_space.height = available_inline_space,
-            }
-            if style.size().get_abs(inline_axis).is_auto() {
-                root_inline_auto_behavior = AutoSizeBehavior::StretchImplicit;
-            }
+        if style.is_block() && style.size().get_abs(root_writing_mode.inline_axis()).is_auto() {
+            root_inline_auto_behavior = AutoSizeBehavior::StretchImplicit;
         }
     }
 
@@ -116,7 +105,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             Size::NONE,
             available_space.into_options(),
             root_writing_mode,
-            root_available_space,
+            available_space,
             SizingMode::InherentSize,
             Line::FALSE,
         )

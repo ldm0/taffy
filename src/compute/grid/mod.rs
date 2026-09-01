@@ -118,6 +118,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { resolved_aspect_ratio } else { None };
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
+    let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let padding_border = padding + border;
     let padding_border_size = padding_border.sum_axes();
     let box_sizing = style.box_sizing();
@@ -174,6 +175,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let outer_node_size = node_sizing.outer_size;
     let definite_outer_node_size = node_sizing.definite_size;
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio;
+    let available_space = available_space.maybe_sub(margin.sum_axes());
     let constrained_available_space = definite_outer_node_size
         .map(|size| size.map(AvailableSpace::Definite))
         .unwrap_or(available_space.maybe_clamp(min_size, max_size).maybe_max(padding_border_size));

@@ -517,7 +517,7 @@ fn flex_basis_content_ignores_an_intrinsic_preferred_main_size() {
     );
 }
 
-fn floated_keyword_width(width: Dimension) -> f32 {
+fn floated_keyword_width(width: Dimension, margin_left: f32, margin_right: f32) -> f32 {
     let mut tree = new_test_tree();
     let item = tree
         .new_leaf_with_context(
@@ -525,7 +525,12 @@ fn floated_keyword_width(width: Dimension) -> f32 {
                 display: Display::Block,
                 float: Float::Left,
                 size: Size { width, height: Dimension::length(20.0) },
-                margin: Rect { left: length(10.0), right: length(15.0), top: length(0.0), bottom: length(0.0) },
+                margin: Rect {
+                    left: length(margin_left),
+                    right: length(margin_right),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
                 ..Default::default()
             },
             text_context(),
@@ -547,9 +552,11 @@ fn floated_keyword_width(width: Dimension) -> f32 {
 }
 
 #[test]
-fn floated_intrinsic_and_stretch_widths_consume_margins_once() {
-    assert_eq!(floated_keyword_width(Dimension::fit_content()), 175.0);
-    assert_eq!(floated_keyword_width(Dimension::stretch()), 175.0);
+fn floated_auto_intrinsic_and_stretch_widths_consume_margins_once() {
+    assert_eq!(floated_keyword_width(Dimension::auto(), 10.0, 15.0), 175.0);
+    assert_eq!(floated_keyword_width(Dimension::auto(), -10.0, -15.0), 225.0);
+    assert_eq!(floated_keyword_width(Dimension::fit_content(), 10.0, 15.0), 175.0);
+    assert_eq!(floated_keyword_width(Dimension::stretch(), 10.0, 15.0), 175.0);
 }
 
 fn percentage_block_chain(tree: &mut TaffyTree<()>) -> (NodeId, NodeId) {
