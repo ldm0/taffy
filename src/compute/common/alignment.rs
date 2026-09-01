@@ -54,28 +54,29 @@ pub(crate) fn apply_alignment_fallback(
     num_items: usize,
     alignment_mode: AlignContent,
 ) -> AlignContentKeyword {
-    let mut keyword = alignment_mode.keyword;
-    let mut is_safe = matches!(alignment_mode.safety, AlignmentSafety::Safe);
-
     // 1. If there is only a single item being aligned or the items overflow the container, the
-    //    distributed alignment keywords (`stretch`, `space-*`) fall back to a positional keyword
-    //    and gain implicit `safe` semantics so step 2 can flip them to `Start` on overflow.
+    //    distributed alignment keywords (`stretch`, `space-*`) fall back to a positional keyword.
+    //    `space-around` and `space-evenly` use `safe center`, but `stretch` and `space-between`
+    //    use plain `flex-start`. Keeping that flex-relative fallback is significant for reversed
+    //    flex flows: overflowing content remains anchored to flex-start and extends past flex-end.
     //    https://www.w3.org/TR/css-align-3/#distribution-values
-    if num_items <= 1 || free_space <= 0.0 {
-        (keyword, is_safe) = match keyword {
-            AlignContentKeyword::Stretch | AlignContentKeyword::SpaceBetween => (AlignContentKeyword::FlexStart, true),
-            AlignContentKeyword::SpaceAround | AlignContentKeyword::SpaceEvenly => (AlignContentKeyword::Center, true),
-            other => (other, is_safe),
-        };
-    }
+    let resolved = if num_items <= 1 || free_space <= 0.0 {
+        match alignment_mode.keyword() {
+            AlignContentKeyword::Stretch | AlignContentKeyword::SpaceBetween => AlignContent::FLEX_START,
+            AlignContentKeyword::SpaceAround | AlignContentKeyword::SpaceEvenly => AlignContent::SAFE_CENTER,
+            _ => alignment_mode,
+        }
+    } else {
+        alignment_mode
+    };
 
     // 2. Safe alignment falls back to `Start` whenever the alignment subject would overflow the
     //    alignment container.
-    if free_space <= 0.0 && is_safe {
-        keyword = AlignContentKeyword::Start;
+    if free_space <= 0.0 && resolved.is_safe() {
+        AlignContentKeyword::Start
+    } else {
+        resolved.keyword()
     }
-
-    keyword
 }
 
 /// Generic alignment function that is used:
@@ -140,6 +141,30 @@ pub(crate) fn compute_alignment_offset(
             AlignContentKeyword::SpaceBetween => free_space / (num_items - 1) as f32,
             AlignContentKeyword::SpaceAround => free_space / num_items as f32,
             AlignContentKeyword::SpaceEvenly => free_space / (num_items + 1) as f32,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overflowing_distribution_preserves_each_keywords_defined_fallback() {
+        for alignment in [AlignContent::STRETCH, AlignContent::SPACE_BETWEEN] {
+            assert_eq!(
+                apply_alignment_fallback(-20.0, 2, alignment),
+                AlignContentKeyword::FlexStart,
+                "{alignment:?} must keep its flex-relative fallback"
+            );
+        }
+
+        for alignment in [AlignContent::SPACE_AROUND, AlignContent::SPACE_EVENLY] {
+            assert_eq!(
+                apply_alignment_fallback(-20.0, 2, alignment),
+                AlignContentKeyword::Start,
+                "{alignment:?} must apply its safe-center fallback"
+            );
         }
     }
 }

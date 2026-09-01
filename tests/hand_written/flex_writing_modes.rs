@@ -46,6 +46,65 @@ fn layout_four_items(
     items.map(|item| tree.layout(item).unwrap().location)
 }
 
+fn layout_overflowing_main_distribution(justify_content: JustifyContent) -> [Point<f32>; 4] {
+    let mut tree = TaffyTree::<()>::new();
+    let item_style = Style {
+        flex_basis: length(30.0),
+        flex_shrink: 0.0,
+        size: Size { width: length(20.0), height: length(18.0) },
+        ..Style::default()
+    };
+    let items = [
+        tree.new_leaf(item_style.clone()).unwrap(),
+        tree.new_leaf(item_style.clone()).unwrap(),
+        tree.new_leaf(item_style.clone()).unwrap(),
+        tree.new_leaf(item_style).unwrap(),
+    ];
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::RowReverse,
+                justify_content: Some(justify_content),
+                gap: Size { width: length(11.0), height: length(7.0) },
+                size: Size { width: length(120.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &items,
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    items.map(|item| tree.layout(item).unwrap().location)
+}
+
+fn layout_overflowing_cross_distribution(align_content: AlignContent) -> [Point<f32>; 2] {
+    let mut tree = TaffyTree::<()>::new();
+    let item_style = Style {
+        flex_basis: length(60.0),
+        flex_shrink: 0.0,
+        size: Size { width: length(40.0), height: length(40.0) },
+        ..Style::default()
+    };
+    let items = [tree.new_leaf(item_style.clone()).unwrap(), tree.new_leaf(item_style).unwrap()];
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_wrap: FlexWrap::WrapReverse,
+                align_content: Some(align_content),
+                gap: Size { width: length(11.0), height: length(7.0) },
+                size: Size { width: length(100.0), height: length(60.0) },
+                ..Style::default()
+            },
+            &items,
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    items.map(|item| tree.layout(item).unwrap().location)
+}
+
 #[test]
 fn vertical_row_flow_follows_inline_direction_and_block_progression() {
     assert_eq!(
@@ -76,6 +135,33 @@ fn sideways_lr_row_flow_uses_bottom_to_top_inline_progression() {
         layout_four_items(WritingMode::SidewaysLr, Direction::Ltr, FlexDirection::Row, FlexWrap::Wrap),
         [Point { x: 0.0, y: 15.0 }, Point { x: 0.0, y: 0.0 }, Point { x: 20.0, y: 15.0 }, Point { x: 20.0, y: 0.0 },]
     );
+}
+
+#[test]
+fn overflowing_distributed_main_alignment_stays_anchored_to_reversed_flex_start() {
+    let expected =
+        [Point { x: 90.0, y: 0.0 }, Point { x: 49.0, y: 0.0 }, Point { x: 8.0, y: 0.0 }, Point { x: -33.0, y: 0.0 }];
+
+    for justify_content in [JustifyContent::SPACE_BETWEEN, JustifyContent::STRETCH] {
+        assert_eq!(
+            layout_overflowing_main_distribution(justify_content),
+            expected,
+            "unexpected reversed overflow for {justify_content:?}"
+        );
+    }
+}
+
+#[test]
+fn overflowing_distributed_cross_alignment_stays_anchored_to_wrap_reverse_flex_start() {
+    let expected = [Point { x: 0.0, y: 20.0 }, Point { x: 0.0, y: -27.0 }];
+
+    for align_content in [AlignContent::SPACE_BETWEEN, AlignContent::STRETCH] {
+        assert_eq!(
+            layout_overflowing_cross_distribution(align_content),
+            expected,
+            "unexpected wrap-reverse overflow for {align_content:?}"
+        );
+    }
 }
 
 #[test]
