@@ -44,13 +44,14 @@ impl TestNode {
 
 pub(super) struct TestTree {
     pub(super) nodes: Vec<TestNode>,
+    pub(super) layout_inputs: Vec<(usize, LayoutInput)>,
 }
 
 impl TestTree {
     pub(super) fn new(root: TestNode, child: TestNode) -> Self {
         let mut nodes = vec![root, child];
         nodes[0].children.push(1);
-        Self { nodes }
+        Self { nodes, layout_inputs: Vec::new() }
     }
 
     pub(super) fn compute(&mut self, available_space: Size<AvailableSpace>) {
@@ -116,6 +117,7 @@ impl LayoutPartialTree for TestTree {
 
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput {
         let index = usize::from(node_id);
+        self.layout_inputs.push((index, inputs));
         let context = LeafLayoutContext::new(
             self.get_writing_mode(node_id),
             self.get_resolved_aspect_ratio(node_id),

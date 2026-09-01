@@ -2,7 +2,9 @@ use super::test_tree::{TestNode, TestTree};
 use taffy::prelude::*;
 #[cfg(feature = "float_layout")]
 use taffy::Float;
-use taffy::{Overflow, Point, ResolvedAspectRatio, WritingMode};
+use taffy::{
+    AutoSizeBehavior, Overflow, Point, RequestedAxis, ResolvedAspectRatio, SizingMode, SizingPurpose, WritingMode,
+};
 
 #[test]
 fn resolved_aspect_ratio_rejects_invalid_values() {
@@ -49,6 +51,63 @@ fn resolved_aspect_ratio_sizing_box_flows_through_block_flex_and_grid_items() {
         assert_eq!(tree.layout(1).size, Size { width: 100.0, height: 60.0 }, "{display:?} content-box ratio");
         assert_eq!(tree.layout(2).size, Size { width: 100.0, height: 50.0 }, "{display:?} border-box ratio");
     }
+}
+
+#[test]
+fn grid_intrinsic_probes_keep_item_owned_sizes_out_of_known_dimensions() {
+    let grid = TestNode::container(
+        Display::Grid,
+        Style {
+            size: Size { width: length(100.0), height: auto() },
+            grid_template_columns: vec![auto()],
+            ..Style::default()
+        },
+        Rect::ZERO,
+    );
+    let item = TestNode::leaf(
+        Style {
+            item_is_replaced: true,
+            size: Size { width: length(200.0), height: auto() },
+            max_size: Size { width: percent(1.0), height: auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        Size { width: 500.0, height: 500.0 },
+    );
+    let mut tree = TestTree::new(grid, item);
+
+    tree.compute(Size::MAX_CONTENT);
+
+    let intrinsic_inputs: Vec<_> = tree
+        .layout_inputs
+        .iter()
+        .filter_map(|(node, input)| {
+            (*node == 1
+                && input.sizing_mode == SizingMode::InherentSize
+                && input.sizing_purpose == SizingPurpose::IntrinsicContribution
+                && input.axis == RequestedAxis::Horizontal)
+                .then_some(*input)
+        })
+        .collect();
+    assert!(
+        intrinsic_inputs.iter().any(|input| input.available_space.width == AvailableSpace::MinContent),
+        "Grid must request the item's min-content contribution"
+    );
+    assert!(
+        intrinsic_inputs.iter().any(|input| input.available_space.width == AvailableSpace::MaxContent),
+        "Grid must request the item's max-content contribution"
+    );
+    assert!(
+        intrinsic_inputs.iter().all(|input| input.known_dimensions == Size::NONE),
+        "authored item sizes must remain child-owned during Grid intrinsic probes: {intrinsic_inputs:#?}"
+    );
+    assert!(
+        intrinsic_inputs.iter().all(|input| {
+            input.inline_auto_behavior == AutoSizeBehavior::FitContent
+                && input.block_auto_behavior == AutoSizeBehavior::FitContent
+        }),
+        "Grid must carry replaced-aware auto-size policy instead of pre-resolving it"
+    );
 }
 
 fn layout_block_ratio_item(writing_mode: WritingMode, mut item_style: Style, mut content_style: Style) -> Size<f32> {
