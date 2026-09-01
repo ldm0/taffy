@@ -18,6 +18,7 @@ mod hand_written {
     mod grid_fit_content_growth_limits;
     mod grid_flexible_intrinsic_size;
     mod grid_track_rerun;
+    mod grid_writing_modes;
     mod intrinsic_width;
     mod logical_constraint_space;
     mod measure;

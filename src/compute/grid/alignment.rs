@@ -8,10 +8,11 @@ use crate::compute::common::aspect_ratio::{
     resolve_formatting_context_size, resolve_size_constraints, FormattingContextSizeInput, SizeConstraintInput,
     TransferredSizesMode,
 };
+use crate::compute::common::baseline::logical_block_baseline;
 use crate::compute::common::intrinsic_size::{
     resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
 };
-use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
+use crate::geometry::{InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
 };
@@ -22,10 +23,12 @@ use crate::util::sys::f32_max;
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 
 #[cfg(feature = "content_size")]
-use crate::compute::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
+use crate::compute::common::content_size::compute_content_size_contribution;
 use crate::{
     AutoSizeBehavior, BoxSizing, Direction, LayoutGridContainer, OrthogonalFallback, RequestedAxis, WritingMode,
 };
+
+use super::flow::GridFlow;
 
 /// Final block-axis geometry and baseline data for a positioned grid item.
 ///
@@ -37,7 +40,7 @@ pub(super) struct GridItemPlacement {
     /// Contribution of the positioned item to the grid's scrollable content.
     pub(super) content_size_contribution: Size<f32>,
     /// Used block-start position relative to the grid container.
-    pub(super) block_start: f32,
+    pub(super) block_offset: f32,
     /// Used border-box block-size.
     pub(super) block_size: f32,
     /// First baseline relative to the item's border box.
@@ -112,16 +115,21 @@ pub(super) fn align_and_position_item(
     node: NodeId,
     order: u32,
     grid_area: Rect<f32>,
-    container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
+    container_alignment_styles: InBothAbstractAxis<Option<AlignItems>>,
     baseline_shim: f32,
     direction: Direction,
     parent_writing_mode: WritingMode,
-    container_border_box_width: f32,
+    container_border_box_size: Size<f32>,
     container_border: Rect<f32>,
     container_scrollbar_insets: Rect<f32>,
 ) -> GridItemPlacement {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
-    let percentage_basis = parent_writing_mode.to_logical(grid_area_size).inline_size;
+    let flow = GridFlow::new(parent_writing_mode, direction);
+    let converter = flow.writing_direction().converter(container_border_box_size);
+    let logical_grid_area_size = converter.to_logical_size(grid_area_size);
+    let logical_grid_area_offset =
+        converter.to_logical_point(Point { x: grid_area.left, y: grid_area.top }, grid_area_size);
+    let percentage_basis = logical_grid_area_size.inline_size;
 
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let item_writing_mode = tree.get_writing_mode(node);
@@ -130,41 +138,41 @@ pub(super) fn align_and_position_item(
 
     let overflow = style.overflow();
     let item_direction = style.direction();
-    let justify_self = style.justify_self().map(|align| {
+    let inline_self = style.justify_self().map(|align| {
         align.resolve_self_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
             direction,
-            crate::AbsoluteAxis::Horizontal,
+            parent_writing_mode.inline_axis(),
         )
     });
-    let align_self = style.align_self().map(|align| {
+    let block_self = style.align_self().map(|align| {
         align.resolve_self_relative(
             item_writing_mode,
             item_direction,
             parent_writing_mode,
             direction,
-            crate::AbsoluteAxis::Vertical,
+            parent_writing_mode.block_axis(),
         )
     });
-    let container_alignment_styles = InBothAbsAxis {
-        horizontal: container_alignment_styles.horizontal.map(|align| {
+    let logical_container_alignment = InBothAbstractAxis {
+        inline: container_alignment_styles.inline.map(|align| {
             align.resolve_self_relative(
                 item_writing_mode,
                 item_direction,
                 parent_writing_mode,
                 direction,
-                crate::AbsoluteAxis::Horizontal,
+                parent_writing_mode.inline_axis(),
             )
         }),
-        vertical: container_alignment_styles.vertical.map(|align| {
+        block: container_alignment_styles.block.map(|align| {
             align.resolve_self_relative(
                 item_writing_mode,
                 item_direction,
                 parent_writing_mode,
                 direction,
-                crate::AbsoluteAxis::Vertical,
+                parent_writing_mode.block_axis(),
             )
         }),
     };
@@ -178,6 +186,12 @@ pub(super) fn align_and_position_item(
         .inset()
         .vertical_components()
         .map(|size| size.resolve_to_option(grid_area_size.height, |val, basis| tree.calc(val, basis)));
+    let logical_inset = flow.writing_direction().to_logical_box_strut(Rect {
+        left: inset_horizontal.start,
+        right: inset_horizontal.end,
+        top: inset_vertical.start,
+        bottom: inset_vertical.end,
+    });
     let padding =
         style.padding().map(|p| p.resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis)));
     let border = style.border().map(|p| p.resolve_or_zero(Some(percentage_basis), |val, basis| tree.calc(val, basis)));
@@ -199,13 +213,22 @@ pub(super) fn align_and_position_item(
 
     let margin =
         style.margin().map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
+    let logical_margin = flow.writing_direction().to_logical_box_strut(margin);
 
     drop(style);
 
-    let grid_area_minus_item_margins_size = Size {
-        width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
-        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
+    let logical_grid_area_minus_item_margins_size = LogicalSize {
+        inline_size: logical_grid_area_size
+            .inline_size
+            .maybe_sub(logical_margin.inline_start)
+            .maybe_sub(logical_margin.inline_end),
+        block_size: logical_grid_area_size
+            .block_size
+            .maybe_sub(logical_margin.block_start)
+            .maybe_sub(logical_margin.block_end)
+            - baseline_shim,
     };
+    let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
     let inset_modified_available_size = if position == Position::Absolute {
         Size {
             width: grid_area_minus_item_margins_size.width
@@ -264,37 +287,34 @@ pub(super) fn align_and_position_item(
     min_size.width = min_size.width.or(intrinsic.min.value);
     max_size.width = max_size.width.or(intrinsic.max.value);
     let normal_auto_size = if is_replaced { AutoSizeBehavior::FitContent } else { AutoSizeBehavior::StretchImplicit };
-    let resolved_alignment = InBothAbsAxis {
-        horizontal: resolve_self_alignment(
-            justify_self.or(container_alignment_styles.horizontal).unwrap_or(AlignSelf::NORMAL),
+    let resolved_alignment = InBothAbstractAxis {
+        inline: resolve_self_alignment(
+            inline_self.or(logical_container_alignment.inline).unwrap_or(AlignSelf::NORMAL),
             AlignSelf::START,
             normal_auto_size,
         ),
-        vertical: resolve_self_alignment(
-            align_self.or(container_alignment_styles.vertical).unwrap_or(AlignSelf::NORMAL),
+        block: resolve_self_alignment(
+            block_self.or(logical_container_alignment.block).unwrap_or(AlignSelf::NORMAL),
             AlignSelf::START,
             normal_auto_size,
         ),
     };
-    let alignment_styles = InBothAbsAxis {
-        horizontal: resolved_alignment.horizontal.position,
-        vertical: resolved_alignment.vertical.position,
-    };
-    let mut auto_size = InBothAbsAxis {
-        horizontal: resolved_alignment.horizontal.auto_size,
-        vertical: resolved_alignment.vertical.auto_size,
-    };
+    let alignment_styles =
+        InBothAbstractAxis { inline: resolved_alignment.inline.position, block: resolved_alignment.block.position };
+    let mut logical_auto_size =
+        InBothAbstractAxis { inline: resolved_alignment.inline.auto_size, block: resolved_alignment.block.auto_size };
     if position != Position::Absolute {
         // Auto margins take precedence over self-alignment for in-flow grid
         // items. Out-of-flow margins participate in absolute positioning
         // instead and do not alter the item's alignment-derived auto sizing.
-        if margin.left.is_none() || margin.right.is_none() {
-            auto_size.horizontal = AutoSizeBehavior::FitContent;
+        if logical_margin.inline_start.is_none() || logical_margin.inline_end.is_none() {
+            logical_auto_size.inline = AutoSizeBehavior::FitContent;
         }
-        if margin.top.is_none() || margin.bottom.is_none() {
-            auto_size.vertical = AutoSizeBehavior::FitContent;
+        if logical_margin.block_start.is_none() || logical_margin.block_end.is_none() {
+            logical_auto_size.block = AutoSizeBehavior::FitContent;
         }
     }
+    let auto_size = flow.to_physical_axes(logical_auto_size);
     let (inline_auto_behavior, block_auto_behavior) = match item_writing_mode.inline_axis() {
         crate::AbsoluteAxis::Horizontal => (auto_size.horizontal, auto_size.vertical),
         crate::AbsoluteAxis::Vertical => (auto_size.vertical, auto_size.horizontal),
@@ -411,35 +431,48 @@ pub(super) fn align_and_position_item(
     // Resolve final size
     let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
 
-    let (x, x_margin) = align_item_within_area(
-        Line { start: grid_area.left, end: grid_area.right },
-        alignment_styles.horizontal,
-        width,
+    let physical_size = Size { width, height };
+    let logical_size = flow.to_logical_size(physical_size);
+    let (inline_offset, inline_margin) = align_item_within_area(
+        Line {
+            start: logical_grid_area_offset.inline_offset,
+            end: logical_grid_area_offset.inline_offset + logical_grid_area_size.inline_size,
+        },
+        alignment_styles.inline,
+        logical_size.inline_size,
         position,
-        inset_horizontal,
-        margin.horizontal_components(),
+        Line { start: logical_inset.inline_start, end: logical_inset.inline_end },
+        Line { start: logical_margin.inline_start, end: logical_margin.inline_end },
         0.0,
-        direction,
     );
-    let (y, y_margin) = align_item_within_area(
-        Line { start: grid_area.top, end: grid_area.bottom },
-        alignment_styles.vertical,
-        height,
+    let (block_offset, block_margin) = align_item_within_area(
+        Line {
+            start: logical_grid_area_offset.block_offset,
+            end: logical_grid_area_offset.block_offset + logical_grid_area_size.block_size,
+        },
+        alignment_styles.block,
+        logical_size.block_size,
         position,
-        inset_vertical,
-        margin.vertical_components(),
+        Line { start: logical_inset.block_start, end: logical_inset.block_end },
+        Line { start: logical_margin.block_start, end: logical_margin.block_end },
         baseline_shim,
-        Direction::Ltr,
     );
+    let logical_location = LogicalOffset { inline_offset, block_offset };
+    let location = converter.to_physical_point(logical_location, physical_size);
 
-    let resolved_margin = Rect { left: x_margin.start, right: x_margin.end, top: y_margin.start, bottom: y_margin.end };
+    let resolved_margin = flow.writing_direction().to_physical_box_strut(LogicalBoxStrut {
+        inline_start: inline_margin.start,
+        inline_end: inline_margin.end,
+        block_start: block_margin.start,
+        block_end: block_margin.end,
+    });
 
     tree.set_unrounded_layout(
         node,
         &Layout {
             order,
-            location: Point { x, y },
-            size: Size { width, height },
+            location,
+            size: physical_size,
             #[cfg(feature = "content_size")]
             content_size: layout_output.content_size,
             scrollbar_size,
@@ -451,30 +484,34 @@ pub(super) fn align_and_position_item(
 
     #[cfg(feature = "content_size")]
     let contribution = {
-        let contribution_location = content_size_contribution_location(
-            Point { x, y },
-            Size { width, height },
-            container_border_box_width,
-            container_border,
-            container_scrollbar_insets,
-            direction,
-        );
-        compute_content_size_contribution(
+        let logical_container_inset =
+            flow.writing_direction().to_logical_box_strut(container_border + container_scrollbar_insets);
+        let contribution_location = Point {
+            x: logical_location.inline_offset - logical_container_inset.inline_start,
+            y: logical_location.block_offset - logical_container_inset.block_start,
+        };
+        let logical_content_size = flow.to_logical_size(layout_output.content_size);
+        let logical_overflow = flow.to_logical_size(Size { width: overflow.x, height: overflow.y });
+        let logical_contribution = compute_content_size_contribution(
             contribution_location,
-            Size { width, height },
-            layout_output.content_size,
-            overflow,
-        )
+            Size { width: logical_size.inline_size, height: logical_size.block_size },
+            Size { width: logical_content_size.inline_size, height: logical_content_size.block_size },
+            Point { x: logical_overflow.inline_size, y: logical_overflow.block_size },
+        );
+        flow.to_physical_size(LogicalSize {
+            inline_size: logical_contribution.width,
+            block_size: logical_contribution.height,
+        })
     };
     #[cfg(not(feature = "content_size"))]
     let contribution = Size::ZERO;
 
     GridItemPlacement {
         content_size_contribution: contribution,
-        block_start: y,
-        block_size: height,
-        first_baseline: layout_output.first_baselines.y,
-        last_baseline: layout_output.last_baselines.y,
+        block_offset: logical_location.block_offset,
+        block_size: logical_size.block_size,
+        first_baseline: logical_block_baseline(layout_output.first_baselines, physical_size, flow.writing_direction()),
+        last_baseline: logical_block_baseline(layout_output.last_baselines, physical_size, flow.writing_direction()),
     }
 }
 
@@ -488,7 +525,6 @@ pub(super) fn align_item_within_area(
     inset: Line<Option<f32>>,
     margin: Line<Option<f32>>,
     baseline_shim: f32,
-    direction: Direction,
 ) -> (f32, Line<f32>) {
     // Calculate grid area dimension in the axis
     let non_auto_margin = Line { start: margin.start.unwrap_or(0.0) + baseline_shim, end: margin.end.unwrap_or(0.0) };
@@ -513,20 +549,8 @@ pub(super) fn align_item_within_area(
         | AlignItemsKeyword::Start
         | AlignItemsKeyword::FlexStart
         | AlignItemsKeyword::Baseline
-        | AlignItemsKeyword::Stretch => {
-            if direction.is_rtl() {
-                grid_area_size - resolved_size - resolved_margin.end
-            } else {
-                resolved_margin.start
-            }
-        }
-        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => {
-            if direction.is_rtl() {
-                resolved_margin.start
-            } else {
-                grid_area_size - resolved_size - resolved_margin.end
-            }
-        }
+        | AlignItemsKeyword::Stretch => resolved_margin.start,
+        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => grid_area_size - resolved_size - resolved_margin.end,
         AlignItemsKeyword::Center => {
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }
@@ -537,14 +561,7 @@ pub(super) fn align_item_within_area(
 
     let offset_within_area = if position == Position::Absolute {
         match (inset.start, inset.end) {
-            (Some(start), Some(end)) => {
-                if direction.is_rtl() {
-                    grid_area_size - end - resolved_size - non_auto_margin.end
-                } else {
-                    start + non_auto_margin.start
-                }
-            }
-            (Some(start), None) => start + non_auto_margin.start,
+            (Some(start), _) => start + non_auto_margin.start,
             (None, Some(end)) => grid_area_size - end - resolved_size - non_auto_margin.end,
             (None, None) => alignment_based_offset,
         }
@@ -554,11 +571,7 @@ pub(super) fn align_item_within_area(
 
     let mut start = grid_area.start + offset_within_area;
     if position == Position::Relative {
-        let relative_inset = if direction.is_rtl() {
-            inset.end.map(|pos| -pos).or(inset.start)
-        } else {
-            inset.start.or(inset.end.map(|pos| -pos))
-        };
+        let relative_inset = inset.start.or(inset.end.map(|pos| -pos));
         start += relative_inset.unwrap_or(0.0);
     }
 

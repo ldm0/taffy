@@ -7,6 +7,8 @@ pub(crate) mod absolute;
 
 pub(crate) mod alignment;
 
+pub(crate) mod baseline;
+
 pub(crate) mod intrinsic_size;
 
 pub(crate) mod used_size;

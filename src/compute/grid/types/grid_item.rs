@@ -5,13 +5,13 @@ use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstra
 use crate::compute::common::intrinsic_size::resolve_intrinsic_axis_size;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
-use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
+use crate::geometry::{InBothAbstractAxis, Line, LogicalSize, Rect, Size};
 use crate::style::{
     AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow, ResolvedAspectRatio,
 };
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{AutoSizeBehavior, BoxSizing, GridItemStyle, LengthPercentage, WritingMode};
+use crate::{AutoSizeBehavior, BoxSizing, GridItemStyle, LengthPercentage, WritingDirection};
 use core::ops::Range;
 
 /// The authored sizing source Grid uses for an item's minimum contribution.
@@ -94,9 +94,9 @@ pub(in super::super) struct GridItem {
     /// The id of the node that this item represents
     pub node: NodeId,
 
-    /// Writing mode of the grid container that establishes this item's
-    /// containing block.
-    pub parent_writing_mode: WritingMode,
+    /// Logical axes and progression directions of the grid container that
+    /// establishes this item's containing block.
+    pub parent_writing_direction: WritingDirection,
 
     /// The order of the item in the children array
     ///
@@ -115,7 +115,7 @@ pub(in super::super) struct GridItem {
     /// https://drafts.csswg.org/css-sizing-3/#min-content-zero
     pub is_compressible_replaced: bool,
     /// The item's overflow style
-    pub overflow: Point<Overflow>,
+    pub overflow: LogicalSize<Overflow>,
     /// The item's box_sizing style
     pub box_sizing: BoxSizing,
     /// The item's size style
@@ -163,22 +163,22 @@ pub(in super::super) struct GridItem {
     /// Cache for the known_dimensions input to intrinsic sizing computation
     pub grid_area_size_cache: Option<Size<Option<f32>>>,
     /// Cache for the min-content size
-    pub min_content_contribution_cache: Size<Option<f32>>,
+    pub min_content_contribution_cache: LogicalSize<Option<f32>>,
     /// Cache for the minimum contribution
-    pub minimum_contribution_cache: Size<Option<GridItemMinimumContribution>>,
+    pub minimum_contribution_cache: LogicalSize<Option<GridItemMinimumContribution>>,
     /// Cache for the max-content size
-    pub max_content_contribution_cache: Size<Option<f32>>,
+    pub max_content_contribution_cache: LogicalSize<Option<f32>>,
     /// Whether an intrinsic item contribution observed a dependency on the
     /// grid area's block-size.
     pub depends_on_block_constraints: bool,
 
-    /// Final y position. Used to compute baseline alignment for the container.
-    pub y_position: f32,
-    /// Final height. Used to compute baseline alignment for the container.
-    pub height: f32,
-    /// First baseline from the item's final layout, relative to its border box.
+    /// Final logical block offset. Used to propagate the container's baseline.
+    pub block_offset: f32,
+    /// Final logical block size. Used to synthesize a missing baseline.
+    pub block_size: f32,
+    /// First logical block-axis baseline from the item's final layout.
     pub first_baseline: Option<f32>,
-    /// Last baseline from the item's final layout, relative to its border box.
+    /// Last logical block-axis baseline from the item's final layout.
     pub last_baseline: Option<f32>,
 }
 
@@ -186,20 +186,23 @@ impl GridItem {
     /// Create a new item given a concrete placement in both axes
     pub fn new_with_placement_style_and_order<S: GridItemStyle>(
         node: NodeId,
-        parent_writing_mode: WritingMode,
-        placement: InBothAbsAxis<Line<OriginZeroLine>>,
+        parent_writing_direction: WritingDirection,
+        placement: InBothAbstractAxis<Line<OriginZeroLine>>,
         style: S,
-        parent_alignment: InBothAbsAxis<AlignItems>,
+        parent_alignment: InBothAbstractAxis<AlignItems>,
         source_order: u16,
     ) -> Self {
         GridItem {
             node,
-            parent_writing_mode,
+            parent_writing_direction,
             source_order,
-            row: placement.vertical,
-            column: placement.horizontal,
+            row: placement.block,
+            column: placement.inline,
             is_compressible_replaced: style.is_compressible_replaced(),
-            overflow: style.overflow(),
+            overflow: {
+                let overflow = style.overflow();
+                parent_writing_direction.mode.to_logical(Size { width: overflow.x, height: overflow.y })
+            },
             box_sizing: style.box_sizing(),
             size: style.size(),
             min_size: style.min_size(),
@@ -208,8 +211,8 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_alignment.vertical),
-            justify_self: style.justify_self().unwrap_or(parent_alignment.horizontal),
+            align_self: style.align_self().unwrap_or(parent_alignment.block),
+            justify_self: style.justify_self().unwrap_or(parent_alignment.inline),
             alignment_baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -219,12 +222,12 @@ impl GridItem {
             crosses_intrinsic_row: false,           // Properly initialised later
             crosses_intrinsic_column: false,        // Properly initialised later
             grid_area_size_cache: None,
-            min_content_contribution_cache: Size::NONE,
-            max_content_contribution_cache: Size::NONE,
-            minimum_contribution_cache: Size { width: None, height: None },
+            min_content_contribution_cache: LogicalSize { inline_size: None, block_size: None },
+            max_content_contribution_cache: LogicalSize { inline_size: None, block_size: None },
+            minimum_contribution_cache: LogicalSize { inline_size: None, block_size: None },
             depends_on_block_constraints: false,
-            y_position: 0.0,
-            height: 0.0,
+            block_offset: 0.0,
+            block_size: 0.0,
             first_baseline: None,
             last_baseline: None,
         }
@@ -284,7 +287,7 @@ impl GridItem {
     /// size, before percentage resolution or aspect-ratio transfer.
     #[inline]
     fn minimum_contribution_source(&self, axis: AbstractAxis) -> MinimumContributionSource {
-        let preferred_size = self.parent_writing_mode.to_logical(self.size);
+        let preferred_size = self.parent_writing_direction.mode.to_logical(self.size);
         let preferred = match axis {
             AbstractAxis::Inline => preferred_size.inline_size,
             AbstractAxis::Block => preferred_size.block_size,
@@ -323,7 +326,7 @@ impl GridItem {
             ChildLayoutInput::new(
                 Size::NONE,
                 grid_area_size,
-                self.parent_writing_mode,
+                self.parent_writing_direction.mode,
                 available_space,
                 SizingMode::ContentSize,
                 Line::FALSE,
@@ -356,8 +359,13 @@ impl GridItem {
         } else {
             AutoSizeBehavior::StretchImplicit
         };
-        let mut horizontal = resolve_self_alignment(self.justify_self, AlignSelf::START, normal_auto_size).auto_size;
-        let mut vertical = resolve_self_alignment(self.align_self, AlignSelf::START, normal_auto_size).auto_size;
+        let (horizontal_alignment, vertical_alignment) = if self.parent_writing_direction.mode.is_horizontal() {
+            (self.justify_self, self.align_self)
+        } else {
+            (self.align_self, self.justify_self)
+        };
+        let mut horizontal = resolve_self_alignment(horizontal_alignment, AlignSelf::START, normal_auto_size).auto_size;
+        let mut vertical = resolve_self_alignment(vertical_alignment, AlignSelf::START, normal_auto_size).auto_size;
         if self.margin.left.is_auto() || self.margin.right.is_auto() {
             horizontal = AutoSizeBehavior::FitContent;
         }
@@ -457,11 +465,11 @@ impl GridItem {
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         other_axis_tracks: &[GridTrack],
-        available_space: Size<Option<f32>>,
+        available_space: LogicalSize<Option<f32>>,
         get_track_size_estimate: impl Fn(&GridTrack, Option<f32>) -> Option<f32>,
         resolve_calc_value: &impl Fn(*const (), f32) -> f32,
     ) -> Size<Option<f32>> {
-        let mut size = Size::NONE;
+        let mut size = LogicalSize { inline_size: None, block_size: None };
         size.set(
             axis,
             axis_tracks[self.track_range_excluding_lines(axis)]
@@ -494,7 +502,7 @@ impl GridItem {
                 .sum::<Option<f32>>(),
         );
 
-        size
+        self.parent_writing_direction.mode.to_physical(size)
     }
 
     /// Retrieve the available_space from the cache or compute them using the passed parameters
@@ -503,7 +511,7 @@ impl GridItem {
         axis: AbstractAxis,
         axis_tracks: &[GridTrack],
         other_axis_tracks: &[GridTrack],
-        available_space: Size<Option<f32>>,
+        available_space: LogicalSize<Option<f32>>,
         get_track_size_estimate: impl Fn(&GridTrack, Option<f32>) -> Option<f32>,
         resolve_calc_value: &impl Fn(*const (), f32) -> f32,
     ) -> Size<Option<f32>> {
@@ -521,22 +529,31 @@ impl GridItem {
         })
     }
 
-    /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
-    /// to zero if the container size is indefinite as otherwise this would introduce a cyclic dependency.
+    /// Compute the item's resolved margins for size contributions. Inline-axis percentage margins resolve
+    /// to zero while sizing that axis, preventing a cyclic dependency in every writing mode.
     #[inline(always)]
     pub fn margins_axis_sums_with_baseline_shims(
         &self,
-        inner_node_width: Option<f32>,
+        inner_node_inline_size: Option<f32>,
         tree: &impl LayoutPartialTree,
-    ) -> Size<f32> {
-        Rect {
-            left: self.margin.left.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
-            right: self.margin.right.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
-            top: self.margin.top.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis))
+    ) -> LogicalSize<f32> {
+        let writing_direction = self.parent_writing_direction;
+        let logical_margin = writing_direction.to_logical_box_strut(self.margin);
+        let resolved_logical_margin = crate::geometry::LogicalBoxStrut {
+            inline_start: logical_margin.inline_start.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+            inline_end: logical_margin.inline_end.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+            block_start: logical_margin
+                .block_start
+                .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis))
                 + self.baseline_shim,
-            bottom: self.margin.bottom.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+            block_end: logical_margin
+                .block_end
+                .resolve_or_zero(inner_node_inline_size, |val, basis| tree.calc(val, basis)),
+        };
+        LogicalSize {
+            inline_size: resolved_logical_margin.inline_start + resolved_logical_margin.inline_end,
+            block_size: resolved_logical_margin.block_start + resolved_logical_margin.block_end,
         }
-        .sum_axes()
     }
 
     /// Build the constraint used to measure an intrinsic contribution.
@@ -554,10 +571,7 @@ impl GridItem {
         available_space: Size<Option<f32>>,
         inline_constraint: AvailableSpace,
     ) -> Size<AvailableSpace> {
-        let track_axis = match axis {
-            AbstractAxis::Inline => self.parent_writing_mode.inline_axis(),
-            AbstractAxis::Block => self.parent_writing_mode.block_axis(),
-        };
+        let track_axis = axis.to_absolute(self.parent_writing_direction.mode);
         let measures_item_inline_axis = track_axis == tree.get_writing_mode(self.node).inline_axis();
         let constraint = if measures_item_inline_axis { inline_constraint } else { AvailableSpace::MaxContent };
 
@@ -571,9 +585,12 @@ impl GridItem {
             self.depends_on_block_constraints = true;
         }
 
-        available_space
-            .map(|size| size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent))
-            .with(axis, available_space.get(axis).map(AvailableSpace::Definite).unwrap_or(constraint))
+        let logical_available_space = self.parent_writing_direction.mode.to_logical(available_space);
+        self.parent_writing_direction.mode.to_physical(
+            logical_available_space
+                .map(|size| size.map(AvailableSpace::Definite).unwrap_or(AvailableSpace::MaxContent))
+                .with(axis, logical_available_space.get(axis).map(AvailableSpace::Definite).unwrap_or(constraint)),
+        )
     }
 
     /// Compute the item's min content contribution from the provided parameters
@@ -597,7 +614,7 @@ impl GridItem {
             ChildLayoutInput::new(
                 Size::NONE,
                 grid_area_size,
-                self.parent_writing_mode,
+                self.parent_writing_direction.mode,
                 contribution_available_space,
                 SizingMode::InherentSize,
                 Line::FALSE,
@@ -605,10 +622,10 @@ impl GridItem {
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior)
             .without_orthogonal_fallback(),
-            axis.as_abs_naive().into(),
+            axis.to_absolute(self.parent_writing_direction.mode).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
-        measured.size.get(axis)
+        measured.size.get_abs(axis.to_absolute(self.parent_writing_direction.mode))
     }
 
     /// Retrieve the item's min content contribution from the cache or compute it using the provided parameters
@@ -646,7 +663,7 @@ impl GridItem {
             ChildLayoutInput::new(
                 Size::NONE,
                 grid_area_size,
-                self.parent_writing_mode,
+                self.parent_writing_direction.mode,
                 contribution_available_space,
                 SizingMode::InherentSize,
                 Line::FALSE,
@@ -654,10 +671,10 @@ impl GridItem {
             .with_inline_auto_behavior(inline_auto_behavior)
             .with_block_auto_behavior(block_auto_behavior)
             .without_orthogonal_fallback(),
-            axis.as_abs_naive().into(),
+            axis.to_absolute(self.parent_writing_direction.mode).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
-        measured.size.get(axis)
+        measured.size.get_abs(axis.to_absolute(self.parent_writing_direction.mode))
     }
 
     /// Retrieve the item's max content contribution from the cache or compute it using the provided parameters
@@ -712,10 +729,10 @@ impl GridItem {
         }
 
         let physical_axis = match axis {
-            AbstractAxis::Inline => self.parent_writing_mode.inline_axis(),
-            AbstractAxis::Block => self.parent_writing_mode.block_axis(),
+            AbstractAxis::Inline => self.parent_writing_direction.mode.inline_axis(),
+            AbstractAxis::Block => self.parent_writing_direction.mode.block_axis(),
         };
-        let percentage_basis = self.parent_writing_mode.to_logical(grid_area_size).inline_size;
+        let percentage_basis = self.parent_writing_direction.mode.to_logical(grid_area_size).inline_size;
         let padding = self.padding.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let border = self.border.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
         let padding_border_size = (padding + border).sum_axes();
@@ -756,10 +773,7 @@ impl GridItem {
             return GridItemMinimumContribution::unclamped(minimum);
         }
 
-        let overflow = match physical_axis {
-            crate::AbsoluteAxis::Horizontal => self.overflow.x,
-            crate::AbsoluteAxis::Vertical => self.overflow.y,
-        };
+        let overflow = self.overflow.get(axis);
         if let Some(minimum) = overflow.maybe_into_automatic_min_size() {
             return GridItemMinimumContribution::unclamped(minimum);
         }

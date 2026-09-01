@@ -24,6 +24,7 @@ use super::common::absolute::{
 use super::common::aspect_ratio::{
     resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
 };
+use super::common::baseline::physical_baseline;
 use super::common::intrinsic_size::{
     measure_intrinsic_axis, resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
     resolve_intrinsic_width_constraints, resolve_node_size_constraints, resolve_ratio_dependent_content_contribution,
@@ -1506,28 +1507,6 @@ impl BlockChildBaselineProjection {
                     offset
                 }
             })
-        }
-    }
-}
-
-/// Materialize one logical block-axis baseline in physical coordinates.
-fn physical_baseline(
-    baseline: Option<f32>,
-    container_size: Size<f32>,
-    writing_direction: WritingDirection,
-) -> Point<Option<f32>> {
-    if writing_direction.mode.is_horizontal() {
-        Point { x: None, y: baseline }
-    } else {
-        Point {
-            x: baseline.map(|offset| {
-                if writing_direction.is_block_flow_reversed() {
-                    container_size.width - offset
-                } else {
-                    offset
-                }
-            }),
-            y: None,
         }
     }
 }

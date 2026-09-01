@@ -1,7 +1,7 @@
 //! Helper functions for initialising GridTrack's from styles
 //! This mainly consists of evaluating GridAutoTracks
 use super::types::{GridTrack, GridTrackKind, TrackCounts};
-use crate::geometry::AbsoluteAxis;
+use crate::geometry::AbstractAxis;
 use crate::style::{LengthPercentage, RepetitionCount, TrackSizingFunction};
 use crate::style_helpers::TaffyAuto;
 use crate::util::sys::{ceil, floor, Vec};
@@ -29,11 +29,11 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
     auto_fit_container_size: Option<f32>,
     auto_fit_strategy: AutoRepeatStrategy,
     resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    axis: AbsoluteAxis,
+    axis: AbstractAxis,
 ) -> (u16, u16) {
     let template = match axis {
-        AbsoluteAxis::Horizontal => style.grid_template_columns(),
-        AbsoluteAxis::Vertical => style.grid_template_rows(),
+        AbstractAxis::Inline => style.grid_template_columns(),
+        AbstractAxis::Block => style.grid_template_rows(),
     };
     let Some(template) = template else {
         return (0, 0);
@@ -153,7 +153,12 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
                     },
                 })
                 .sum();
-            let gap_size = style.gap().get_abs(axis).resolve_or_zero(Some(inner_container_size), &resolve_calc_value);
+            let gap = style.gap();
+            let gap_size = match axis {
+                AbstractAxis::Inline => gap.width,
+                AbstractAxis::Block => gap.height,
+            }
+            .resolve_or_zero(Some(inner_container_size), &resolve_calc_value);
 
             // Compute the amount of space that a single repetition of the repeated track list takes
             let per_repetition_track_used_space: f32 = repetition_definition_iter
@@ -222,7 +227,7 @@ pub(super) fn initialize_grid_tracks(
     tracks: &mut Vec<GridTrack>,
     counts: TrackCounts,
     style: &impl GridContainerStyle,
-    axis: AbsoluteAxis,
+    axis: AbstractAxis,
     auto_repetition_count: u16,
     track_has_items: impl Fn(usize) -> bool,
 ) {
@@ -231,12 +236,12 @@ pub(super) fn initialize_grid_tracks(
     let auto_tracks;
     let gap;
     match axis {
-        AbsoluteAxis::Horizontal => {
+        AbstractAxis::Inline => {
             track_template = style.grid_template_columns();
             auto_tracks = style.grid_auto_columns();
             gap = style.gap().width;
         }
-        AbsoluteAxis::Vertical => {
+        AbstractAxis::Block => {
             track_template = style.grid_template_rows();
             auto_tracks = style.grid_auto_rows();
             gap = style.gap().height;
@@ -389,7 +394,7 @@ mod test {
     use crate::compute::grid::types::GridTrackKind;
     use crate::compute::grid::types::TrackCounts;
     use crate::compute::grid::util::*;
-    use crate::geometry::AbsoluteAxis;
+    use crate::geometry::AbstractAxis;
     use crate::prelude::*;
     use crate::sys::DefaultCheapStr;
 
@@ -399,17 +404,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 2);
         assert_eq!(row_count, 4);
@@ -430,17 +435,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 3);
         assert_eq!(row_count, 4);
@@ -461,17 +466,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 3);
         assert_eq!(row_count, 4);
@@ -492,17 +497,17 @@ mod test {
         let inner_container_size = Size { width: Some(120.0), height: Some(80.0) };
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Horizontal),
+            inner_container_size.width,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Vertical),
+            inner_container_size.height,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 3);
         assert_eq!(row_count, 4);
@@ -523,17 +528,17 @@ mod test {
         let inner_container_size = Size { width: Some(140.0), height: Some(90.0) };
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Horizontal),
+            inner_container_size.width,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Vertical),
+            inner_container_size.height,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 4);
         assert_eq!(row_count, 5);
@@ -554,17 +559,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 4); // 2 repetitions * 2 repeated tracks = 4 tracks in total
         assert_eq!(row_count, 6); // 3 repetitions * 2 repeated tracks = 4 tracks in total
@@ -586,17 +591,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 2); // 2 tracks + 1 gap
         assert_eq!(row_count, 3); // 3 tracks + 2 gaps
@@ -617,17 +622,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 3);
         assert_eq!(row_count, 1);
@@ -649,17 +654,17 @@ mod test {
         let preferred_size = grid_style.size.map(|s| s.into_option());
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Horizontal),
+            preferred_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            preferred_size.get_abs(AbsoluteAxis::Vertical),
+            preferred_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 3); // 3 tracks + 2 gaps
         assert_eq!(row_count, 2); // 2 tracks + 1 gap
@@ -681,17 +686,17 @@ mod test {
         let inner_container_size = Size { width: Some(100.0), height: Some(80.0) };
         let (auto_col_reps, col_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Horizontal),
+            inner_container_size.width,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         let (auto_row_reps, row_count) = compute_explicit_grid_size_in_axis(
             &grid_style,
-            inner_container_size.get_abs(AbsoluteAxis::Vertical),
+            inner_container_size.height,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Vertical,
+            AbstractAxis::Block,
         );
         assert_eq!(col_count, 5); // 40px horizontal padding
         assert_eq!(row_count, 4); // 20px vertical padding
@@ -713,7 +718,7 @@ mod test {
             None,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         assert_eq!((repetitions, track_count), (1, 10_000));
         let mut tracks = Vec::new();
@@ -721,7 +726,7 @@ mod test {
             &mut tracks,
             TrackCounts::from_raw(0, track_count, 0),
             &auto_repeat_first,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
             repetitions,
             |_| false,
         );
@@ -738,7 +743,7 @@ mod test {
             None,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         assert_eq!((repetitions, track_count), (0, 10_000));
     }
@@ -762,7 +767,7 @@ mod test {
             None,
             AutoRepeatStrategy::MaxRepetitionsThatDoNotOverflow,
             |_, _| 42.42,
-            AbsoluteAxis::Horizontal,
+            AbstractAxis::Inline,
         );
         assert_eq!(result, (0, 10_000));
     }
@@ -793,7 +798,7 @@ mod test {
 
         // Call function
         let mut tracks = Vec::new();
-        initialize_grid_tracks(&mut tracks, track_counts, &grid_style, AbsoluteAxis::Horizontal, 0, |_| false);
+        initialize_grid_tracks(&mut tracks, track_counts, &grid_style, AbstractAxis::Inline, 0, |_| false);
 
         // Assertions
         let expected = vec![

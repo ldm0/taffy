@@ -3,17 +3,11 @@
 use super::types::{CellOccupancyMatrix, CellOccupancyState, GridItem};
 use super::{NamedLineResolver, OriginZeroLine, MAX_OZ_LINE, MIN_OZ_LINE};
 use crate::geometry::Line;
-use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
+use crate::geometry::{AbstractAxis, InBothAbstractAxis};
 use crate::style::{AlignItems, GridAutoFlow, OriginZeroGridPlacement};
 use crate::tree::NodeId;
 use crate::util::sys::Vec;
-use crate::{CoreStyle, Direction, GridItemStyle, WritingMode};
-
-#[inline]
-/// Returns whether placement/search should run in reverse for this axis.
-fn axis_is_reversed(direction: Direction, axis: AbsoluteAxis) -> bool {
-    direction.is_rtl() && axis == AbsoluteAxis::Horizontal
-}
+use crate::{CoreStyle, GridItemStyle, WritingDirection};
 
 #[inline]
 /// Advances the cursor by one track in the active search direction.
@@ -53,27 +47,27 @@ fn resolve_indefinite_grid_span(position: OriginZeroLine, span: u16, axis_is_rev
 }
 
 #[inline]
-/// Mirrors a horizontal span around the explicit grid width.
-fn mirror_horizontal_span(span: Line<OriginZeroLine>, explicit_col_count: u16) -> Line<OriginZeroLine> {
-    let explicit_col_end_line = explicit_col_count as i16;
+/// Mirrors a span around the end line of the explicit grid in one axis.
+fn mirror_axis_span(span: Line<OriginZeroLine>, explicit_track_count: u16) -> Line<OriginZeroLine> {
+    let explicit_end_line = explicit_track_count as i16;
     Line {
-        start: OriginZeroLine(explicit_col_end_line - span.end.0),
-        end: OriginZeroLine(explicit_col_end_line - span.start.0),
+        start: OriginZeroLine(explicit_end_line - span.end.0),
+        end: OriginZeroLine(explicit_end_line - span.start.0),
     }
 }
 
 #[inline]
-/// Mirrors horizontal spans for RTL while leaving all other spans unchanged.
+/// Converts a logical span to the low-to-high coordinates used by the track vectors.
 fn maybe_mirror_span(
     span: Line<OriginZeroLine>,
-    axis: AbsoluteAxis,
-    direction: Direction,
-    explicit_col_count: u16,
+    axis: AbstractAxis,
+    writing_direction: WritingDirection,
+    explicit_track_counts: InBothAbstractAxis<u16>,
 ) -> Line<OriginZeroLine> {
-    if axis == AbsoluteAxis::Horizontal && direction.is_rtl() {
+    if writing_direction.is_logical_axis_reversed(axis) {
         // Clamp into the limited grid before mirroring so that placements outside of the limited
         // grid mirror to the same tracks as their clamped equivalents
-        mirror_horizontal_span(clamp_span_to_limited_grid(span, MIN_OZ_LINE, MAX_OZ_LINE), explicit_col_count)
+        mirror_axis_span(clamp_span_to_limited_grid(span, MIN_OZ_LINE, MAX_OZ_LINE), explicit_track_counts.get(axis))
     } else {
         span
     }
@@ -88,8 +82,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     cell_occupancy_matrix: &mut CellOccupancyMatrix,
     items: &mut Vec<GridItem>,
     children_iter: impl Fn() -> ChildIter,
-    parent_writing_mode: WritingMode,
-    direction: Direction,
+    parent_writing_direction: WritingDirection,
     grid_auto_flow: GridAutoFlow,
     align_items: AlignItems,
     justify_items: AlignItems,
@@ -99,17 +92,18 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     ChildIter: Iterator<Item = (usize, NodeId, S)>,
 {
     let primary_axis = grid_auto_flow.primary_axis();
-    let secondary_axis = primary_axis.other_axis();
-    let explicit_col_count = cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal).explicit;
+    let secondary_axis = primary_axis.other();
+    let explicit_col_count = cell_occupancy_matrix.track_counts(AbstractAxis::Inline).explicit;
+    let explicit_row_count = cell_occupancy_matrix.track_counts(AbstractAxis::Block).explicit;
+    let explicit_track_counts = InBothAbstractAxis { inline: explicit_col_count, block: explicit_row_count };
 
     let map_child_style_to_origin_zero_placement = {
-        let explicit_row_count = cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical).explicit;
         move |(index, node, style): (usize, NodeId, S)| -> (_, _, _, S) {
-            let origin_zero_placement = InBothAbsAxis {
-                horizontal: named_line_resolver
+            let origin_zero_placement = InBothAbstractAxis {
+                inline: named_line_resolver
                     .resolve_column_names(&style.grid_column())
                     .map(|placement| placement.into_origin_zero_placement(explicit_col_count)),
-                vertical: named_line_resolver
+                block: named_line_resolver
                     .resolve_row_names(&style.grid_row())
                     .map(|placement| placement.into_origin_zero_placement(explicit_row_count)),
             };
@@ -121,26 +115,29 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     let mut idx = 0;
     children_iter()
         .map(map_child_style_to_origin_zero_placement)
-        .filter(|(_, _, placement, _)| placement.horizontal.is_definite() && placement.vertical.is_definite())
+        .filter(|(_, _, placement, _)| placement.inline.is_definite() && placement.block.is_definite())
         .for_each(|(index, child_node, child_placement, style)| {
             idx += 1;
             #[cfg(test)]
             println!("Definite Item {idx}\n==============");
 
-            let (row_span, col_span) =
-                place_definite_grid_item(child_placement, primary_axis, direction, explicit_col_count);
+            let (row_span, col_span) = place_definite_grid_item(
+                child_placement,
+                primary_axis,
+                parent_writing_direction,
+                explicit_track_counts,
+            );
             record_grid_placement(
                 cell_occupancy_matrix,
                 items,
                 child_node,
                 index,
                 style,
-                parent_writing_mode,
+                parent_writing_direction,
                 align_items,
                 justify_items,
                 primary_axis,
-                direction,
-                explicit_col_count,
+                explicit_track_counts,
                 row_span,
                 col_span,
                 CellOccupancyState::DefinitelyPlaced,
@@ -163,8 +160,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 &*cell_occupancy_matrix,
                 child_placement,
                 grid_auto_flow,
-                direction,
-                explicit_col_count,
+                parent_writing_direction,
+                explicit_track_counts,
             );
 
             record_grid_placement(
@@ -173,12 +170,11 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_node,
                 index,
                 style,
-                parent_writing_mode,
+                parent_writing_direction,
                 align_items,
                 justify_items,
                 primary_axis,
-                direction,
-                explicit_col_count,
+                explicit_track_counts,
                 primary_span,
                 secondary_span,
                 CellOccupancyState::AutoPlaced,
@@ -205,18 +201,18 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     // 4. Position the remaining grid items
     // (which either have definite position only in the secondary axis or indefinite positions in both axis)
     let primary_axis = grid_auto_flow.primary_axis();
-    let secondary_axis = primary_axis.other_axis();
+    let secondary_axis = primary_axis.other();
     let primary_axis_grid_start_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_start_line();
     let primary_axis_grid_end_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_end_line();
     let secondary_axis_grid_start_line = cell_occupancy_matrix.track_counts(secondary_axis).implicit_start_line();
     let secondary_axis_grid_end_line = cell_occupancy_matrix.track_counts(secondary_axis).implicit_end_line();
-    let primary_axis_is_reversed = axis_is_reversed(direction, primary_axis);
+    let primary_axis_is_reversed = parent_writing_direction.is_logical_axis_reversed(primary_axis);
     let grid_start_position = (
         search_start_line(primary_axis_grid_start_line, primary_axis_grid_end_line, primary_axis_is_reversed),
         search_start_line(
             secondary_axis_grid_start_line,
             secondary_axis_grid_end_line,
-            axis_is_reversed(direction, secondary_axis),
+            parent_writing_direction.is_logical_axis_reversed(secondary_axis),
         ),
     );
     let mut grid_position = grid_start_position;
@@ -235,8 +231,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_placement,
                 grid_auto_flow,
                 grid_position,
-                direction,
-                explicit_col_count,
+                parent_writing_direction,
+                explicit_track_counts,
             );
 
             // Record item
@@ -246,12 +242,11 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
                 child_node,
                 index,
                 style,
-                parent_writing_mode,
+                parent_writing_direction,
                 align_items,
                 justify_items,
                 primary_axis,
-                direction,
-                explicit_col_count,
+                explicit_track_counts,
                 primary_span,
                 secondary_span,
                 CellOccupancyState::AutoPlaced,
@@ -270,23 +265,23 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
 /// 8.5. Grid Item Placement Algorithm
 /// Place a single definitely placed item into the grid
 fn place_definite_grid_item(
-    placement: InBothAbsAxis<Line<OriginZeroGridPlacement>>,
-    primary_axis: AbsoluteAxis,
-    direction: Direction,
-    explicit_col_count: u16,
+    placement: InBothAbstractAxis<Line<OriginZeroGridPlacement>>,
+    primary_axis: AbstractAxis,
+    writing_direction: WritingDirection,
+    explicit_track_counts: InBothAbstractAxis<u16>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     // Resolve spans to tracks
     let primary_span = maybe_mirror_span(
         placement.get(primary_axis).resolve_definite_grid_lines(),
         primary_axis,
-        direction,
-        explicit_col_count,
+        writing_direction,
+        explicit_track_counts,
     );
     let secondary_span = maybe_mirror_span(
-        placement.get(primary_axis.other_axis()).resolve_definite_grid_lines(),
-        primary_axis.other_axis(),
-        direction,
-        explicit_col_count,
+        placement.get(primary_axis.other()).resolve_definite_grid_lines(),
+        primary_axis.other(),
+        writing_direction,
+        explicit_track_counts,
     );
 
     (primary_span, secondary_span)
@@ -296,22 +291,22 @@ fn place_definite_grid_item(
 /// Step 2. Place remaining children with definite secondary axis positions
 fn place_definite_secondary_axis_item(
     cell_occupancy_matrix: &CellOccupancyMatrix,
-    placement: InBothAbsAxis<Line<OriginZeroGridPlacement>>,
+    placement: InBothAbstractAxis<Line<OriginZeroGridPlacement>>,
     auto_flow: GridAutoFlow,
-    direction: Direction,
-    explicit_col_count: u16,
+    writing_direction: WritingDirection,
+    explicit_track_counts: InBothAbstractAxis<u16>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     let primary_axis = auto_flow.primary_axis();
-    let secondary_axis = primary_axis.other_axis();
-    let primary_axis_is_reversed = axis_is_reversed(direction, primary_axis);
+    let secondary_axis = primary_axis.other();
+    let primary_axis_is_reversed = writing_direction.is_logical_axis_reversed(primary_axis);
     let primary_axis_grid_start_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_start_line();
     let primary_axis_grid_end_line = cell_occupancy_matrix.track_counts(primary_axis).implicit_end_line();
 
     let secondary_axis_placement = maybe_mirror_span(
         placement.get(secondary_axis).resolve_definite_grid_lines(),
         secondary_axis,
-        direction,
-        explicit_col_count,
+        writing_direction,
+        explicit_track_counts,
     );
     let starting_position = match auto_flow.is_dense() {
         true => search_start_line(primary_axis_grid_start_line, primary_axis_grid_end_line, primary_axis_is_reversed),
@@ -361,16 +356,16 @@ fn place_definite_secondary_axis_item(
 /// Step 4. Position the remaining grid items.
 fn place_indefinitely_positioned_item(
     cell_occupancy_matrix: &CellOccupancyMatrix,
-    placement: InBothAbsAxis<Line<OriginZeroGridPlacement>>,
+    placement: InBothAbstractAxis<Line<OriginZeroGridPlacement>>,
     auto_flow: GridAutoFlow,
     grid_position: (OriginZeroLine, OriginZeroLine),
-    direction: Direction,
-    explicit_col_count: u16,
+    writing_direction: WritingDirection,
+    explicit_track_counts: InBothAbstractAxis<u16>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
     let primary_axis = auto_flow.primary_axis();
-    let secondary_axis = primary_axis.other_axis();
-    let primary_axis_is_reversed = axis_is_reversed(direction, primary_axis);
-    let secondary_axis_is_reversed = axis_is_reversed(direction, secondary_axis);
+    let secondary_axis = primary_axis.other();
+    let primary_axis_is_reversed = writing_direction.is_logical_axis_reversed(primary_axis);
+    let secondary_axis_is_reversed = writing_direction.is_logical_axis_reversed(secondary_axis);
 
     let primary_placement_style = placement.get(primary_axis);
     let secondary_placement_style = placement.get(secondary_axis);
@@ -392,8 +387,8 @@ fn place_indefinitely_positioned_item(
         let primary_span = maybe_mirror_span(
             primary_placement_style.resolve_definite_grid_lines(),
             primary_axis,
-            direction,
-            explicit_col_count,
+            writing_direction,
+            explicit_track_counts,
         );
 
         // Compute secondary axis starting position for search
@@ -512,12 +507,12 @@ fn clamp_span_to_limited_grid(span: Line<OriginZeroLine>, min_line: i16, max_lin
 /// Clamps a span using bounds transformed into the axis's placement coordinates.
 fn clamp_span_for_axis(
     span: Line<OriginZeroLine>,
-    axis: AbsoluteAxis,
-    direction: Direction,
-    explicit_col_count: u16,
+    axis: AbstractAxis,
+    writing_direction: WritingDirection,
+    explicit_track_counts: InBothAbstractAxis<u16>,
 ) -> Line<OriginZeroLine> {
-    let (min_line, max_line) = if axis == AbsoluteAxis::Horizontal && direction.is_rtl() {
-        let explicit_end = explicit_col_count as i16;
+    let (min_line, max_line) = if writing_direction.is_logical_axis_reversed(axis) {
+        let explicit_end = explicit_track_counts.get(axis) as i16;
         (explicit_end - MAX_OZ_LINE, explicit_end - MIN_OZ_LINE)
     } else {
         (MIN_OZ_LINE, MAX_OZ_LINE)
@@ -534,12 +529,11 @@ fn record_grid_placement<S: GridItemStyle>(
     node: NodeId,
     index: usize,
     style: S,
-    parent_writing_mode: WritingMode,
+    parent_writing_direction: WritingDirection,
     parent_align_items: AlignItems,
     parent_justify_items: AlignItems,
-    primary_axis: AbsoluteAxis,
-    direction: Direction,
-    explicit_col_count: u16,
+    primary_axis: AbstractAxis,
+    explicit_track_counts: InBothAbstractAxis<u16>,
     primary_span: Line<OriginZeroLine>,
     secondary_span: Line<OriginZeroLine>,
     placement_type: CellOccupancyState,
@@ -551,23 +545,24 @@ fn record_grid_placement<S: GridItemStyle>(
 
     // Clamp placements into the limited grid to prevent arithmetic overflow when growing the
     // implicit grid (https://www.w3.org/TR/css-grid-1/#overlarge-grids)
-    let primary_span = clamp_span_for_axis(primary_span, primary_axis, direction, explicit_col_count);
-    let secondary_span = clamp_span_for_axis(secondary_span, primary_axis.other_axis(), direction, explicit_col_count);
+    let primary_span = clamp_span_for_axis(primary_span, primary_axis, parent_writing_direction, explicit_track_counts);
+    let secondary_span =
+        clamp_span_for_axis(secondary_span, primary_axis.other(), parent_writing_direction, explicit_track_counts);
 
     // Mark area of grid as occupied
     cell_occupancy_matrix.mark_area_as(primary_axis, primary_span, secondary_span, placement_type);
 
     // Create grid item
     let (col_span, row_span) = match primary_axis {
-        AbsoluteAxis::Horizontal => (primary_span, secondary_span),
-        AbsoluteAxis::Vertical => (secondary_span, primary_span),
+        AbstractAxis::Inline => (primary_span, secondary_span),
+        AbstractAxis::Block => (secondary_span, primary_span),
     };
     items.push(GridItem::new_with_placement_style_and_order(
         node,
-        parent_writing_mode,
-        InBothAbsAxis { horizontal: col_span, vertical: row_span },
+        parent_writing_direction,
+        InBothAbstractAxis { inline: col_span, block: row_span },
         style,
-        InBothAbsAxis { horizontal: parent_justify_items, vertical: parent_align_items },
+        InBothAbstractAxis { inline: parent_justify_items, block: parent_align_items },
         index as u16,
     ));
 
@@ -592,7 +587,7 @@ mod tests {
         use crate::compute::grid::OriginZeroLine;
         use crate::prelude::*;
         use crate::style::GridAutoFlow;
-        use crate::Direction;
+        use crate::{Direction, WritingDirection, WritingMode};
 
         use super::super::place_grid_items;
 
@@ -609,8 +604,13 @@ mod tests {
             // Setup test
             let children_iter = || children.iter().map(|(index, style, _)| (*index, NodeId::from(*index), style));
             let child_styles_iter = children.iter().map(|(_, style, _)| style);
-            let estimated_sizes =
-                compute_grid_size_estimate(explicit_col_count, explicit_row_count, Direction::Ltr, child_styles_iter);
+            let writing_direction = WritingDirection::new(WritingMode::HorizontalTb, Direction::Ltr);
+            let estimated_sizes = compute_grid_size_estimate(
+                explicit_col_count,
+                explicit_row_count,
+                writing_direction,
+                child_styles_iter,
+            );
             let mut items = Vec::new();
             let mut cell_occupancy_matrix =
                 CellOccupancyMatrix::with_track_counts(estimated_sizes.0, estimated_sizes.1);
@@ -623,8 +623,7 @@ mod tests {
                 &mut cell_occupancy_matrix,
                 &mut items,
                 children_iter,
-                crate::WritingMode::HorizontalTb,
-                Direction::Ltr,
+                writing_direction,
                 flow,
                 AlignSelf::START,
                 AlignSelf::START,
@@ -643,9 +642,9 @@ mod tests {
             }
 
             // Assert that the correct number of implicit rows have been generated
-            let actual_row_counts = *cell_occupancy_matrix.track_counts(crate::compute::grid::AbsoluteAxis::Vertical);
+            let actual_row_counts = *cell_occupancy_matrix.track_counts(crate::geometry::AbstractAxis::Block);
             assert_eq!(actual_row_counts, expected_row_counts, "row track counts");
-            let actual_col_counts = *cell_occupancy_matrix.track_counts(crate::compute::grid::AbsoluteAxis::Horizontal);
+            let actual_col_counts = *cell_occupancy_matrix.track_counts(crate::geometry::AbstractAxis::Inline);
             assert_eq!(actual_col_counts, expected_col_counts, "column track counts");
         }
 
@@ -848,10 +847,11 @@ mod tests {
             let explicit_row_count = 0;
             let style = (line(-19_005), auto(), auto(), auto()).into_grid_child();
             let children = [(0, style)];
+            let writing_direction = WritingDirection::new(WritingMode::HorizontalTb, Direction::Rtl);
             let estimated_sizes = compute_grid_size_estimate(
                 explicit_col_count,
                 explicit_row_count,
-                Direction::Rtl,
+                writing_direction,
                 children.iter().map(|(_, style)| style),
             );
             let mut items = Vec::new();
@@ -864,8 +864,7 @@ mod tests {
                 &mut cell_occupancy_matrix,
                 &mut items,
                 || children.iter().map(|(index, style)| (*index, NodeId::from(*index), style)),
-                crate::WritingMode::HorizontalTb,
-                Direction::Rtl,
+                writing_direction,
                 GridAutoFlow::Row,
                 AlignSelf::START,
                 AlignSelf::START,
@@ -896,8 +895,14 @@ mod tests {
     #[test]
     fn rtl_spans_are_clamped_in_mirrored_coordinates() {
         let logical_span = Line { start: OriginZeroLine(-10_000), end: OriginZeroLine(-9_999) };
-        let mirrored_span = maybe_mirror_span(logical_span, AbsoluteAxis::Horizontal, Direction::Rtl, 9_000);
+        let writing_direction = WritingDirection::new(crate::WritingMode::HorizontalTb, crate::Direction::Rtl);
+        let explicit_track_counts = InBothAbstractAxis { inline: 9_000, block: 0 };
+        let mirrored_span =
+            maybe_mirror_span(logical_span, AbstractAxis::Inline, writing_direction, explicit_track_counts);
         assert_eq!(mirrored_span, Line { start: OriginZeroLine(18_999), end: OriginZeroLine(19_000) });
-        assert_eq!(clamp_span_for_axis(mirrored_span, AbsoluteAxis::Horizontal, Direction::Rtl, 9_000), mirrored_span);
+        assert_eq!(
+            clamp_span_for_axis(mirrored_span, AbstractAxis::Inline, writing_direction, explicit_track_counts),
+            mirrored_span
+        );
     }
 }
