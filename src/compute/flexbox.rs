@@ -194,14 +194,17 @@ struct FlexItem {
     /// The order of the node relative to it's siblings
     order: u32,
 
-    /// The base size of this item
-    size: Size<Option<f32>>,
+    /// Border-box preferred sizes after applying the preferred aspect ratio.
+    ///
+    /// A ratio-derived cross-axis value is provisional until flexible-length
+    /// resolution establishes the item's final main size.
+    resolved_preferred_size: Size<Option<f32>>,
     /// Border-box preferred sizes resolved directly from authored properties.
     ///
     /// Ratio-derived sizes are deliberately excluded: the flex automatic
     /// minimum treats those as part of its content-size suggestion, not as a
     /// specified-size suggestion.
-    specified_size_suggestion: Size<Option<f32>>,
+    direct_preferred_size: Size<Option<f32>>,
     /// The preferred size before transferring a dimension through `aspect-ratio`
     /// or applying a content-box padding/border adjustment.
     ///
@@ -1145,7 +1148,7 @@ fn generate_anonymous_flex_items(
             min_size.width = min_size.width.or(intrinsic.min.value);
             max_size.width = max_size.width.or(intrinsic.max.value);
             depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
-            let specified_size_suggestion = untransferred_size.maybe_add(box_sizing_adjustment);
+            let direct_preferred_size = untransferred_size.maybe_add(box_sizing_adjustment);
             let constraint_input = SizeConstraintInput {
                 size,
                 min_size,
@@ -1168,8 +1171,8 @@ fn generate_anonymous_flex_items(
             Some(FlexItem {
                 node: child,
                 order: index as u32,
-                size,
-                specified_size_suggestion,
+                resolved_preferred_size: size,
+                direct_preferred_size,
                 untransferred_size,
                 min_size: constraints_without_transfer.min_size,
                 max_size: constraints_without_transfer.max_size,
@@ -1253,7 +1256,7 @@ fn determine_column_wrap_intrinsic_cross_sizes(
     let dir = constants.dir;
     for item in flex_items {
         let child_available_space = available_space.with_cross(dir, constraint.available_space());
-        let child_known_dimensions = item.size.with_cross(dir, None);
+        let child_known_dimensions = item.resolved_preferred_size.with_cross(dir, None);
         let measured = tree.measure_child_size_with_metadata(
             item.node,
             ChildLayoutInput::new(
@@ -1270,7 +1273,7 @@ fn determine_column_wrap_intrinsic_cross_sizes(
 
         let padding_border = (item.padding + item.border).cross_axis_sum(dir);
         let content_size = measured.size.get_abs(dir.cross_axis());
-        let preferred_size = item.specified_size_suggestion.cross(dir);
+        let preferred_size = item.direct_preferred_size.cross(dir);
         item.column_wrap_intrinsic_cross_size = Some(resolve_flex_item_intrinsic_contribution(
             content_size,
             preferred_size,
@@ -1387,7 +1390,7 @@ fn determine_flex_base_size(
             let mut ckd = if flex_basis_is_unresolved {
                 child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
             } else {
-                child.size.with_main(dir, None)
+                child.resolved_preferred_size.with_main(dir, None)
             };
             // Clamp the definite cross size by the cross min/max sizes so that sizes
             // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
@@ -1597,7 +1600,7 @@ fn determine_flex_base_size(
             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
             resolve_flex_automatic_minimum(
                 min_content_main_size,
-                child.specified_size_suggestion.main(dir),
+                child.direct_preferred_size.main(dir),
                 ratio_dependent_main_size,
                 max_size_with_transfer.main(dir),
                 child.is_replaced,
@@ -1733,7 +1736,7 @@ fn flex_item_content_main_contribution(
         child_min_cross,
         child_max_cross,
     );
-    let mut child_known_dimensions = item.size.with_main(dir, None);
+    let mut child_known_dimensions = item.resolved_preferred_size.with_main(dir, None);
     if item.align_self == AlignSelf::STRETCH && child_known_dimensions.cross(dir).is_none() {
         child_known_dimensions
             .set_cross(dir, cross_axis_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
@@ -1766,7 +1769,7 @@ fn flex_item_content_main_contribution(
     let used_minimum = item.resolved_minimum_main_size.maybe_max(item.min_size_with_transfer.main(dir));
     resolve_flex_item_intrinsic_contribution(
         content_size,
-        item.specified_size_suggestion.main(dir),
+        item.direct_preferred_size.main(dir),
         Some(used_minimum),
         item.max_size_with_transfer.main(dir),
         padding_border,
@@ -1940,7 +1943,7 @@ fn determine_container_main_size(
                 for line in lines.iter_mut() {
                     for item in line.items.iter_mut() {
                         let style_min = item.min_size.main(constants.dir);
-                        let style_preferred = item.size.main(constants.dir);
+                        let style_preferred = item.resolved_preferred_size.main(constants.dir);
                         let style_max = item.max_size.main(constants.dir);
 
                         // The spec seems a bit unclear on this point (my initial reading was that the `.maybe_max(style_preferred)` should
@@ -1994,7 +1997,7 @@ fn determine_container_main_size(
 
                                 // Known dimensions for child sizing
                                 let child_known_dimensions = {
-                                    let mut ckd = item.size.with_main(dir, None);
+                                    let mut ckd = item.resolved_preferred_size.with_main(dir, None);
                                     if item.align_self == AlignSelf::STRETCH && ckd.cross(dir).is_none() {
                                         ckd.set_cross(
                                             dir,
@@ -2343,9 +2346,12 @@ fn determine_hypothetical_cross_size(
             .with_main(constants.dir, Some(child.target_size.main(constants.dir)))
             .maybe_apply_aspect_ratio_with_box_sizing(child.aspect_ratio, BoxSizing::BorderBox, padding_border)
             .cross(constants.dir);
+        // `resolved_preferred_size` can contain a cross size transferred from
+        // the pre-flex main size. Only an independent preferred cross size may
+        // outrank the transfer from the final main size at this phase boundary.
         let preferred_cross = child
             .column_wrap_intrinsic_cross_size
-            .or(child.size.cross(constants.dir))
+            .or(child.direct_preferred_size.cross(constants.dir))
             .or(ratio_cross)
             .maybe_max(padding_border_sum);
 

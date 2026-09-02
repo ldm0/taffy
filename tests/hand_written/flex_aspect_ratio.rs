@@ -1,5 +1,6 @@
 use taffy::prelude::*;
 use taffy::Overflow;
+use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
 ///
@@ -54,6 +55,147 @@ fn auto_flex_basis_uses_a_definite_stretched_cross_size_through_aspect_ratio() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
     assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+fn layout_flexed_ratio_item(
+    mut item_style: Style,
+    flex_direction: FlexDirection,
+    container_size: Size<Dimension>,
+) -> (Size<f32>, Size<f32>) {
+    let mut tree = TaffyTree::<()>::new();
+    item_style.flex_basis = Dimension::length(0.0);
+    item_style.flex_grow = 1.0;
+    item_style.flex_shrink = 1.0;
+    let item = tree.new_leaf(item_style).unwrap();
+    let container = tree
+        .new_with_children(
+            Style { display: Display::Flex, flex_direction, size: container_size, ..Style::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    (tree.layout(item).unwrap().size, tree.layout(container).unwrap().size)
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-011.html.
+#[test]
+fn flexed_main_size_recomputes_the_ratio_dependent_cross_size() {
+    let row = layout_flexed_ratio_item(
+        Style {
+            size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Size { width: Dimension::length(100.0), height: Dimension::auto() },
+    );
+    let column = layout_flexed_ratio_item(
+        Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(50.0) },
+            min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        FlexDirection::Column,
+        Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+    );
+
+    assert_eq!(row, (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }));
+    assert_eq!(column, (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }));
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-023.html.
+#[test]
+fn flexed_replaced_main_size_recomputes_the_ratio_dependent_cross_size() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+                aspect_ratio: Some(1.0),
+                item_is_replaced: true,
+                flex_basis: Dimension::length(0.0),
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                ..Style::default()
+            },
+            TestNodeContext::fixed(20.0, 50.0),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn direct_cross_size_wins_over_the_ratio_after_main_axis_flexing() {
+    let sizes = layout_flexed_ratio_item(
+        Style {
+            size: Size { width: Dimension::length(50.0), height: Dimension::length(30.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Size { width: Dimension::length(100.0), height: Dimension::auto() },
+    );
+
+    assert_eq!(sizes, (Size { width: 100.0, height: 30.0 }, Size { width: 100.0, height: 30.0 }));
+}
+
+#[test]
+fn flexed_ratio_cross_size_uses_the_ratio_sizing_box() {
+    let sizes = layout_flexed_ratio_item(
+        Style {
+            size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            padding: Rect {
+                left: LengthPercentage::length(10.0),
+                right: LengthPercentage::length(10.0),
+                top: LengthPercentage::length(10.0),
+                bottom: LengthPercentage::length(10.0),
+            },
+            box_sizing: BoxSizing::ContentBox,
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Size { width: Dimension::length(120.0), height: Dimension::auto() },
+    );
+
+    assert_eq!(sizes, (Size { width: 120.0, height: 120.0 }, Size { width: 120.0, height: 120.0 }));
+}
+
+#[test]
+fn transferred_cross_maximum_clamps_the_recomputed_ratio_size() {
+    let sizes = layout_flexed_ratio_item(
+        Style {
+            size: Size { width: Dimension::length(50.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            max_size: Size { width: Dimension::auto(), height: Dimension::length(80.0) },
+            aspect_ratio: Some(1.0),
+            ..Style::default()
+        },
+        FlexDirection::Row,
+        Size { width: Dimension::length(100.0), height: Dimension::auto() },
+    );
+
+    assert_eq!(sizes, (Size { width: 100.0, height: 80.0 }, Size { width: 100.0, height: 80.0 }));
 }
 
 fn layout_ratio_flex_item_with_content(
