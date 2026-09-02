@@ -954,20 +954,32 @@ impl Size<Option<f32>> {
             (BoxSizing::BorderBox, BoxSizing::ContentBox) => (value - inset).max(0.0),
             _ => value,
         };
+        let source_box_floor = |inset: f32| match source_box_sizing {
+            BoxSizing::BorderBox => inset,
+            BoxSizing::ContentBox => 0.0,
+        };
         match (self.width, self.height) {
             (Some(width), None) => {
                 let ratio_width = convert(width, padding_border.width, source_box_sizing, aspect_ratio.sizing_box());
                 let ratio_height = ratio_width / ratio;
                 let source_height =
                     convert(ratio_height, padding_border.height, aspect_ratio.sizing_box(), source_box_sizing);
-                Size { width: Some(width), height: source_height.is_finite().then_some(source_height.max(0.0)) }
+                Size {
+                    width: Some(width),
+                    height: source_height
+                        .is_finite()
+                        .then_some(source_height.max(source_box_floor(padding_border.height))),
+                }
             }
             (None, Some(height)) => {
                 let ratio_height = convert(height, padding_border.height, source_box_sizing, aspect_ratio.sizing_box());
                 let ratio_width = ratio_height * ratio;
                 let source_width =
                     convert(ratio_width, padding_border.width, aspect_ratio.sizing_box(), source_box_sizing);
-                Size { width: source_width.is_finite().then_some(source_width.max(0.0)), height: Some(height) }
+                Size {
+                    width: source_width.is_finite().then_some(source_width.max(source_box_floor(padding_border.width))),
+                    height: Some(height),
+                }
             }
             _ => self,
         }
@@ -997,6 +1009,18 @@ mod aspect_ratio_tests {
 
         assert_eq!(content_box_ratio, Size { width: Some(100.0), height: Some(60.0) });
         assert_eq!(border_box_ratio, Size { width: Some(100.0), height: Some(50.0) });
+    }
+
+    #[test]
+    fn border_box_ratio_cannot_shrink_the_target_below_its_insets() {
+        let padding_border = Size { width: 40.0, height: 40.0 };
+        let size = Size { width: Some(50.0), height: None }.maybe_apply_aspect_ratio_with_box_sizing(
+            ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
+            BoxSizing::BorderBox,
+            padding_border,
+        );
+
+        assert_eq!(size, Size { width: Some(50.0), height: Some(40.0) });
     }
 }
 

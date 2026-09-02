@@ -1,6 +1,8 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
-use crate::{AbsoluteAxis, AutoSizeBehavior, BoxSizing, LogicalSize, ResolvedAspectRatio, Size, WritingMode};
+use crate::{
+    AbsoluteAxis, AutoSizeBehavior, BoxSizing, LogicalSize, MaybeMath, ResolvedAspectRatio, Size, WritingMode,
+};
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,9 +163,9 @@ pub(crate) struct SizeConstraintInput {
 /// `max_size` and then using the generic "minimum wins" clamp.
 pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSizeConstraints {
     let SizeConstraintInput {
-        size,
-        min_size,
-        max_size,
+        mut size,
+        mut min_size,
+        mut max_size,
         size_is_auto,
         writing_mode,
         inline_auto_behavior,
@@ -172,9 +174,20 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         aspect_ratio,
         padding_border,
     } = input;
+
+    // Resolved CSS lengths denote a border box at this boundary. Like
+    // Blink's Resolve*Length helpers, normalize every present value before
+    // ratio transfer so an undersized border-box declaration cannot squash
+    // padding or border. The structural border-box minimum also participates
+    // as the source of a transferred minimum while preserving `None` as the
+    // authored min-size provenance in the target axis.
+    size = size.maybe_max(padding_border);
+    min_size = min_size.maybe_max(padding_border);
+    max_size = max_size.maybe_max(padding_border);
+    let transfer_min_size = min_size.or(padding_border.map(Some)).maybe_max(padding_border);
     let (transferred_min, transferred_max) = match transferred_sizes_mode {
         TransferredSizesMode::Normal => (
-            transferred_constraints(min_size, size_is_auto, aspect_ratio, padding_border),
+            transferred_constraints(transfer_min_size, size_is_auto, aspect_ratio, padding_border),
             transferred_constraints(max_size, size_is_auto, aspect_ratio, padding_border),
         ),
         TransferredSizesMode::Ignore => (Size::NONE, Size::NONE),
@@ -425,6 +438,43 @@ fn minimum_constraint(lhs: Option<f32>, rhs: Option<f32>) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn border_box_floor_precedes_preferred_ratio_transfer() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size { width: None, height: Some(20.0) },
+            min_size: Size::NONE,
+            max_size: Size::NONE,
+            size_is_auto: Size { width: true, height: false },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
+            padding_border: Size { width: 40.0, height: 40.0 },
+        });
+
+        assert_eq!(resolved.size, Size { width: Some(80.0), height: Some(40.0) });
+    }
+
+    #[test]
+    fn structural_border_box_minimum_transfers_through_the_ratio() {
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: Size::NONE,
+            min_size: Size::NONE,
+            max_size: Size { width: None, height: Some(20.0) },
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
+            padding_border: Size { width: 40.0, height: 40.0 },
+        });
+
+        assert_eq!(resolved.min_size.width, Some(80.0));
+        assert_eq!(resolved.max_size, Size { width: Some(80.0), height: Some(40.0) });
+    }
 
     #[test]
     fn explicit_and_implicit_inline_stretch_preserve_ratio_order() {

@@ -54,6 +54,44 @@ fn resolved_aspect_ratio_sizing_box_flows_through_block_flex_and_grid_items() {
 }
 
 #[test]
+fn border_box_insets_are_normalized_before_ratio_sizing() {
+    let layout = |size: Size<Dimension>, max_size: Size<Dimension>, ratio| {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                box_sizing: BoxSizing::BorderBox,
+                size,
+                max_size,
+                border: Rect { left: length(20.0), right: length(20.0), top: length(20.0), bottom: length(20.0) },
+                aspect_ratio: Some(ratio),
+                ..Style::default()
+            })
+            .unwrap();
+
+        tree.compute_layout(node, Size::MAX_CONTENT).unwrap();
+        tree.layout(node).unwrap().size
+    };
+
+    assert_eq!(
+        layout(Size { width: auto(), height: length(20.0) }, Size::AUTO, 2.0,),
+        Size { width: 80.0, height: 40.0 }
+    );
+    assert_eq!(
+        layout(Size::AUTO, Size { width: auto(), height: length(20.0) }, 2.0,),
+        Size { width: 80.0, height: 40.0 }
+    );
+    assert_eq!(
+        layout(Size { width: length(20.0), height: auto() }, Size::AUTO, 0.5,),
+        Size { width: 40.0, height: 80.0 }
+    );
+    assert_eq!(
+        layout(Size::AUTO, Size { width: length(20.0), height: auto() }, 0.5,),
+        Size { width: 40.0, height: 80.0 }
+    );
+}
+
+#[test]
 fn grid_intrinsic_probes_keep_item_owned_sizes_out_of_known_dimensions() {
     let grid = TestNode::container(
         Display::Grid,
