@@ -255,7 +255,10 @@ fn node_block_constraint_dependency(
             .any(|value| value.may_have_percentage_dependence() || value.is_stretch())
     };
     let requested_block_size = inputs.axis.contains(writing_mode.block_axis());
-    style_depends_on_parent_block_size && (requested_block_size || has_aspect_ratio || reported_dependency)
+    let available_intrinsic_floor_dependency =
+        inputs.block_auto_behavior == AutoSizeBehavior::FitContentWithAvailableIntrinsicFloor && reported_dependency;
+    available_intrinsic_floor_dependency
+        || (style_depends_on_parent_block_size && (requested_block_size || has_aspect_ratio || reported_dependency))
 }
 
 /// Rounds the calculated layout to exact pixel values

@@ -11,10 +11,11 @@ use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
 use core::unreachable;
 
+use super::common::aspect_ratio::ResolvedAxisConstraints;
 use super::common::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
 };
-use super::common::intrinsic_size::ResolvedNodeSizing;
+use super::common::intrinsic_size::{BlockSizeProperties, ContentBasedBlockSize, ResolvedNodeSizing};
 use super::common::used_size::{resolve_inline_auto_size, resolve_used_axis, resolve_used_size};
 
 /// Node-level values resolved by the embedding before leaf layout begins.
@@ -177,79 +178,107 @@ where
     let pb_sum = padding_border.sum_axes();
     let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
 
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match (sizing_mode, node_sizing)
-    {
-        (SizingMode::ContentSize, Some(node_sizing)) => (node_sizing.outer_size, Size::NONE, Size::NONE, None, false),
-        (SizingMode::InherentSize, Some(node_sizing)) => (
-            node_sizing.outer_size,
-            node_sizing.min_size,
-            node_sizing.max_size,
-            resolved_aspect_ratio,
-            run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio,
-        ),
-        (SizingMode::ContentSize, None) => {
-            let node_size = known_dimensions;
-            let node_min_size = Size::NONE;
-            let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, None, false)
-        }
-        (SizingMode::InherentSize, None) => {
-            let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
-                    .maybe_resolve(parent_size, &resolve_calc_value)
-                    .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
-                    .maybe_resolve(parent_size, &resolve_calc_value)
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inline_auto_behavior: inputs.inline_auto_behavior,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio: resolved_aspect_ratio,
-                padding_border: pb_sum,
-            });
-            let style_size = resolved.size;
-            let style_min_size = resolved.min_size;
-            let style_max_size = resolved.max_size;
-            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
-
-            // A parent formatting context may make exactly one border-box axis
-            // definite (for example a stretched flex cross size). Resolve the
-            // other axis through the preferred ratio at the leaf boundary just
-            // like an authored one-axis size.
-            let size_before_ratio = known_dimensions.or(style_size);
-            let size_after_ratio = apply_preferred_aspect_ratio(
-                size_before_ratio,
-                raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inputs.inline_auto_behavior,
-                inputs.block_auto_behavior,
+    let (mut node_size, mut node_min_size, mut node_max_size, aspect_ratio, applied_aspect_ratio, block_constraints) =
+        match (sizing_mode, node_sizing) {
+            (SizingMode::ContentSize, Some(node_sizing)) => {
+                (node_sizing.outer_size, Size::NONE, Size::NONE, None, false, ResolvedAxisConstraints::default())
+            }
+            (SizingMode::InherentSize, Some(node_sizing)) => (
+                node_sizing.outer_size,
+                node_sizing.min_size,
+                node_sizing.max_size,
                 resolved_aspect_ratio,
-                pb_sum,
-            );
-            let node_size = resolve_inline_auto_size(
-                size_after_ratio,
-                raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inputs.inline_auto_behavior,
-                available_space,
-            );
-            let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-                && known_dimensions.width.is_none()
-                && (preferred_inline_from_aspect_ratio
-                    || (size_before_ratio.width.is_none() && node_size.width.is_some()));
-            (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
-        }
-    };
+                run_mode == RunMode::ComputeSize && node_sizing.applied_aspect_ratio,
+                node_sizing.constraints.block_axis_constraints(writing_mode),
+            ),
+            (SizingMode::ContentSize, None) => {
+                let node_size = known_dimensions;
+                let node_min_size = Size::NONE;
+                let node_max_size = Size::NONE;
+                (node_size, node_min_size, node_max_size, None, false, ResolvedAxisConstraints::default())
+            }
+            (SizingMode::InherentSize, None) => {
+                let resolved = resolve_size_constraints(SizeConstraintInput {
+                    size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
+                    min_size: raw_min_size
+                        .maybe_resolve(parent_size, &resolve_calc_value)
+                        .maybe_add(box_sizing_adjustment),
+                    max_size: raw_max_size
+                        .maybe_resolve(parent_size, &resolve_calc_value)
+                        .maybe_add(box_sizing_adjustment),
+                    size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    inline_auto_behavior: inputs.inline_auto_behavior,
+                    block_auto_behavior: inputs.block_auto_behavior,
+                    transferred_sizes_mode: TransferredSizesMode::Normal,
+                    aspect_ratio: resolved_aspect_ratio,
+                    padding_border: pb_sum,
+                });
+                let style_size = resolved.size;
+                let style_min_size = resolved.min_size;
+                let style_max_size = resolved.max_size;
+                let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
+
+                // A parent formatting context may make exactly one border-box axis
+                // definite (for example a stretched flex cross size). Resolve the
+                // other axis through the preferred ratio at the leaf boundary just
+                // like an authored one-axis size.
+                let size_before_ratio = known_dimensions.or(style_size);
+                let size_after_ratio = apply_preferred_aspect_ratio(
+                    size_before_ratio,
+                    raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    inputs.inline_auto_behavior,
+                    inputs.block_auto_behavior,
+                    resolved_aspect_ratio,
+                    pb_sum,
+                );
+                let node_size = resolve_inline_auto_size(
+                    size_after_ratio,
+                    raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    inputs.inline_auto_behavior,
+                    available_space,
+                );
+                let applied_aspect_ratio = run_mode == RunMode::ComputeSize
+                    && known_dimensions.width.is_none()
+                    && (preferred_inline_from_aspect_ratio
+                        || (size_before_ratio.width.is_none() && node_size.width.is_some()));
+                (
+                    node_size,
+                    style_min_size,
+                    style_max_size,
+                    resolved_aspect_ratio,
+                    applied_aspect_ratio,
+                    resolved.block_axis_constraints(writing_mode),
+                )
+            }
+        };
 
     let content_box_inset = padding_border + scrollbar_insets;
+    let logical_raw_size = writing_mode.to_logical(raw_size);
+    let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
+    let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
+    let available_intrinsic_floor = Some(ContentBasedBlockSize::new(
+        BlockSizeProperties::new(
+            logical_raw_size.block_size,
+            logical_raw_min_size.block_size,
+            logical_raw_max_size.block_size,
+        ),
+        aspect_ratio,
+        pb_sum,
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(available_space.maybe_sub(margin.sum_axes())).block_size,
+        style.overflow().x.is_scroll_container() || style.overflow().y.is_scroll_container(),
+        false,
+    ))
+    .filter(|resolver| resolver.depends_on_available_block_space());
 
     let has_styles_preventing_being_collapsed_through = !style.is_block()
         || style.overflow().x.is_scroll_container()
@@ -268,7 +297,10 @@ where
     debug_log!("max_size ", dbg:node_max_size);
 
     // Return early if both width and height are known
-    if run_mode == RunMode::ComputeSize && has_styles_preventing_being_collapsed_through {
+    if run_mode == RunMode::ComputeSize
+        && available_intrinsic_floor.is_none()
+        && has_styles_preventing_being_collapsed_through
+    {
         let used_size = resolve_used_size(known_dimensions, node_size, node_min_size, node_max_size, pb_sum);
         if let Size { width: Some(width), height: Some(height) } = used_size {
             let size = Size { width, height };
@@ -330,6 +362,23 @@ where
         available_space,
     );
     let measured_outer_size = measured_size + content_box_inset.sum_axes();
+    if let Some(resolver) = available_intrinsic_floor {
+        let logical_candidate_size = writing_mode.to_logical(node_size.or(measured_outer_size.map(Some)));
+        resolver
+            .resolve(
+                writing_mode,
+                logical_candidate_size.inline_size,
+                writing_mode.to_logical(measured_outer_size).block_size,
+            )
+            .apply_to_block_axis(
+                writing_mode,
+                block_constraints,
+                pb_sum,
+                &mut node_size,
+                &mut node_min_size,
+                &mut node_max_size,
+            );
+    }
     let used_size = resolve_used_size(
         known_dimensions,
         node_size.or(measured_outer_size.map(Some)),
@@ -354,5 +403,7 @@ where
     let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
     output.margins_can_collapse_through =
         !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
-    output.with_block_constraint_dependency(node_sizing_dependency).with_applied_aspect_ratio(applied_aspect_ratio)
+    output
+        .with_block_constraint_dependency(node_sizing_dependency || available_intrinsic_floor.is_some())
+        .with_applied_aspect_ratio(applied_aspect_ratio)
 }

@@ -153,7 +153,7 @@ impl StretchSizeProperties {
 /// preserves a ratio-derived inline size, while explicit stretch receives an
 /// unresolved inline size and fills the available space. A fallback available
 /// size for orthogonal writing modes remains only a fit-content wrapping cap
-/// when `behavior` is [`AutoSizeBehavior::FitContent`].
+/// when `behavior` is content-based.
 #[inline(always)]
 pub(crate) fn resolve_inline_auto_size(
     preferred_size: Size<Option<f32>>,
@@ -162,7 +162,7 @@ pub(crate) fn resolve_inline_auto_size(
     behavior: AutoSizeBehavior,
     available_space: Size<AvailableSpace>,
 ) -> Size<Option<f32>> {
-    if behavior == AutoSizeBehavior::FitContent {
+    if behavior.is_fit_content() {
         return preferred_size;
     }
 

@@ -70,6 +70,13 @@ pub enum AutoSizeBehavior {
     /// Resolve `auto` from the formatting context's content contribution.
     #[default]
     FitContent,
+    /// Resolve `auto` from content while flooring the real intrinsic block
+    /// contribution at the definite available space.
+    ///
+    /// This is constraint-space state, not an authored `min-size`: a
+    /// preferred aspect ratio and the automatic minimum still participate in
+    /// their normal order, and an authored maximum may cap the result.
+    FitContentWithAvailableIntrinsicFloor,
     /// Stretch before considering a preferred aspect ratio.
     StretchExplicit,
     /// Stretch only if a preferred aspect ratio did not supply a size.
@@ -77,13 +84,28 @@ pub enum AutoSizeBehavior {
 }
 
 impl AutoSizeBehavior {
+    /// Whether this policy leaves the final used size content-derived.
+    #[inline(always)]
+    pub const fn is_fit_content(self) -> bool {
+        matches!(self, Self::FitContent | Self::FitContentWithAvailableIntrinsicFloor)
+    }
+
     /// Whether `auto` uses content/intrinsic block-size semantics here.
     #[inline(always)]
     pub const fn is_content_based(self, has_preferred_aspect_ratio: bool) -> bool {
         match self {
-            Self::FitContent => true,
+            Self::FitContent | Self::FitContentWithAvailableIntrinsicFloor => true,
             Self::StretchExplicit => false,
             Self::StretchImplicit => has_preferred_aspect_ratio,
+        }
+    }
+
+    /// Resolve the extra intrinsic block-size floor carried by this policy.
+    #[inline(always)]
+    pub const fn intrinsic_block_size_floor(self, available_space: AvailableSpace) -> Option<f32> {
+        match (self, available_space) {
+            (Self::FitContentWithAvailableIntrinsicFloor, AvailableSpace::Definite(size)) => Some(size),
+            _ => None,
         }
     }
 }

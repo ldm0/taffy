@@ -118,6 +118,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let resolved_aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let size_containment = tree.get_size_containment(node);
     let scrollbar_insets = tree.get_scrollbar_insets(node);
+    let is_scroll_container_for_automatic_minimum = tree.is_scroll_container_for_automatic_minimum(node);
     let style = tree.get_grid_container_style(node);
     let direction = style.direction();
     let flow = GridFlow::new(writing_mode, direction);
@@ -154,8 +155,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let logical_raw_size = writing_mode.to_logical(raw_size);
     let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
     let logical_raw_max_size = writing_mode.to_logical(raw_max_size);
-    let overflow = style.overflow();
-    let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
     let content_based_block_size = ContentBasedBlockSize::new(
         BlockSizeProperties::new(
             logical_raw_size.block_size,
@@ -164,16 +163,18 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         ),
         aspect_ratio,
         padding_border_size,
-        inputs.block_auto_behavior.is_content_based(aspect_ratio.is_some()),
-        is_scroll_container,
+        inputs.block_auto_behavior,
+        writing_mode.to_logical(inputs.available_space.maybe_sub(margin.sum_axes())).block_size,
+        is_scroll_container_for_automatic_minimum,
         false,
     );
-    let needs_content_based_block_resolution = inputs.sizing_mode == SizingMode::InherentSize
+    let needs_content_based_block_resolution = (inputs.sizing_mode == SizingMode::InherentSize
+        || content_based_block_size.depends_on_available_block_space())
         && content_based_block_size.requires_resolution()
         && inputs.axis.contains(writing_mode.block_axis());
     drop(style);
 
-    let node_sizing = resolve_node_size_constraints(
+    let mut node_sizing = resolve_node_size_constraints(
         tree,
         node,
         inputs,
@@ -187,6 +188,13 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             contained_outer_size: explicit_contained_outer_size,
             automatic_inline_size_resolution: AutomaticInlineSizeResolution::DeferToFormattingContext,
         },
+    );
+    let block_axis_constraints = node_sizing.constraints.block_axis_constraints(writing_mode);
+    content_based_block_size.apply_initial_block_geometry(
+        writing_mode,
+        writing_mode.to_logical(inputs.known_dimensions).block_size,
+        block_axis_constraints,
+        &mut node_sizing,
     );
     let mut min_size = node_sizing.min_size;
     let mut max_size = node_sizing.max_size;
@@ -845,7 +853,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(container_border_box)
-            .with_block_constraint_dependency(depends_on_block_constraints || node_sizing.depends_on_block_constraints)
+            .with_block_constraint_dependency(
+                depends_on_block_constraints
+                    || node_sizing.depends_on_block_constraints
+                    || content_based_block_size.depends_on_available_block_space(),
+            )
             .with_applied_aspect_ratio(applied_aspect_ratio);
     }
 

@@ -192,7 +192,8 @@ impl AbsoluteBlockSizeResolver {
             properties,
             aspect_ratio,
             padding_border,
-            block_auto_behavior.is_content_based(aspect_ratio.is_some()),
+            block_auto_behavior,
+            AvailableSpace::MaxContent,
             is_scroll_container,
             is_replaced,
         );

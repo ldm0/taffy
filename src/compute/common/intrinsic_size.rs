@@ -447,7 +447,7 @@ impl IntrinsicPreferredSize {
     ) -> Self {
         if authored.is_auto()
             && sizing_purpose == crate::tree::SizingPurpose::Layout
-            && auto_behavior == crate::AutoSizeBehavior::FitContent
+            && auto_behavior.is_fit_content()
             && automatic_resolution == AutomaticInlineSizeResolution::FitContent
         {
             Self::AutomaticFitContent
@@ -675,6 +675,8 @@ pub(crate) struct ContentBasedBlockSize {
     padding_border: Size<f32>,
     /// Whether an authored automatic block size derives from content here.
     auto_size_is_content_based: bool,
+    /// Definite available-space floor for the real intrinsic border-box size.
+    intrinsic_block_size_floor: Option<f32>,
     /// Whether overflow suppresses the ratio-dependent automatic minimum.
     is_scroll_container: bool,
     /// Whether replaced sizing bypasses the non-replaced automatic minimum.
@@ -691,19 +693,27 @@ pub(crate) struct ContentBasedBlockSize {
 impl ContentBasedBlockSize {
     /// Construct the resolver at a formatting-context boundary.
     #[inline(always)]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         properties: BlockSizeProperties,
         aspect_ratio: Option<ResolvedAspectRatio>,
         padding_border: Size<f32>,
-        auto_size_is_content_based: bool,
+        block_auto_behavior: crate::AutoSizeBehavior,
+        available_block_space: AvailableSpace,
         is_scroll_container: bool,
         is_replaced: bool,
     ) -> Self {
+        let auto_size_is_content_based = block_auto_behavior.is_content_based(aspect_ratio.is_some());
+        let intrinsic_block_size_floor = if properties.preferred.is_auto() {
+            block_auto_behavior.intrinsic_block_size_floor(available_block_space)
+        } else {
+            None
+        };
         Self {
             properties,
             aspect_ratio,
             padding_border,
             auto_size_is_content_based,
+            intrinsic_block_size_floor,
             is_scroll_container,
             is_replaced,
             intrinsic_border_box_override: None,
@@ -726,6 +736,7 @@ impl ContentBasedBlockSize {
     pub(crate) fn requires_resolution(self) -> bool {
         let has_preferred_aspect_ratio = self.aspect_ratio.is_some();
         self.properties.uses_intrinsic_size()
+            || self.intrinsic_block_size_floor.is_some()
             || self
                 .properties
                 .resolves_auto_size_from_ratio(has_preferred_aspect_ratio, self.auto_size_is_content_based)
@@ -749,6 +760,7 @@ impl ContentBasedBlockSize {
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
         self.intrinsic_border_box_override.is_none()
             && (self.properties.uses_intrinsic_size()
+                || self.intrinsic_block_size_floor.is_some()
                 || self.properties.applies_automatic_minimum(
                     self.aspect_ratio.is_some(),
                     self.auto_size_is_content_based,
@@ -772,13 +784,60 @@ impl ContentBasedBlockSize {
             self.padding_border,
         );
         let ratio_block_size = writing_mode.to_logical(ratio_size).block_size;
-        self.properties.resolve(
-            self.intrinsic_border_box_override.unwrap_or(intrinsic_border_box_size),
+        let intrinsic_border_box_size = self
+            .intrinsic_border_box_override
+            .unwrap_or_else(|| intrinsic_border_box_size.maybe_max(self.intrinsic_block_size_floor));
+        let mut resolved = self.properties.resolve(
+            intrinsic_border_box_size,
             ratio_block_size,
             self.auto_size_is_content_based,
             self.is_scroll_container,
             self.is_replaced,
-        )
+        );
+        if self.intrinsic_block_size_floor.is_some()
+            && self.properties.preferred.is_auto()
+            && resolved.preferred.is_none()
+        {
+            resolved.preferred = Some(intrinsic_border_box_size);
+        }
+        resolved
+    }
+
+    /// Whether this resolver consumes the containing block's block constraint.
+    #[inline(always)]
+    pub(crate) const fn depends_on_available_block_space(self) -> bool {
+        self.intrinsic_block_size_floor.is_some()
+    }
+
+    /// Establish the provisional block geometry used by percentage descendants.
+    ///
+    /// The floor remains content-derived for final sizing; this only mirrors
+    /// the initial fragment geometry that browsers expose to descendants.
+    pub(crate) fn apply_initial_block_geometry(
+        self,
+        writing_mode: WritingMode,
+        parent_fixed_block_size: Option<f32>,
+        constraint_sources: ResolvedAxisConstraints,
+        node_sizing: &mut ResolvedNodeSizing,
+    ) {
+        let Some(intrinsic_block_size_floor) = self.intrinsic_block_size_floor else {
+            return;
+        };
+
+        let logical_outer_size = writing_mode.to_logical(node_sizing.outer_size);
+        let initial_constraints = self
+            .resolve(writing_mode, logical_outer_size.inline_size, intrinsic_block_size_floor)
+            .resolve_against(logical_outer_size.block_size, constraint_sources);
+        let logical_padding_border = writing_mode.to_logical(self.padding_border);
+        let initial_block_size = initial_constraints
+            .preferred
+            .unwrap_or(intrinsic_block_size_floor)
+            .maybe_clamp(initial_constraints.min, initial_constraints.max)
+            .max(logical_padding_border.block_size);
+
+        let mut logical_definite_size = writing_mode.to_logical(node_sizing.definite_size);
+        logical_definite_size.block_size = parent_fixed_block_size.or(Some(initial_block_size));
+        node_sizing.definite_size = writing_mode.to_physical(logical_definite_size);
     }
 }
 

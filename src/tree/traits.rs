@@ -222,6 +222,17 @@ pub trait LayoutPartialTree: TraversePartialTree {
         style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()))
     }
 
+    /// Whether overflow suppresses this node's content-based automatic
+    /// minimum size.
+    ///
+    /// Browser adapters may transfer a root or body element's scrolling
+    /// mechanism to the viewport while its authored overflow still controls
+    /// sizing semantics. The default keeps ordinary trees on the core style.
+    fn is_scroll_container_for_automatic_minimum(&self, node_id: NodeId) -> bool {
+        let overflow = self.get_core_container_style(node_id).overflow();
+        overflow.x.is_scroll_container() || overflow.y.is_scroll_container()
+    }
+
     /// Returns the node's used size-containment state.
     ///
     /// Browser integrations may override this node-level seam to apply box
