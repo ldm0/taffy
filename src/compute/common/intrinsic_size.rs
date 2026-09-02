@@ -10,7 +10,7 @@ use super::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, ResolvedSizeConstraints,
     SizeConstraintInput, TransferredSizesMode,
 };
-use super::used_size::{resolve_inline_auto_size, resolve_used_size};
+use super::used_size::{resolve_inline_auto_size, resolve_stretch_axis_value, resolve_used_size, SizeConstraintRole};
 
 /// Substitute a contained intrinsic border-box size for authored intrinsic
 /// sizing keywords, then reapply the source-ordered minimum/maximum clamp.
@@ -133,18 +133,32 @@ pub(crate) fn resolve_ratio_dependent_content_contribution(
 ///
 /// `available_space` is the border-box space left after margins in `axis`.
 /// Returned values are border-box sizes, matching `LayoutInput::known_dimensions`.
+#[derive(Clone, Copy)]
+struct IntrinsicAxisValueInput {
+    /// Authored sizing value to resolve.
+    value: Dimension,
+    /// Margin-adjusted border-box opportunity in the selected axis.
+    available_space: AvailableSpace,
+    /// Physical axis selected by the owning formatting context.
+    axis: AbsoluteAxis,
+    /// Ratio-derived substitute for intrinsic content measurement.
+    ratio_content_contribution: RatioDependentContentContribution,
+    /// Whether the value is a preferred, minimum, or maximum size.
+    role: SizeConstraintRole,
+}
+
+/// Resolve one intrinsic or stretch sizing property at a formatting-context
+/// boundary.
 fn resolve_intrinsic_axis_value(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: ChildLayoutInput,
-    value: Dimension,
-    available_space: AvailableSpace,
-    axis: AbsoluteAxis,
-    ratio_content_contribution: RatioDependentContentContribution,
+    value_input: IntrinsicAxisValueInput,
 ) -> IntrinsicAxisValue {
+    let IntrinsicAxisValueInput { value, available_space, axis, ratio_content_contribution, role } = value_input;
     if value.is_stretch() {
         return IntrinsicAxisValue {
-            value: available_space.into_option(),
+            value: resolve_stretch_axis_value(value, role, available_space, 0.0),
             depends_on_block_constraints: false,
             applied_aspect_ratio: false,
         };
@@ -310,18 +324,23 @@ pub(crate) fn resolve_intrinsic_axis_size(
         tree,
         node_id,
         inputs,
-        value,
-        available_space,
-        axis,
-        RatioDependentContentContribution::default(),
+        IntrinsicAxisValueInput {
+            value,
+            available_space,
+            axis,
+            ratio_content_contribution: RatioDependentContentContribution::default(),
+            role: SizeConstraintRole::Preferred,
+        },
     )
 }
 
 /// Intrinsic components of preferred, minimum and maximum sizes in one axis.
 ///
 /// Numeric and percentage components are resolved by the formatting-context
-/// algorithm that owns their containing block. These fields contain only the
-/// values that required intrinsic content measurement (or `stretch`).
+/// algorithm that owns their containing block. These fields contain values
+/// that ordinary length-percentage resolution could not reduce: intrinsic
+/// values measure content, while `stretch` delegates to the shared used-size
+/// resolver.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct IntrinsicSizeConstraints {
     /// Intrinsic component of the preferred size.
@@ -463,7 +482,18 @@ fn resolve_intrinsic_preferred_axis_value(
         IntrinsicPreferredSize::Authored(value) => value,
         IntrinsicPreferredSize::AutomaticFitContent => Dimension::fit_content(),
     };
-    resolve_intrinsic_axis_value(tree, node_id, inputs, value, available_space, axis, ratio_content_contribution)
+    resolve_intrinsic_axis_value(
+        tree,
+        node_id,
+        inputs,
+        IntrinsicAxisValueInput {
+            value,
+            available_space,
+            axis,
+            ratio_content_contribution,
+            role: SizeConstraintRole::Preferred,
+        },
+    )
 }
 
 /// Authored physical-width constraints resolved by a formatting context.
@@ -849,19 +879,25 @@ pub(crate) fn resolve_intrinsic_axis_constraints(
             tree,
             node_id,
             inputs,
-            min,
-            available_space,
-            axis,
-            ratio_content_contribution,
+            IntrinsicAxisValueInput {
+                value: min,
+                available_space,
+                axis,
+                ratio_content_contribution,
+                role: SizeConstraintRole::Minimum,
+            },
         ),
         max: resolve_intrinsic_axis_value(
             tree,
             node_id,
             inputs,
-            max,
-            available_space,
-            axis,
-            ratio_content_contribution,
+            IntrinsicAxisValueInput {
+                value: max,
+                available_space,
+                axis,
+                ratio_content_contribution,
+                role: SizeConstraintRole::Maximum,
+            },
         ),
     }
 }

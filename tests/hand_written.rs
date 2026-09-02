@@ -12,6 +12,7 @@ mod hand_written {
     mod flex_basis_content;
     mod flex_basis_intrinsic;
     mod flex_intrinsic_size;
+    mod flex_stretch_sizing;
     mod flex_writing_modes;
     mod floats;
     mod grid_automatic_minimum;

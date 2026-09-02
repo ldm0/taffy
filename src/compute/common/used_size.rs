@@ -1,6 +1,128 @@
 //! Shared resolution of final border-box sizes at layout-algorithm boundaries.
 
-use crate::{AutoSizeBehavior, AvailableSpace, MaybeMath, Size, WritingMode};
+use crate::{AutoSizeBehavior, AvailableSpace, Dimension, MaybeMath, Size, WritingMode};
+
+/// Which authored sizing property is being resolved.
+///
+/// An indefinite `stretch` opportunity has different fallback semantics for
+/// the preferred size and the two limiting constraints. Keeping that choice
+/// typed prevents formatting contexts from open-coding subtly different
+/// behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizeConstraintRole {
+    /// `width` or `height`.
+    Preferred,
+    /// `min-width` or `min-height`.
+    Minimum,
+    /// `max-width` or `max-height`.
+    Maximum,
+}
+
+/// Resolve one authored `stretch` value against its margin-adjusted
+/// border-box opportunity.
+#[inline(always)]
+pub(crate) fn resolve_stretch_axis_value(
+    value: Dimension,
+    role: SizeConstraintRole,
+    available_border_box_size: AvailableSpace,
+    minimum_border_box_size: f32,
+) -> Option<f32> {
+    resolve_stretch_axis(value.is_stretch(), role, available_border_box_size.into_option(), minimum_border_box_size)
+}
+
+/// Resolve captured stretch provenance without reconstructing a `Dimension`.
+#[inline(always)]
+fn resolve_stretch_axis(
+    is_stretch: bool,
+    role: SizeConstraintRole,
+    available_border_box_size: Option<f32>,
+    minimum_border_box_size: f32,
+) -> Option<f32> {
+    if !is_stretch {
+        return None;
+    }
+
+    match role {
+        SizeConstraintRole::Preferred | SizeConstraintRole::Maximum => {
+            available_border_box_size.map(|size| size.max(minimum_border_box_size))
+        }
+        SizeConstraintRole::Minimum => Some(available_border_box_size.unwrap_or(0.0).max(minimum_border_box_size)),
+    }
+}
+
+/// Preferred and limiting border-box sizes resolved from authored `stretch`
+/// sizing values.
+///
+/// A formatting context supplies the available border-box opportunity after
+/// margins. Keeping these results separate from ordinary length resolution
+/// preserves the distinction between an unresolved `stretch` value and an
+/// authored `auto` size.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ResolvedStretchSizeConstraints {
+    /// Preferred border-box sizes resolved from `stretch`.
+    pub preferred: Size<Option<f32>>,
+    /// Minimum border-box sizes resolved from `stretch`.
+    pub min: Size<Option<f32>>,
+    /// Maximum border-box sizes resolved from `stretch`.
+    pub max: Size<Option<f32>>,
+}
+
+/// Authored axes whose preferred, minimum, or maximum size uses `stretch`.
+///
+/// Flex layout retains this provenance until the final line cross size is
+/// known. Other formatting contexts normally resolve it directly at their
+/// child sizing boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StretchSizeProperties {
+    /// Preferred physical axes authored as `stretch`.
+    preferred: Size<bool>,
+    /// Minimum physical axes authored as `stretch`.
+    min: Size<bool>,
+    /// Maximum physical axes authored as `stretch`.
+    max: Size<bool>,
+}
+
+impl StretchSizeProperties {
+    /// Capture `stretch` provenance before ordinary length resolution erases
+    /// all unresolved sizing keywords into `None`.
+    #[inline(always)]
+    pub(crate) fn new(preferred: Size<Dimension>, min: Size<Dimension>, max: Size<Dimension>) -> Self {
+        Self {
+            preferred: preferred.map(Dimension::is_stretch),
+            min: min.map(Dimension::is_stretch),
+            max: max.map(Dimension::is_stretch),
+        }
+    }
+
+    /// Resolve the captured properties against the available border-box
+    /// opportunity in each physical axis.
+    ///
+    /// Preferred and maximum `stretch` remain unresolved when the available
+    /// size is indefinite. An indefinite minimum `stretch` contributes zero,
+    /// still floored by padding and border. This mirrors the common
+    /// inline/block length resolution used by browser engines.
+    #[inline(always)]
+    pub(crate) fn resolve(
+        self,
+        available_border_box_size: Size<AvailableSpace>,
+        minimum_border_box_size: Size<f32>,
+    ) -> ResolvedStretchSizeConstraints {
+        let available = available_border_box_size.map(AvailableSpace::into_option);
+        let input = available.zip_map(minimum_border_box_size, |available, minimum| (available, minimum));
+
+        ResolvedStretchSizeConstraints {
+            preferred: self.preferred.zip_map(input, |value, (available, minimum)| {
+                resolve_stretch_axis(value, SizeConstraintRole::Preferred, available, minimum)
+            }),
+            min: self.min.zip_map(input, |value, (available, minimum)| {
+                resolve_stretch_axis(value, SizeConstraintRole::Minimum, available, minimum)
+            }),
+            max: self.max.zip_map(input, |value, (available, minimum)| {
+                resolve_stretch_axis(value, SizeConstraintRole::Maximum, available, minimum)
+            }),
+        }
+    }
+}
 
 /// Resolve the containing formatting context's policy for an authored
 /// `inline-size: auto`.
@@ -135,5 +257,22 @@ mod tests {
     #[test]
     fn padding_and_border_floor_known_used_axis() {
         assert_eq!(resolve_used_axis(Some(12.0), None, None, Some(10.0), 22.0), Some(22.0));
+    }
+
+    #[test]
+    fn stretch_constraints_resolve_definite_and_indefinite_axes() {
+        let properties = StretchSizeProperties::new(
+            Size { width: Dimension::stretch(), height: Dimension::auto() },
+            Size { width: Dimension::auto(), height: Dimension::stretch() },
+            Size { width: Dimension::auto(), height: Dimension::stretch() },
+        );
+        let resolved = properties.resolve(
+            Size { width: AvailableSpace::Definite(80.0), height: AvailableSpace::MaxContent },
+            Size { width: 10.0, height: 12.0 },
+        );
+
+        assert_eq!(resolved.preferred, Size { width: Some(80.0), height: None });
+        assert_eq!(resolved.min, Size { width: None, height: Some(12.0) });
+        assert_eq!(resolved.max, Size::NONE);
     }
 }
