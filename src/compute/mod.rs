@@ -58,7 +58,7 @@ pub use self::grid::compute_grid_layout;
 pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
 pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
-use crate::geometry::{Line, Point, Size};
+use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AvailableSpace, CoreStyle};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt,
@@ -85,6 +85,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         parent_size: available_space.into_options(),
         parent_writing_mode: root_writing_mode,
         available_space,
+        ignored_margins_for_stretch: Rect::default(),
         vertical_margins_are_collapsible: Line::FALSE,
     };
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();

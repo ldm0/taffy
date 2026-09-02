@@ -1267,6 +1267,7 @@ mod tests {
             parent_size: Size { width: Some(200.0), height: Some(100.0) },
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
+            ignored_margins_for_stretch: crate::Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
 
@@ -1305,6 +1306,7 @@ mod tests {
             parent_size: Size::NONE,
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
+            ignored_margins_for_stretch: crate::Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
 
@@ -1355,6 +1357,7 @@ mod tests {
                 parent_size: Size::NONE,
                 parent_writing_mode: crate::WritingMode::HorizontalTb,
                 available_space: Size::MAX_CONTENT,
+                ignored_margins_for_stretch: crate::Rect::default(),
                 vertical_margins_are_collapsible: Line::FALSE,
             };
 

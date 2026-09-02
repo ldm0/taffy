@@ -1,6 +1,28 @@
 //! Shared resolution of final border-box sizes at layout-algorithm boundaries.
 
-use crate::{AutoSizeBehavior, AvailableSpace, Dimension, MaybeMath, Size, WritingMode};
+use crate::{AutoSizeBehavior, AvailableSpace, Dimension, MaybeMath, Rect, Size, WritingMode};
+
+/// Remove the margin sides that participate in explicit `stretch` sizing from
+/// a formatting context's physical margin-box opportunity.
+///
+/// The ignored-side mask is deliberately applied here rather than by the
+/// parent algorithm. This keeps [`crate::LayoutInput::available_space`] a
+/// margin-box constraint for every child and ensures ordinary auto and
+/// fit-content sizing continue to account for all margins.
+#[inline(always)]
+pub(crate) fn stretch_border_box_available_space(
+    available_margin_box_space: Size<AvailableSpace>,
+    margins: Rect<f32>,
+    ignored_margins: Rect<bool>,
+) -> Size<AvailableSpace> {
+    let accounted_margins = Rect {
+        left: if ignored_margins.left { 0.0 } else { margins.left },
+        right: if ignored_margins.right { 0.0 } else { margins.right },
+        top: if ignored_margins.top { 0.0 } else { margins.top },
+        bottom: if ignored_margins.bottom { 0.0 } else { margins.bottom },
+    };
+    available_margin_box_space.maybe_sub(accounted_margins.sum_axes())
+}
 
 /// Which authored sizing property is being resolved.
 ///
@@ -274,5 +296,20 @@ mod tests {
         assert_eq!(resolved.preferred, Size { width: Some(80.0), height: None });
         assert_eq!(resolved.min, Size { width: None, height: Some(12.0) });
         assert_eq!(resolved.max, Size::NONE);
+    }
+
+    #[test]
+    fn stretch_available_space_omits_only_selected_margin_sides() {
+        let available = Size { width: AvailableSpace::Definite(200.0), height: AvailableSpace::Definite(100.0) };
+        let margins = Rect { left: 5.0, right: 7.0, top: 11.0, bottom: 13.0 };
+
+        assert_eq!(
+            stretch_border_box_available_space(
+                available,
+                margins,
+                Rect { left: false, right: false, top: true, bottom: false },
+            ),
+            Size { width: AvailableSpace::Definite(188.0), height: AvailableSpace::Definite(87.0) },
+        );
     }
 }

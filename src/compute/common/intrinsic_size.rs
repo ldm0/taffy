@@ -10,7 +10,10 @@ use super::aspect_ratio::{
     apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, ResolvedSizeConstraints,
     SizeConstraintInput, TransferredSizesMode,
 };
-use super::used_size::{resolve_inline_auto_size, resolve_stretch_axis_value, resolve_used_size, SizeConstraintRole};
+use super::used_size::{
+    resolve_inline_auto_size, resolve_stretch_axis_value, resolve_used_size, stretch_border_box_available_space,
+    SizeConstraintRole, StretchSizeProperties,
+};
 
 /// Substitute a contained intrinsic border-box size for authored intrinsic
 /// sizing keywords, then reapply the source-ordered minimum/maximum clamp.
@@ -838,6 +841,7 @@ pub(crate) fn resolve_intrinsic_width_constraints(
     .with_definite_dimensions(inputs.definite_dimensions)
     .with_inline_auto_behavior(inputs.inline_auto_behavior)
     .with_block_auto_behavior(inputs.block_auto_behavior)
+    .with_ignored_margins_for_stretch(inputs.ignored_margins_for_stretch)
     .with_orthogonal_fallback(inputs.orthogonal_fallback);
     resolve_intrinsic_axis_constraints(
         tree,
@@ -1029,7 +1033,7 @@ pub(crate) fn resolve_node_size_constraints(
     let writing_mode = tree.get_writing_mode(node_id);
     let inline_axis = writing_mode.inline_axis();
     let size_is_auto = raw_size.map(Dimension::is_auto);
-    let direct_size = raw_size
+    let mut direct_size = raw_size
         .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
         .maybe_add(box_sizing_adjustment);
     let mut direct_min_size = raw_min_size
@@ -1038,6 +1042,23 @@ pub(crate) fn resolve_node_size_constraints(
     let mut direct_max_size = raw_max_size
         .maybe_resolve(inputs.parent_size, |value, basis| tree.calc(value, basis))
         .maybe_add(box_sizing_adjustment);
+
+    // Explicit stretch resolves against the margin-box opportunity supplied
+    // by the containing formatting context. Only the margin sides named by
+    // the constraint space are omitted; ordinary auto sizing below continues
+    // to subtract every margin.
+    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
+    let margin = tree
+        .get_core_container_style(node_id)
+        .margin()
+        .resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+    let stretch_available_space =
+        stretch_border_box_available_space(inputs.available_space, margin, inputs.ignored_margins_for_stretch);
+    let stretch = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size)
+        .resolve(stretch_available_space, padding_border_size);
+    direct_size = direct_size.or(stretch.preferred);
+    direct_min_size = direct_min_size.or(stretch.min);
+    direct_max_size = direct_max_size.or(stretch.max);
 
     let logical_raw_size = writing_mode.to_logical(raw_size);
     let logical_raw_min_size = writing_mode.to_logical(raw_min_size);
@@ -1063,11 +1084,6 @@ pub(crate) fn resolve_node_size_constraints(
     // resolving stretch and fit-content. Keeping this at the node boundary
     // gives leaf and container algorithms the same contract while allowing a
     // parent formatting context to position the resulting margin box.
-    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
-    let margin = tree
-        .get_core_container_style(node_id)
-        .margin()
-        .resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
     let available_space = inputs.available_space.maybe_sub(margin.sum_axes());
     let available_inline_size = available_space.get_abs(inline_axis);
     let child_input = ChildLayoutInput::new(
@@ -1081,6 +1097,7 @@ pub(crate) fn resolve_node_size_constraints(
     .with_definite_dimensions(inputs.definite_dimensions)
     .with_inline_auto_behavior(inputs.inline_auto_behavior)
     .with_block_auto_behavior(inputs.block_auto_behavior)
+    .with_ignored_margins_for_stretch(inputs.ignored_margins_for_stretch)
     .with_orthogonal_fallback(inputs.orthogonal_fallback);
     let intrinsic = resolve_intrinsic_axis_constraints(
         tree,

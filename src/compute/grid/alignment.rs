@@ -274,6 +274,7 @@ pub(super) fn align_and_position_item(
         parent_size: grid_area_size.map(Some),
         parent_writing_mode,
         available_space: child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
+        ignored_margins_for_stretch: Rect::default(),
         vertical_margins_are_collapsible: Line::FALSE,
     };
     let ratio_content_contribution = resolve_ratio_dependent_content_contribution(

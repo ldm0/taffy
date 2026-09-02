@@ -1,6 +1,6 @@
 //! A cache for storing the results of layout computation
 
-use crate::geometry::{Line, LogicalSize, Size, WritingMode};
+use crate::geometry::{Line, LogicalSize, Rect, Size, WritingMode};
 use crate::style::AvailableSpace;
 use crate::tree::{
     AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, OrthogonalFallback, RunMode,
@@ -92,6 +92,8 @@ struct CacheKey {
     block_auto_behavior: AutoSizeBehavior,
     /// Whether this boundary permits the orthogonal viewport fallback.
     orthogonal_fallback: OrthogonalFallback,
+    /// Physical margin sides omitted only from explicit stretch sizing.
+    ignored_margins_for_stretch: Rect<bool>,
     /// Physical block-axis margin collapse permissions at this boundary.
     vertical_margins_are_collapsible: Line<bool>,
 }
@@ -113,6 +115,7 @@ impl CacheKey {
             inline_auto_behavior: input.inline_auto_behavior,
             block_auto_behavior: input.block_auto_behavior,
             orthogonal_fallback: input.orthogonal_fallback,
+            ignored_margins_for_stretch: input.ignored_margins_for_stretch,
             vertical_margins_are_collapsible: input.vertical_margins_are_collapsible,
         }
     }
@@ -136,6 +139,7 @@ impl CacheKey {
             && self.inline_auto_behavior == other.inline_auto_behavior
             && self.block_auto_behavior == other.block_auto_behavior
             && self.orthogonal_fallback == other.orthogonal_fallback
+            && self.ignored_margins_for_stretch == other.ignored_margins_for_stretch
             && self.vertical_margins_are_collapsible == other.vertical_margins_are_collapsible
     }
 }
@@ -431,7 +435,7 @@ pub enum ClearState {
 #[cfg(test)]
 mod tests {
     use super::Cache;
-    use crate::geometry::{Line, Size, WritingMode};
+    use crate::geometry::{Line, Rect, Size, WritingMode};
     use crate::style::AvailableSpace;
     use crate::tree::{
         AutoSizeBehavior, IntrinsicSizeResult, LayoutEnvironment, LayoutInput, LayoutOutput, OrthogonalFallback,
@@ -452,6 +456,7 @@ mod tests {
             parent_size: Size::NONE,
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MaxContent },
+            ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         }
     }
@@ -587,6 +592,21 @@ mod tests {
 
         assert!(cache.get(&collapsing).is_none());
         assert_eq!(cache.get(&non_collapsing).unwrap().size.height, 20.0);
+    }
+
+    #[test]
+    fn intrinsic_measurements_distinguish_stretch_margin_masks() {
+        let mut cache = Cache::new();
+        let accounting_for_all_margins = input(SizingPurpose::IntrinsicContribution);
+        cache.store(&accounting_for_all_margins, LayoutOutput::from_outer_size(Size { width: 60.0, height: 80.0 }));
+
+        let ignoring_block_start = LayoutInput {
+            ignored_margins_for_stretch: Rect { left: false, right: false, top: true, bottom: false },
+            ..accounting_for_all_margins
+        };
+
+        assert!(cache.get(&ignoring_block_start).is_none());
+        assert_eq!(cache.get(&accounting_for_all_margins).unwrap().size.height, 80.0);
     }
 
     #[test]

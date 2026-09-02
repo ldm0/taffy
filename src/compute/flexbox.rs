@@ -1105,6 +1105,7 @@ fn generate_anonymous_flex_items(
                 parent_size: constants.node_inner_size,
                 parent_writing_mode: constants.writing_mode,
                 available_space: child_available_space,
+                ignored_margins_for_stretch: Rect::default(),
                 vertical_margins_are_collapsible: Line::FALSE,
             };
             let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
@@ -3352,6 +3353,7 @@ fn perform_absolute_layout_on_absolute_children(
                 width: AvailableSpace::Definite(child_available_width),
                 height: AvailableSpace::Definite(container_height),
             },
+            ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
         let ratio_content_contribution = resolve_ratio_dependent_content_contribution(

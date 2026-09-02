@@ -4,6 +4,7 @@ mod hand_written {
     mod aspect_ratio;
     mod block_intrinsic_percentage;
     mod block_replaced;
+    mod block_stretch_sizing;
     mod block_writing_modes;
     mod border_and_padding;
     mod caching;

@@ -253,6 +253,15 @@ pub struct LayoutInput {
     /// using the remainder as a border-box sizing or wrapping constraint.
     /// This matches Blink's `ConstraintSpace::AvailableSize` contract.
     pub available_space: Size<AvailableSpace>,
+    /// Physical margin sides omitted when an authored `stretch` size resolves
+    /// against [`Self::available_space`].
+    ///
+    /// Ordinary auto and fit-content sizing still account for every margin.
+    /// Block layout sets this mask only where the corresponding parent/child
+    /// margins collapse through an unseparated containing-block edge. This is
+    /// the physical-boundary counterpart of Blink's
+    /// `ConstraintSpace::IgnoreMarginsForStretch`.
+    pub ignored_margins_for_stretch: Rect<bool>,
     /// Specific to CSS Block layout. Used for correctly computing margin collapsing. You probably want to set this to `Line::FALSE`.
     pub vertical_margins_are_collapsible: Line<bool>,
 }
@@ -268,6 +277,7 @@ impl LayoutInput {
         parent_size: Size::NONE,
         parent_writing_mode: WritingMode::HorizontalTb,
         available_space: Size::MAX_CONTENT,
+        ignored_margins_for_stretch: Rect { left: false, right: false, top: false, bottom: false },
         sizing_mode: SizingMode::InherentSize,
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
@@ -294,6 +304,7 @@ impl LayoutInput {
             definite_size: writing_mode.to_logical(self.definite_dimensions),
             percentage_resolution_size: writing_mode.to_logical(self.parent_size),
             available_size: writing_mode.to_logical(self.available_space),
+            ignored_physical_margins_for_stretch: self.ignored_margins_for_stretch,
             requested_axis: self.axis,
             vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
@@ -366,6 +377,8 @@ pub(crate) struct ChildLayoutInput {
     /// Physical margin-box opportunity offered by the parent formatting
     /// algorithm. Child-owned sizing removes non-auto margins exactly once.
     pub available_space: Size<AvailableSpace>,
+    /// Physical margin sides ignored only by explicit `stretch` sizing.
+    pub ignored_margins_for_stretch: Rect<bool>,
     /// Whether authored size constraints participate in child sizing.
     pub sizing_mode: SizingMode,
     /// Resolution behavior for an authored logical `inline-size: auto`.
@@ -395,6 +408,7 @@ impl ChildLayoutInput {
             parent_size,
             parent_writing_mode,
             available_space,
+            ignored_margins_for_stretch: Rect { left: false, right: false, top: false, bottom: false },
             sizing_mode,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
@@ -421,6 +435,13 @@ impl ChildLayoutInput {
     #[inline(always)]
     pub const fn with_block_auto_behavior(mut self, behavior: AutoSizeBehavior) -> Self {
         self.block_auto_behavior = behavior;
+        self
+    }
+
+    /// Set the physical margin sides omitted from explicit `stretch` sizing.
+    #[inline(always)]
+    pub const fn with_ignored_margins_for_stretch(mut self, sides: Rect<bool>) -> Self {
+        self.ignored_margins_for_stretch = sides;
         self
     }
 
@@ -455,6 +476,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
+            ignored_margins_for_stretch: self.ignored_margins_for_stretch,
             vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
     }
@@ -475,6 +497,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
+            ignored_margins_for_stretch: self.ignored_margins_for_stretch,
             vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
     }
@@ -513,6 +536,12 @@ pub struct ConstraintSpace {
     pub percentage_resolution_size: LogicalSize<Option<f32>>,
     /// Soft available-space constraint, in child logical axes.
     pub available_size: LogicalSize<AvailableSpace>,
+    /// Physical margin sides omitted only while resolving explicit `stretch`.
+    ///
+    /// This remains physical because style margins and `LayoutInput` cross the
+    /// tree boundary in physical axes. The used-size resolver consumes the
+    /// mask before logical fragment placement.
+    pub ignored_physical_margins_for_stretch: Rect<bool>,
     /// Physical-axis request retained for compatibility with current callers.
     requested_axis: RequestedAxis,
     /// Block-start/end margin-collapse permissions for block layout.
@@ -537,6 +566,7 @@ impl ConstraintSpace {
             parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.writing_mode.to_physical(self.available_size),
+            ignored_margins_for_stretch: self.ignored_physical_margins_for_stretch,
             vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
         }
     }
@@ -614,6 +644,7 @@ mod constraint_space_tests {
             parent_size: Size { width: Some(100.0), height: Some(200.0) },
             parent_writing_mode: WritingMode::VerticalRl,
             available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
+            ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line { start: true, end: false },
         };
 
@@ -645,6 +676,7 @@ mod constraint_space_tests {
             parent_size: Size { width: Some(100.0), height: None },
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size { width: AvailableSpace::Definite(100.0), height: AvailableSpace::MinContent },
+            ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
 
