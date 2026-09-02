@@ -230,6 +230,132 @@ mod absolute_position {
         }
     }
 
+    fn absolute_percentage_child_block_size(
+        container_display: Display,
+        preferred_block_size: Dimension,
+        block_insets: Line<LengthPercentageAuto>,
+        block_margins: Line<LengthPercentageAuto>,
+        content_block_size: f32,
+    ) -> (Layout, Layout) {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let content = tree
+            .new_leaf(Style {
+                size: Size { width: length(40.0), height: length(content_block_size) },
+                ..Default::default()
+            })
+            .unwrap();
+        let percentage_child = tree
+            .new_with_children(
+                Style { size: Size { width: auto(), height: percent(1.0) }, ..Default::default() },
+                &[content],
+            )
+            .unwrap();
+        let absolute = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    position: Position::Absolute,
+                    size: Size { width: length(100.0), height: preferred_block_size },
+                    inset: Rect {
+                        left: length(0.0),
+                        right: length(0.0),
+                        top: block_insets.start,
+                        bottom: block_insets.end,
+                    },
+                    margin: Rect {
+                        left: length(0.0),
+                        right: length(0.0),
+                        top: block_margins.start,
+                        bottom: block_margins.end,
+                    },
+                    ..Default::default()
+                },
+                &[percentage_child],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: container_display,
+                    size: Size { width: length(300.0), height: length(200.0) },
+                    ..Default::default()
+                },
+                &[absolute],
+            )
+            .unwrap();
+
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        (*tree.layout(absolute).unwrap(), *tree.layout(percentage_child).unwrap())
+    }
+
+    #[test]
+    fn absolute_intrinsic_block_size_keeps_percentage_children_indefinite() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            for (preferred, expected) in
+                [(Dimension::fit_content(), 80.0), (Dimension::max_content(), 60.0), (Dimension::min_content(), 40.0)]
+            {
+                let (absolute, percentage_child) = absolute_percentage_child_block_size(
+                    container_display,
+                    preferred,
+                    Line { start: length(0.0), end: length(0.0) },
+                    Line { start: length(0.0), end: length(0.0) },
+                    expected,
+                );
+                assert_eq!(absolute.size.height, expected, "{container_display:?} {preferred:?}");
+                assert_eq!(percentage_child.size.height, expected, "{container_display:?} {preferred:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_inset_stretch_remains_definite_for_percentage_children() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            for preferred in [auto(), Dimension::stretch()] {
+                let (absolute, percentage_child) = absolute_percentage_child_block_size(
+                    container_display,
+                    preferred,
+                    Line { start: length(0.0), end: length(0.0) },
+                    Line { start: length(0.0), end: length(0.0) },
+                    80.0,
+                );
+                assert_eq!(absolute.size.height, 200.0, "{container_display:?} {preferred:?}");
+                assert_eq!(percentage_child.size.height, 200.0, "{container_display:?} {preferred:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_authored_stretch_uses_the_inset_modified_containing_block() {
+        let zero_margins = Line { start: length(0.0), end: length(0.0) };
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            for (label, insets, margins, expected_y, expected_height) in [
+                ("static", Line::AUTO, zero_margins, 0.0, 200.0),
+                ("start", Line { start: length(10.0), end: auto() }, zero_margins, 10.0, 190.0),
+                ("end", Line { start: auto(), end: length(10.0) }, zero_margins, 0.0, 190.0),
+                ("both", Line { start: length(10.0), end: length(20.0) }, zero_margins, 10.0, 170.0),
+                (
+                    "margins",
+                    Line { start: length(10.0), end: auto() },
+                    Line { start: length(7.0), end: length(11.0) },
+                    17.0,
+                    172.0,
+                ),
+            ] {
+                let (absolute, percentage_child) = absolute_percentage_child_block_size(
+                    container_display,
+                    Dimension::stretch(),
+                    insets,
+                    margins,
+                    80.0,
+                );
+                assert_eq!(absolute.location.y, expected_y, "{container_display:?} {label}");
+                assert_eq!(absolute.size.height, expected_height, "{container_display:?} {label}");
+                assert_eq!(percentage_child.size.height, expected_height, "{container_display:?} {label}");
+            }
+        }
+    }
+
     fn absolute_box(
         direction: Direction,
         containing_size: Size<f32>,

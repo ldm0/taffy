@@ -17,9 +17,13 @@ use crate::{AutoSizeBehavior, BoxGenerationMode, BoxSizing, Direction, Orthogona
 
 use super::common::absolute::{
     fit_content_width, AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing,
+    InsetModifiedContainingBlock,
 };
 use super::common::alignment::apply_alignment_fallback;
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::aspect_ratio::{
+    resolve_formatting_context_size, resolve_size_constraints, FormattingContextSizeInput, SizeConstraintInput,
+    TransferredSizesMode,
+};
 use super::common::baseline::{
     determine_baseline_group, determine_baseline_writing_mode, fragment_logical_block_baseline_or_synthesize,
     physical_baseline, BaselineGroup, FontBaseline,
@@ -3307,13 +3311,13 @@ fn perform_absolute_layout_on_absolute_children(
         let bottom =
             child_style.inset().bottom.maybe_resolve(inset_relative_size.height, |val, basis| tree.calc(val, basis));
         let block_auto_behavior = match child_writing_mode.block_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
+            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchImplicit,
+            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchImplicit,
             _ => AutoSizeBehavior::FitContent,
         };
         let inline_auto_behavior = match child_writing_mode.inline_axis() {
-            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchExplicit,
-            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchExplicit,
+            AbsoluteAxis::Horizontal if left.is_some() && right.is_some() => AutoSizeBehavior::StretchImplicit,
+            AbsoluteAxis::Vertical if top.is_some() && bottom.is_some() => AutoSizeBehavior::StretchImplicit,
             _ => AutoSizeBehavior::FitContent,
         };
 
@@ -3335,14 +3339,20 @@ fn perform_absolute_layout_on_absolute_children(
 
         drop(child_style);
 
-        let non_auto_margin_width = margin.left.unwrap_or(0.0) + margin.right.unwrap_or(0.0);
-        let available_width = match (left, right) {
-            (Some(left), Some(right)) => inset_relative_size.width - left - right,
-            (Some(left), None) => inset_relative_size.width - left,
-            (None, Some(right)) => inset_relative_size.width - right,
-            (None, None) => inset_relative_size.width,
-        } - non_auto_margin_width;
-        let child_available_width = f32_max(available_width + non_auto_margin_width, 0.0);
+        let imcb = InsetModifiedContainingBlock::new(
+            inset_relative_size,
+            Rect { left, right, top, bottom },
+            inset_relative_size,
+            margin,
+        );
+        let available_width = imcb.stretch_border_box_opportunity().width;
+        let child_available_width = imcb.margin_box_opportunity().width;
+        let implicit_auto_stretch_size = imcb.implicit_auto_stretch_size();
+        let authored_stretch = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size)
+            .resolve(imcb.authored_stretch_available_space(), padding_border_sum);
+        style_size = style_size.or(authored_stretch.preferred);
+        min_size = min_size.or(authored_stretch.min);
+        max_size = max_size.or(authored_stretch.max);
         let intrinsic_inputs = LayoutInput {
             run_mode: RunMode::ComputeSize,
             sizing_mode: SizingMode::InherentSize,
@@ -3416,30 +3426,17 @@ fn perform_absolute_layout_on_absolute_children(
         });
         let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
         let mut max_size = resolved.max_size;
-        let mut known_dimensions = resolved.size.maybe_clamp(min_size, max_size);
-
-        // Fill in width from left/right and reapply aspect ratio if:
-        //   - Width is not already known
-        //   - Item has both left and right inset properties set
-        if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
-            let new_width_raw = inset_relative_size.width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
-            known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = known_dimensions
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
-                .maybe_clamp(min_size, max_size);
-        }
-
-        // Fill in height from top/bottom and reapply aspect ratio if:
-        //   - Height is not already known
-        //   - Item has both top and bottom inset properties set
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
-            let new_height_raw =
-                inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
-            known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = known_dimensions
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
-                .maybe_clamp(min_size, max_size);
-        }
+        let mut known_dimensions = resolve_formatting_context_size(FormattingContextSizeInput {
+            size: resolved.size,
+            size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+            writing_mode: child_writing_mode,
+            inline_auto_behavior,
+            block_auto_behavior,
+            stretch_size: implicit_auto_stretch_size,
+            aspect_ratio,
+            padding_border: padding_border_sum,
+        })
+        .maybe_clamp(min_size, max_size);
         if known_dimensions.width.is_none() {
             known_dimensions.width = Some(fit_content_width(
                 tree,

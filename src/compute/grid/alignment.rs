@@ -1,6 +1,8 @@
 //! Alignment of tracks and final positioning of items
 use super::types::{GridBaselineAlignment, GridTrack};
-use crate::compute::common::absolute::{AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing};
+use crate::compute::common::absolute::{
+    AbsoluteBlockSizeInput, AbsoluteBlockSizeResolver, AbsoluteBoxSizing, InsetModifiedContainingBlock,
+};
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment, resolve_self_alignment_safety,
 };
@@ -14,6 +16,7 @@ use crate::compute::common::baseline::{
 use crate::compute::common::intrinsic_size::{
     resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
 };
+use crate::compute::common::used_size::StretchSizeProperties;
 use crate::geometry::{
     AbstractAxis, InBothAbstractAxis, Line, LogicalBoxStrut, LogicalOffset, LogicalSize, Point, Rect, Size,
 };
@@ -246,20 +249,33 @@ pub(super) fn align_and_position_item(
             .maybe_sub(logical_margin.block_end),
     };
     let grid_area_minus_item_margins_size = flow.to_physical_size(logical_grid_area_minus_item_margins_size);
-    let inset_modified_available_size = if position == Position::Absolute {
-        Size {
-            width: grid_area_minus_item_margins_size.width
-                - inset_horizontal.start.unwrap_or(0.0)
-                - inset_horizontal.end.unwrap_or(0.0),
-            height: grid_area_minus_item_margins_size.height
-                - inset_vertical.start.unwrap_or(0.0)
-                - inset_vertical.end.unwrap_or(0.0),
-        }
-    } else {
-        grid_area_minus_item_margins_size
-    };
     let non_auto_margin = margin.map(|value| value.unwrap_or(0.0));
-    let child_available_size = inset_modified_available_size + non_auto_margin.sum_axes();
+    let absolute_imcb = (position == Position::Absolute).then(|| {
+        InsetModifiedContainingBlock::new(
+            grid_area_size,
+            Rect {
+                left: inset_horizontal.start,
+                right: inset_horizontal.end,
+                top: inset_vertical.start,
+                bottom: inset_vertical.end,
+            },
+            grid_area_size,
+            margin,
+        )
+    });
+    let inset_modified_available_size = absolute_imcb
+        .map(InsetModifiedContainingBlock::stretch_border_box_opportunity)
+        .unwrap_or(grid_area_minus_item_margins_size);
+    let child_available_size = absolute_imcb
+        .map(InsetModifiedContainingBlock::margin_box_opportunity)
+        .unwrap_or(inset_modified_available_size + non_auto_margin.sum_axes());
+    if let Some(imcb) = absolute_imcb {
+        let authored_stretch = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size)
+            .resolve(imcb.authored_stretch_available_space(), padding_border_size);
+        inherent_size = inherent_size.or(authored_stretch.preferred);
+        min_size = min_size.or(authored_stretch.min);
+        max_size = max_size.or(authored_stretch.max);
+    }
     let intrinsic_available_space = AvailableSpace::Definite(f32_max(inset_modified_available_size.width, 0.0));
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
@@ -381,13 +397,8 @@ pub(super) fn align_and_position_item(
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
 
-    let stretch_size = if position == Position::Absolute {
-        Size {
-            width: (inset_horizontal.start.is_some() && inset_horizontal.end.is_some())
-                .then_some(f32_max(inset_modified_available_size.width, 0.0)),
-            height: (inset_vertical.start.is_some() && inset_vertical.end.is_some())
-                .then_some(f32_max(inset_modified_available_size.height, 0.0)),
-        }
+    let stretch_size = if let Some(imcb) = absolute_imcb {
+        imcb.implicit_auto_stretch_size()
     } else {
         grid_area_minus_item_margins_size.map(Some)
     };

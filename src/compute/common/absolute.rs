@@ -4,8 +4,10 @@ use crate::compute::common::intrinsic_size::{
 };
 #[cfg(any(feature = "block_layout", feature = "flexbox"))]
 use crate::geometry::AbsoluteAxis;
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+use crate::geometry::Rect;
 use crate::geometry::{Size, WritingMode};
-#[cfg(any(feature = "block_layout", feature = "flexbox"))]
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 use crate::style::AvailableSpace;
 use crate::style::{Dimension, ResolvedAspectRatio};
 #[cfg(any(feature = "block_layout", feature = "flexbox"))]
@@ -13,6 +15,101 @@ use crate::tree::LayoutPartialTreeExt;
 use crate::tree::{ChildLayoutInput, LayoutPartialTree, NodeId};
 use crate::util::MaybeMath;
 use crate::AutoSizeBehavior;
+
+/// Definite sizing opportunities established by an absolute containing block.
+///
+/// CSS Position first derives an inset-modified containing block (IMCB). An
+/// authored `stretch` size fits its margin box into that IMCB in every inset
+/// configuration, while an automatic size only stretches when neither inset
+/// in the axis is `auto`. Keeping both results in one value prevents Block,
+/// Flex, and Grid from assigning different meanings to the same insets.
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InsetModifiedContainingBlock {
+    /// IMCB size before the positioned box's margins are removed.
+    margin_box_opportunity: Size<f32>,
+    /// Border-box opportunity used by authored `stretch` properties.
+    stretch_border_box_opportunity: Size<f32>,
+    /// Whether either inset in each physical axis was authored as `auto`.
+    has_auto_inset: Size<bool>,
+}
+
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+impl InsetModifiedContainingBlock {
+    /// Build the physical IMCB sizing opportunities for a positioned box.
+    ///
+    /// When both insets are `auto`, the containing formatting context supplies
+    /// the opportunity established by its static-position/alignment rules. If
+    /// either inset is specified, an `auto` opposite inset contributes zero.
+    /// Negative IMCB sizes clamp to zero before margins, matching CSS Position.
+    pub(crate) fn new(
+        containing_size: Size<f32>,
+        insets: Rect<Option<f32>>,
+        both_auto_opportunity: Size<f32>,
+        margins: Rect<Option<f32>>,
+    ) -> Self {
+        let resolve_axis = |containing: f32,
+                            start: Option<f32>,
+                            end: Option<f32>,
+                            both_auto: f32,
+                            margin_start: Option<f32>,
+                            margin_end: Option<f32>| {
+            let both_insets_auto = start.is_none() && end.is_none();
+            let margin_box_opportunity =
+                if both_insets_auto { both_auto } else { containing - start.unwrap_or(0.0) - end.unwrap_or(0.0) }
+                    .max(0.0);
+            let stretch_border_box_opportunity =
+                (margin_box_opportunity - margin_start.unwrap_or(0.0) - margin_end.unwrap_or(0.0)).max(0.0);
+            (margin_box_opportunity, stretch_border_box_opportunity, start.is_none() || end.is_none())
+        };
+
+        let horizontal = resolve_axis(
+            containing_size.width,
+            insets.left,
+            insets.right,
+            both_auto_opportunity.width,
+            margins.left,
+            margins.right,
+        );
+        let vertical = resolve_axis(
+            containing_size.height,
+            insets.top,
+            insets.bottom,
+            both_auto_opportunity.height,
+            margins.top,
+            margins.bottom,
+        );
+
+        Self {
+            margin_box_opportunity: Size { width: horizontal.0, height: vertical.0 },
+            stretch_border_box_opportunity: Size { width: horizontal.1, height: vertical.1 },
+            has_auto_inset: Size { width: horizontal.2, height: vertical.2 },
+        }
+    }
+
+    /// Definite IMCB size supplied to a child before its own margins are removed.
+    pub(crate) const fn margin_box_opportunity(self) -> Size<f32> {
+        self.margin_box_opportunity
+    }
+
+    /// Definite border-box opportunity for preferred/minimum/maximum `stretch`.
+    pub(crate) fn authored_stretch_available_space(self) -> Size<AvailableSpace> {
+        self.stretch_border_box_opportunity.map(AvailableSpace::Definite)
+    }
+
+    /// Border-box fill used only by `auto` with two specified insets.
+    pub(crate) fn implicit_auto_stretch_size(self) -> Size<Option<f32>> {
+        Size {
+            width: (!self.has_auto_inset.width).then_some(self.stretch_border_box_opportunity.width),
+            height: (!self.has_auto_inset.height).then_some(self.stretch_border_box_opportunity.height),
+        }
+    }
+
+    /// Inset- and margin-adjusted space used by fit-content measurements.
+    pub(crate) const fn stretch_border_box_opportunity(self) -> Size<f32> {
+        self.stretch_border_box_opportunity
+    }
+}
 
 /// Preferred and limiting border-box dimensions while resolving an
 /// absolutely positioned box.
@@ -154,4 +251,49 @@ pub(crate) fn fit_content_width(
     let max_content = tree.measure_child_size(node, inputs, AbsoluteAxis::Horizontal);
 
     available_width.max(0.0).max(min_content).min(max_content)
+}
+
+#[cfg(all(test, any(feature = "block_layout", feature = "flexbox", feature = "grid")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imcb_separates_authored_stretch_from_implicit_auto_stretch() {
+        let one_sided = InsetModifiedContainingBlock::new(
+            Size { width: 400.0, height: 300.0 },
+            Rect { left: None, right: None, top: Some(10.0), bottom: None },
+            Size { width: 180.0, height: 90.0 },
+            Rect { left: Some(7.0), right: Some(11.0), top: Some(7.0), bottom: Some(11.0) },
+        );
+
+        assert_eq!(one_sided.margin_box_opportunity(), Size { width: 180.0, height: 290.0 });
+        assert_eq!(one_sided.stretch_border_box_opportunity(), Size { width: 162.0, height: 272.0 });
+        assert_eq!(one_sided.implicit_auto_stretch_size(), Size::NONE);
+        assert_eq!(
+            one_sided.authored_stretch_available_space(),
+            Size { width: AvailableSpace::Definite(162.0), height: AvailableSpace::Definite(272.0) }
+        );
+
+        let fully_inset = InsetModifiedContainingBlock::new(
+            Size { width: 400.0, height: 300.0 },
+            Rect { left: Some(10.0), right: Some(20.0), top: Some(10.0), bottom: Some(20.0) },
+            Size::ZERO,
+            Rect { left: Some(7.0), right: Some(11.0), top: Some(7.0), bottom: Some(11.0) },
+        );
+        assert_eq!(fully_inset.margin_box_opportunity(), Size { width: 370.0, height: 270.0 });
+        assert_eq!(fully_inset.implicit_auto_stretch_size(), Size { width: Some(352.0), height: Some(252.0) });
+    }
+
+    #[test]
+    fn imcb_clamps_before_negative_margins_expand_stretch() {
+        let imcb = InsetModifiedContainingBlock::new(
+            Size { width: 100.0, height: 100.0 },
+            Rect { left: Some(80.0), right: Some(80.0), top: None, bottom: None },
+            Size { width: 100.0, height: 100.0 },
+            Rect { left: Some(-10.0), right: Some(-10.0), top: None, bottom: None },
+        );
+
+        assert_eq!(imcb.margin_box_opportunity().width, 0.0);
+        assert_eq!(imcb.stretch_border_box_opportunity().width, 20.0);
+    }
 }

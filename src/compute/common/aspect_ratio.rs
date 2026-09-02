@@ -360,6 +360,10 @@ pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput)
     {
         resolved.block_size = stretch.block_size;
     }
+    // An implicit block-axis fill can be the first definite axis when the
+    // inline axis is fit-content. Give that source the same ratio transfer
+    // opportunity as an authored or explicitly stretched block size.
+    resolved = apply_ratio(resolved);
 
     writing_mode.to_physical(resolved)
 }
@@ -503,6 +507,22 @@ mod tests {
 
         assert_eq!(implicit, Size { width: Some(100.0), height: Some(50.0) });
         assert_eq!(explicit, Size { width: None, height: Some(50.0) });
+    }
+
+    #[test]
+    fn implicit_block_stretch_can_supply_the_ratio_source() {
+        let resolved = resolve_formatting_context_size(FormattingContextSizeInput {
+            size: Size::NONE,
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::StretchImplicit,
+            stretch_size: Size { width: None, height: Some(60.0) },
+            aspect_ratio: ResolvedAspectRatio::new(3.0, BoxSizing::BorderBox),
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved, Size { width: Some(180.0), height: Some(60.0) });
     }
 
     #[test]
