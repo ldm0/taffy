@@ -55,21 +55,22 @@ enum UsedFlexBasis {
     Stretch,
 }
 
-/// Intrinsic cross-size pass required by a multi-line column flex container.
+/// Intrinsic cross-size pass required by a column flex container.
 ///
-/// CSS Flexbox gives this case a dedicated algorithm: min-content assumes one
-/// column, while max-content performs column layout using each item's
-/// max-content cross contribution as its available cross size. This is the
-/// same phase boundary as Blink's `kColumnWrapIntrinsicSize`.
+/// A single-line column contributes the largest ordinary item contribution.
+/// A multi-line column additionally uses these values while forming columns:
+/// min-content assumes one column, while max-content uses each item's
+/// max-content cross contribution as its available cross size. This mirrors
+/// Blink's `ComputeMinMaxSizes()` and `kColumnWrapIntrinsicSize` boundaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ColumnWrapIntrinsicCrossConstraint {
+enum ColumnIntrinsicCrossConstraint {
     /// Compute the largest item min-content contribution in one column.
     MinContent,
     /// Form columns using each item's max-content cross contribution.
     MaxContent,
 }
 
-impl ColumnWrapIntrinsicCrossConstraint {
+impl ColumnIntrinsicCrossConstraint {
     /// Constraint supplied to the item cross-size measurement.
     #[inline(always)]
     const fn available_space(self) -> AvailableSpace {
@@ -300,9 +301,9 @@ struct FlexItem {
     depends_on_block_constraints: bool,
     /// Whether this item uses replaced-element automatic-minimum semantics.
     is_replaced: bool,
-    /// Fixed cross size used only while computing the intrinsic cross size of
-    /// a wrapped column container.
-    column_wrap_intrinsic_cross_size: Option<f32>,
+    /// Fixed item contribution used while computing a column container's
+    /// intrinsic cross size.
+    column_intrinsic_cross_size: Option<f32>,
     /// Authored `stretch` sizing properties retained until the flex line owns
     /// the final cross-axis available size.
     stretch: StretchSizeProperties,
@@ -650,25 +651,24 @@ fn resolve_cross_axis_available_space(
     }
 }
 
-/// Select the dedicated intrinsic cross-size algorithm for a wrapped column.
+/// Select the dedicated intrinsic cross-size algorithm for a column.
 #[inline(always)]
-fn column_wrap_intrinsic_cross_constraint(
+fn column_intrinsic_cross_constraint(
     inputs: LayoutInput,
     available_space: Size<AvailableSpace>,
     constants: &AlgoConstants,
-) -> Option<ColumnWrapIntrinsicCrossConstraint> {
+) -> Option<ColumnIntrinsicCrossConstraint> {
     if inputs.run_mode != RunMode::ComputeSize
         || inputs.sizing_purpose != SizingPurpose::IntrinsicContribution
         || !constants.main_axis_is_block
-        || !constants.is_wrap
         || !inputs.axis.contains(constants.writing_mode.inline_axis())
     {
         return None;
     }
 
     match available_space.cross(constants.dir) {
-        AvailableSpace::MinContent => Some(ColumnWrapIntrinsicCrossConstraint::MinContent),
-        AvailableSpace::MaxContent => Some(ColumnWrapIntrinsicCrossConstraint::MaxContent),
+        AvailableSpace::MinContent => Some(ColumnIntrinsicCrossConstraint::MinContent),
+        AvailableSpace::MaxContent => Some(ColumnIntrinsicCrossConstraint::MaxContent),
         AvailableSpace::Definite(_) => None,
     }
 }
@@ -817,8 +817,7 @@ fn compute_preliminary(
     // 2. Determine the available main and cross space for the flex items
     debug_log!("determine_available_space");
     let available_space = determine_available_space(node_sizing.definite_size, available_space, &constants);
-    let column_wrap_intrinsic_cross_constraint =
-        column_wrap_intrinsic_cross_constraint(inputs, available_space, &constants);
+    let column_intrinsic_cross_constraint = column_intrinsic_cross_constraint(inputs, available_space, &constants);
 
     // 1. Generate anonymous flex items as described in §4 Flex Items. Intrinsic
     // preferred/min/max widths need the resolved container space, so item
@@ -826,8 +825,8 @@ fn compute_preliminary(
     // first.
     debug_log!("generate_anonymous_flex_items");
     let mut flex_items = generate_anonymous_flex_items(tree, node, &constants, available_space);
-    if let Some(constraint) = column_wrap_intrinsic_cross_constraint {
-        determine_column_wrap_intrinsic_cross_sizes(tree, &constants, available_space, constraint, &mut flex_items);
+    if let Some(constraint) = column_intrinsic_cross_constraint {
+        determine_column_intrinsic_cross_sizes(tree, &constants, available_space, constraint, &mut flex_items);
     }
 
     // 3. Determine the flex base size and hypothetical main size of each item.
@@ -851,7 +850,7 @@ fn compute_preliminary(
     // 5. Collect flex items into flex lines.
     debug_log!("collect_flex_lines");
     let mut flex_lines =
-        collect_flex_lines(&constants, available_space, column_wrap_intrinsic_cross_constraint, &mut flex_items);
+        collect_flex_lines(&constants, available_space, column_intrinsic_cross_constraint, &mut flex_items);
 
     // If container size is undefined, determine the container's main size
     // and then re-resolve gaps based on newly determined size
@@ -1339,7 +1338,7 @@ fn generate_anonymous_flex_items(
                 ratio_content_block_flex_basis,
                 depends_on_block_constraints,
                 is_replaced,
-                column_wrap_intrinsic_cross_size: None,
+                column_intrinsic_cross_size: None,
                 stretch: stretch_properties,
 
                 inset,
@@ -1402,11 +1401,11 @@ fn resolve_flex_item_intrinsic_contribution(
 /// are then applied in one place. The resulting border-box value becomes a
 /// fixed cross-size input for both flex-basis resolution and line sizing,
 /// matching the constraint space constructed by Blink for this phase.
-fn determine_column_wrap_intrinsic_cross_sizes(
+fn determine_column_intrinsic_cross_sizes(
     tree: &mut impl LayoutFlexboxContainer,
     constants: &AlgoConstants,
     available_space: Size<AvailableSpace>,
-    constraint: ColumnWrapIntrinsicCrossConstraint,
+    constraint: ColumnIntrinsicCrossConstraint,
     flex_items: &mut [FlexItem],
 ) {
     let dir = constants.dir;
@@ -1427,15 +1426,18 @@ fn determine_column_wrap_intrinsic_cross_sizes(
         );
         item.depends_on_block_constraints |= measured.depends_on_block_constraints;
 
-        let padding_border = (item.padding + item.border).cross_axis_sum(dir);
+        let padding_border = (item.padding + item.border).sum_axes();
         let content_size = measured.size.get_abs(dir.cross_axis());
-        let preferred_size = item.independent_preferred_size.cross(dir);
-        item.column_wrap_intrinsic_cross_size = Some(resolve_flex_item_intrinsic_contribution(
+        let preferred_size = item
+            .independent_preferred_size
+            .maybe_apply_aspect_ratio_with_box_sizing(item.aspect_ratio, BoxSizing::BorderBox, padding_border)
+            .cross(dir);
+        item.column_intrinsic_cross_size = Some(resolve_flex_item_intrinsic_contribution(
             content_size,
             preferred_size,
             item.min_size_with_transfer.cross(dir),
             item.max_size_with_transfer.cross(dir),
-            padding_border,
+            padding_border.cross(dir),
         ));
     }
 }
@@ -1559,7 +1561,7 @@ fn determine_flex_base_size(
                     cross_axis_available_space.into_option().maybe_sub(child.margin.cross_axis_sum(dir)),
                 );
             }
-            if let Some(intrinsic_cross_size) = child.column_wrap_intrinsic_cross_size {
+            if let Some(intrinsic_cross_size) = child.column_intrinsic_cross_size {
                 ckd.set_cross(dir, Some(intrinsic_cross_size));
             }
             ckd
@@ -1596,9 +1598,9 @@ fn determine_flex_base_size(
             // Initial inline geometry owns the item's authored inline sizing.
             // Do not reuse `child_known_dimensions`: it may already contain a
             // cross size transferred from block-axis constraints, which flex
-            // base sizing is required to ignore. A wrapped-column pass is the
-            // only parent-owned inline override at this stage.
-            let known_dimensions = Size::from_cross(dir, child.column_wrap_intrinsic_cross_size);
+            // base sizing is required to ignore. A column intrinsic pass is
+            // the only parent-owned inline override at this stage.
+            let known_dimensions = Size::from_cross(dir, child.column_intrinsic_cross_size);
             let inline_auto_behavior = if child.align_self == AlignSelf::STRETCH
                 && !child.margin_is_auto.cross_start(dir)
                 && !child.margin_is_auto.cross_end(dir)
@@ -1854,12 +1856,10 @@ fn determine_flex_base_size(
 fn collect_flex_lines<'a>(
     constants: &AlgoConstants,
     available_space: Size<AvailableSpace>,
-    column_wrap_intrinsic_cross_constraint: Option<ColumnWrapIntrinsicCrossConstraint>,
+    column_intrinsic_cross_constraint: Option<ColumnIntrinsicCrossConstraint>,
     flex_items: &'a mut Vec<FlexItem>,
 ) -> Vec<FlexLine<'a>> {
-    if !constants.is_wrap
-        || column_wrap_intrinsic_cross_constraint == Some(ColumnWrapIntrinsicCrossConstraint::MinContent)
-    {
+    if !constants.is_wrap || column_intrinsic_cross_constraint == Some(ColumnIntrinsicCrossConstraint::MinContent) {
         let mut lines = new_vec_with_capacity(1);
         lines.push(FlexLine::new(flex_items.as_mut_slice()));
         lines
@@ -2589,7 +2589,7 @@ fn determine_hypothetical_cross_size(
         // the pre-flex main size. Only an independent preferred cross size may
         // outrank the transfer from the final main size at this phase boundary.
         let preferred_cross = child
-            .column_wrap_intrinsic_cross_size
+            .column_intrinsic_cross_size
             .or(child.independent_preferred_size.cross(constants.dir))
             .or(ratio_cross)
             .maybe_max(padding_border_sum);

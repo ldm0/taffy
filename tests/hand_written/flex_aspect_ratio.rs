@@ -2,6 +2,11 @@ use taffy::prelude::*;
 use taffy::{AbsoluteAxis, Overflow, WritingMode};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
+#[cfg(feature = "float_layout")]
+use super::test_tree::{TestNode, TestTree};
+#[cfg(feature = "float_layout")]
+use taffy::{Float, ResolvedAspectRatio};
+
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
 ///
 /// A max-size transferred into the main axis constrains the hypothetical main
@@ -57,6 +62,62 @@ fn auto_flex_basis_uses_a_definite_stretched_cross_size_through_aspect_ratio() {
     assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
 
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-026.html.
+///
+/// A column flex container's intrinsic inline size is the largest ordinary
+/// inline contribution of its items. The item's content-derived main size is
+/// not a definite inline size and must not be transferred backwards through
+/// its preferred ratio while the float computes its shrink-to-fit width.
+#[cfg(feature = "float_layout")]
+#[test]
+fn column_intrinsic_inline_size_does_not_transfer_a_content_main_size() {
+    let padding = Rect { left: length(15.0), right: zero(), top: length(10.0), bottom: zero() };
+
+    for ratio_sizing_box in [BoxSizing::BorderBox, BoxSizing::ContentBox] {
+        let root = TestNode::container(
+            Display::Block,
+            Style { size: Size { width: length(800.0), height: auto() }, ..Style::default() },
+            Rect::ZERO,
+        );
+        let flex = TestNode::container(
+            Display::Flex,
+            Style {
+                flex_direction: FlexDirection::Column,
+                float: Float::Left,
+                size: Size { width: auto(), height: length(1.0) },
+                ..Style::default()
+            },
+            Rect::ZERO,
+        );
+        let mut item = TestNode::container(
+            Display::Block,
+            Style {
+                box_sizing: BoxSizing::BorderBox,
+                min_size: Size { width: length(25.0), height: auto() },
+                padding,
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            Rect::ZERO,
+        );
+        item.resolved_aspect_ratio = ResolvedAspectRatio::new(1.0, ratio_sizing_box);
+        let content = TestNode::leaf(
+            Style { display: Display::Block, size: Size { width: auto(), height: length(190.0) }, ..Style::default() },
+            Size::ZERO,
+        );
+
+        let mut tree = TestTree::new(root, flex);
+        tree.nodes.push(item);
+        tree.nodes.push(content);
+        tree.nodes[1].children.push(2);
+        tree.nodes[2].children.push(3);
+        tree.compute(Size::MAX_CONTENT);
+
+        assert_eq!(tree.layout(1).size, Size { width: 25.0, height: 1.0 }, "{ratio_sizing_box:?}");
+        assert_eq!(tree.layout(2).size, Size { width: 25.0, height: 200.0 }, "{ratio_sizing_box:?}");
+    }
+}
+
 fn layout_flexed_ratio_item(
     mut item_style: Style,
     flex_direction: FlexDirection,
@@ -92,6 +153,12 @@ fn flexed_main_size_recomputes_the_ratio_dependent_cross_size() {
         FlexDirection::Row,
         Size { width: Dimension::length(100.0), height: Dimension::auto() },
     );
+
+    assert_eq!(row, (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }));
+}
+
+#[test]
+fn column_intrinsic_inline_size_transfers_only_the_authored_main_size() {
     let column = layout_flexed_ratio_item(
         Style {
             size: Size { width: Dimension::auto(), height: Dimension::length(50.0) },
@@ -103,8 +170,7 @@ fn flexed_main_size_recomputes_the_ratio_dependent_cross_size() {
         Size { width: Dimension::auto(), height: Dimension::length(100.0) },
     );
 
-    assert_eq!(row, (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }));
-    assert_eq!(column, (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }));
+    assert_eq!(column, (Size { width: 50.0, height: 100.0 }, Size { width: 50.0, height: 100.0 }));
 }
 
 /// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-023.html.
