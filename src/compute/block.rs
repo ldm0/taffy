@@ -2473,7 +2473,7 @@ fn perform_absolute_layout_on_absolute_children(
             margin,
         );
         let available_width = imcb.stretch_border_box_opportunity().width;
-        let child_available_width = imcb.margin_box_opportunity().width;
+        let child_available_size = imcb.margin_box_opportunity();
         let implicit_auto_stretch_size = imcb.implicit_auto_stretch_size();
         let authored_stretch = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size)
             .resolve(imcb.authored_stretch_available_space(), padding_border_sum);
@@ -2493,8 +2493,8 @@ fn perform_absolute_layout_on_absolute_children(
             parent_size: area_size.map(Some),
             parent_writing_mode: writing_mode,
             available_space: Size {
-                width: AvailableSpace::Definite(child_available_width),
-                height: AvailableSpace::Definite(area_height),
+                width: AvailableSpace::Definite(child_available_size.width),
+                height: AvailableSpace::Definite(child_available_size.height),
             },
             ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
@@ -2566,10 +2566,9 @@ fn perform_absolute_layout_on_absolute_children(
         .maybe_clamp(min_size, max_size);
 
         // If width is still auto then one or both horizontal insets are also auto. CSS 2.2
-        // 10.3.7 requires a shrink-to-fit width rather than the unconstrained content width.
-        // Account for the specified inset (or the static position when both are auto) and
-        // non-auto margins before clamping the available width between min/max-content.
-        if known_dimensions.width.is_none() {
+        // 10.3.7 requires a non-replaced box to use shrink-to-fit width. Replaced boxes instead
+        // follow 10.3.8: their leaf sizing function consumes the IMCB constraint directly.
+        if known_dimensions.width.is_none() && !item.is_replaced {
             known_dimensions.width = Some(fit_content_width(
                 tree,
                 item.node_id,
@@ -2578,8 +2577,10 @@ fn perform_absolute_layout_on_absolute_children(
                     area_size.map(Some),
                     writing_mode,
                     Size {
-                        width: AvailableSpace::Definite(child_available_width),
-                        height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                        width: AvailableSpace::Definite(child_available_size.width),
+                        height: AvailableSpace::Definite(
+                            child_available_size.height.maybe_clamp(min_size.height, max_size.height),
+                        ),
                     },
                     SizingMode::ContentSize,
                     Line::FALSE,
@@ -2599,8 +2600,8 @@ fn perform_absolute_layout_on_absolute_children(
                 area_size.map(Some),
                 writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(child_available_width),
-                    height: AvailableSpace::Definite(area_height),
+                    width: AvailableSpace::Definite(child_available_size.width),
+                    height: AvailableSpace::Definite(child_available_size.height),
                 },
                 SizingMode::ContentSize,
                 Line::FALSE,
@@ -2618,8 +2619,12 @@ fn perform_absolute_layout_on_absolute_children(
                 area_size.map(Some),
                 writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(
+                        child_available_size.width.maybe_clamp(min_size.width, max_size.width),
+                    ),
+                    height: AvailableSpace::Definite(
+                        child_available_size.height.maybe_clamp(min_size.height, max_size.height),
+                    ),
                 },
                 SizingMode::ContentSize,
                 Line::FALSE,
@@ -2637,8 +2642,12 @@ fn perform_absolute_layout_on_absolute_children(
                 parent_size: area_size.map(Some),
                 parent_writing_mode: writing_mode,
                 available_space: Size {
-                    width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(
+                        child_available_size.width.maybe_clamp(min_size.width, max_size.width),
+                    ),
+                    height: AvailableSpace::Definite(
+                        child_available_size.height.maybe_clamp(min_size.height, max_size.height),
+                    ),
                 },
                 ignored_margins_for_stretch: Rect::default(),
                 sizing_mode: SizingMode::ContentSize,

@@ -2,6 +2,7 @@
 mod absolute_position {
     use taffy::prelude::*;
     use taffy::style::Direction;
+    use taffy::Point;
     use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
     struct Fixture {
@@ -116,6 +117,60 @@ mod absolute_position {
         assert_eq!(absolute.size.width, 180.0);
         assert_eq!(fixture.tree.layout(fixture.text).unwrap().size.width, 180.0);
         assert_eq!(fixture.tree.layout(fixture.text).unwrap().size.height, 40.0);
+    }
+
+    fn ratio_only_replaced_measure(
+        known_dimensions: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        _node_id: NodeId,
+        _context: Option<&mut TestNodeContext>,
+        _style: &Style,
+    ) -> Size<f32> {
+        let width = known_dimensions.width.unwrap_or(match available_space.width {
+            AvailableSpace::Definite(width) => width,
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => 0.0,
+        });
+        Size { width, height: known_dimensions.height.unwrap_or(width) }
+    }
+
+    #[test]
+    fn absolute_replaced_leaf_owns_ratio_only_sizing_against_the_imcb() {
+        for container_display in [Display::Block, Display::Flex, Display::Grid] {
+            let mut tree = new_test_tree();
+            tree.disable_rounding();
+            let absolute = tree
+                .new_leaf_with_context(
+                    Style {
+                        display: Display::Block,
+                        position: Position::Absolute,
+                        item_is_replaced: true,
+                        box_sizing: BoxSizing::ContentBox,
+                        aspect_ratio: Some(1.0),
+                        inset: Rect { left: length(20.0), right: auto(), top: length(30.0), bottom: auto() },
+                        margin: Rect::length(5.0),
+                        border: Rect::length(10.0),
+                        ..Style::default()
+                    },
+                    TestNodeContext::zero(),
+                )
+                .unwrap();
+            let root = tree
+                .new_with_children(
+                    Style {
+                        display: container_display,
+                        size: Size { width: length(220.0), height: length(190.0) },
+                        ..Style::default()
+                    },
+                    &[absolute],
+                )
+                .unwrap();
+
+            tree.compute_layout_with_measure(root, Size::MAX_CONTENT, ratio_only_replaced_measure).unwrap();
+
+            let layout = tree.layout(absolute).unwrap();
+            assert_eq!(layout.location, Point { x: 25.0, y: 35.0 }, "{container_display:?}");
+            assert_eq!(layout.size, Size { width: 190.0, height: 190.0 }, "{container_display:?}");
+        }
     }
 
     fn absolute_intrinsic_block_constraint(

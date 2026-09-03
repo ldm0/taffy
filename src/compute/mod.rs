@@ -57,6 +57,8 @@ pub use self::grid::compute_grid_layout;
 #[cfg(feature = "float_layout")]
 pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
+pub use self::common::absolute::InsetModifiedContainingBlock;
 pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AvailableSpace, CoreStyle};

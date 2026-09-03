@@ -25,7 +25,7 @@ use crate::AutoSizeBehavior;
 /// Flex, and Grid from assigning different meanings to the same insets.
 #[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct InsetModifiedContainingBlock {
+pub struct InsetModifiedContainingBlock {
     /// IMCB size before the positioned box's margins are removed.
     margin_box_opportunity: Size<f32>,
     /// Border-box opportunity used by authored `stretch` properties.
@@ -42,7 +42,7 @@ impl InsetModifiedContainingBlock {
     /// the opportunity established by its static-position/alignment rules. If
     /// either inset is specified, an `auto` opposite inset contributes zero.
     /// Negative IMCB sizes clamp to zero before margins, matching CSS Position.
-    pub(crate) fn new(
+    pub fn new(
         containing_size: Size<f32>,
         insets: Rect<Option<f32>>,
         both_auto_opportunity: Size<f32>,
@@ -88,7 +88,7 @@ impl InsetModifiedContainingBlock {
     }
 
     /// Definite IMCB size supplied to a child before its own margins are removed.
-    pub(crate) const fn margin_box_opportunity(self) -> Size<f32> {
+    pub const fn margin_box_opportunity(self) -> Size<f32> {
         self.margin_box_opportunity
     }
 

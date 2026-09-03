@@ -3366,8 +3366,6 @@ fn perform_absolute_layout_on_absolute_children(
     node: NodeId,
     constants: &AlgoConstants,
 ) -> Size<f32> {
-    let container_width = constants.container_size.width;
-    let container_height = constants.container_size.height;
     let inset_relative_size =
         constants.container_size - constants.border.sum_axes() - constants.scrollbar_insets.sum_axes();
     let percentage_basis = constants.writing_mode.to_logical(inset_relative_size).inline_size;
@@ -3454,7 +3452,7 @@ fn perform_absolute_layout_on_absolute_children(
             margin,
         );
         let available_width = imcb.stretch_border_box_opportunity().width;
-        let child_available_width = imcb.margin_box_opportunity().width;
+        let child_available_size = imcb.margin_box_opportunity();
         let implicit_auto_stretch_size = imcb.implicit_auto_stretch_size();
         let authored_stretch = StretchSizeProperties::new(raw_size, raw_min_size, raw_max_size)
             .resolve(imcb.authored_stretch_available_space(), padding_border_sum);
@@ -3474,8 +3472,8 @@ fn perform_absolute_layout_on_absolute_children(
             parent_size: constants.node_inner_size,
             parent_writing_mode: constants.writing_mode,
             available_space: Size {
-                width: AvailableSpace::Definite(child_available_width),
-                height: AvailableSpace::Definite(container_height),
+                width: AvailableSpace::Definite(child_available_size.width),
+                height: AvailableSpace::Definite(child_available_size.height),
             },
             ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
@@ -3545,7 +3543,9 @@ fn perform_absolute_layout_on_absolute_children(
             padding_border: padding_border_sum,
         })
         .maybe_clamp(min_size, max_size);
-        if known_dimensions.width.is_none() {
+        // CSS 2.2 10.3.7 shrink-to-fit sizing applies to non-replaced absolute
+        // boxes. A replaced leaf follows 10.3.8 and resolves against the IMCB.
+        if known_dimensions.width.is_none() && !is_replaced {
             known_dimensions.width = Some(fit_content_width(
                 tree,
                 child,
@@ -3554,9 +3554,9 @@ fn perform_absolute_layout_on_absolute_children(
                     constants.node_inner_size,
                     constants.writing_mode,
                     Size {
-                        width: AvailableSpace::Definite(child_available_width),
+                        width: AvailableSpace::Definite(child_available_size.width),
                         height: AvailableSpace::Definite(
-                            container_height.maybe_clamp(min_size.height, max_size.height),
+                            child_available_size.height.maybe_clamp(min_size.height, max_size.height),
                         ),
                     },
                     SizingMode::InherentSize,
@@ -3576,8 +3576,8 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(child_available_width),
-                    height: AvailableSpace::Definite(container_height),
+                    width: AvailableSpace::Definite(child_available_size.width),
+                    height: AvailableSpace::Definite(child_available_size.height),
                 },
                 SizingMode::InherentSize,
                 Line::FALSE,
@@ -3595,8 +3595,12 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(
+                        child_available_size.width.maybe_clamp(min_size.width, max_size.width),
+                    ),
+                    height: AvailableSpace::Definite(
+                        child_available_size.height.maybe_clamp(min_size.height, max_size.height),
+                    ),
                 },
                 SizingMode::InherentSize,
                 Line::FALSE,
@@ -3611,8 +3615,12 @@ fn perform_absolute_layout_on_absolute_children(
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
-                    width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
-                    height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
+                    width: AvailableSpace::Definite(
+                        child_available_size.width.maybe_clamp(min_size.width, max_size.width),
+                    ),
+                    height: AvailableSpace::Definite(
+                        child_available_size.height.maybe_clamp(min_size.height, max_size.height),
+                    ),
                 },
                 SizingMode::InherentSize,
                 Line::FALSE,
