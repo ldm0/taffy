@@ -383,3 +383,48 @@ fn vertical_intrinsic_inline_keyword_uses_the_ratio_content_contribution() {
 
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
 }
+
+/// Regression for WPT css/css-sizing/aspect-ratio/block-aspect-ratio-021.html.
+#[test]
+fn opposite_axis_maximum_constrains_intrinsic_inline_size_in_layout_algorithms() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let mut tree = TaffyTree::<()>::new();
+        let content = tree
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: length(200.0), height: auto() },
+                ..Style::default()
+            })
+            .unwrap();
+        let item = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::max_content(), height: auto() },
+                    max_size: Size { width: auto(), height: length(100.0) },
+                    aspect_ratio: Some(1.0),
+                    align_self: Some(AlignSelf::FLEX_START),
+                    justify_self: Some(AlignSelf::FLEX_START),
+                    ..Style::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let container = tree
+            .new_with_children(
+                Style {
+                    display,
+                    size: Size { width: length(300.0), height: auto() },
+                    align_items: Some(AlignItems::FLEX_START),
+                    justify_items: Some(AlignItems::FLEX_START),
+                    ..Style::default()
+                },
+                &[item],
+            )
+            .unwrap();
+
+        tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 }, "{display:?}");
+    }
+}

@@ -29,7 +29,7 @@ use super::common::aspect_ratio::{
 use super::common::baseline::physical_baseline;
 use super::common::intrinsic_size::{
     measure_intrinsic_axis, resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
-    resolve_intrinsic_width_constraints, resolve_node_size_constraints, resolve_ratio_dependent_content_contribution,
+    resolve_intrinsic_width_constraints, resolve_node_size_constraints, resolve_ratio_dependent_intrinsic_sizing,
     AutomaticInlineSizeResolution, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
     IntrinsicPreferredSize, IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum,
     ResolvedNodeSizing,
@@ -1085,7 +1085,7 @@ fn generate_item_list(
                 )
                 .with_ignored_margins_for_stretch(item_ignored_margins)
                 .with_block_auto_behavior(AutoSizeBehavior::FitContent);
-                let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+                let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
                     size,
                     min_size,
                     max_size,
@@ -1104,7 +1104,7 @@ fn generate_item_list(
                         max: raw_logical_max_size.inline_size,
                         available_space: available_inline_size,
                         axis: writing_mode.inline_axis(),
-                        ratio_content_contribution,
+                        ratio_dependent_sizing,
                     },
                 );
                 preferred_inline_from_intrinsic_ratio = intrinsic.preferred.applied_aspect_ratio
@@ -1341,7 +1341,7 @@ fn resolve_block_item_final_style(
         [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
             .into_iter()
             .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
-    let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+    let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
         size,
         min_size,
         max_size,
@@ -1370,7 +1370,7 @@ fn resolve_block_item_final_style(
             max: raw_logical_max_size.inline_size,
             available_space: available_inline_size,
             axis: parent_writing_mode.inline_axis(),
-            ratio_content_contribution,
+            ratio_dependent_sizing,
         },
     );
     let mut logical_size = parent_writing_mode.to_logical(size);
@@ -2499,7 +2499,7 @@ fn perform_absolute_layout_on_absolute_children(
             ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
-        let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+        let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
             style_size,
             min_size,
             max_size,
@@ -2520,7 +2520,7 @@ fn perform_absolute_layout_on_absolute_children(
                 min: raw_min_size.width,
                 max: raw_max_size.width,
                 available_space: AvailableSpace::Definite(f32_max(available_width, 0.0)),
-                ratio_content_contribution,
+                ratio_dependent_sizing,
             },
         );
         style_size.width = style_size.width.or(intrinsic.preferred.value);

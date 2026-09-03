@@ -32,7 +32,7 @@ use super::common::baseline::{
 use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 use super::common::intrinsic_size::{
     resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
-    resolve_ratio_dependent_content_contribution, AutomaticInlineSizeResolution, BlockSizeProperties,
+    resolve_ratio_dependent_intrinsic_sizing, AutomaticInlineSizeResolution, BlockSizeProperties,
     ContentBasedBlockSize, IntrinsicWidthInput, NodeSizeConstraintInput, ResolvedNodeSizing,
 };
 use super::common::used_size::StretchSizeProperties;
@@ -1178,7 +1178,7 @@ fn generate_anonymous_flex_items(
                 ignored_margins_for_stretch: Rect::default(),
                 vertical_margins_are_collapsible: Line::FALSE,
             };
-            let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+            let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
                 untransferred_size.maybe_add(box_sizing_adjustment),
                 min_size,
                 max_size,
@@ -1196,7 +1196,7 @@ fn generate_anonymous_flex_items(
                     min: raw_min_size.width,
                     max: raw_max_size.width,
                     available_space: available_width,
-                    ratio_content_contribution,
+                    ratio_dependent_sizing,
                 },
             );
             if let Some(intrinsic_width) = intrinsic.preferred.value {
@@ -3478,7 +3478,7 @@ fn perform_absolute_layout_on_absolute_children(
             ignored_margins_for_stretch: Rect::default(),
             vertical_margins_are_collapsible: Line::FALSE,
         };
-        let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+        let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
             style_size,
             min_size,
             max_size,
@@ -3499,7 +3499,7 @@ fn perform_absolute_layout_on_absolute_children(
                 min: raw_min_size.width,
                 max: raw_max_size.width,
                 available_space: AvailableSpace::Definite(f32_max(available_width, 0.0)),
-                ratio_content_contribution,
+                ratio_dependent_sizing,
             },
         );
         style_size.width = style_size.width.or(intrinsic.preferred.value);

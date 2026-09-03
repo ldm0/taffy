@@ -14,7 +14,7 @@ use crate::compute::common::baseline::{
     fragment_logical_block_baseline, fragment_logical_block_baseline_or_synthesize, BaselineGroup, FontBaseline,
 };
 use crate::compute::common::intrinsic_size::{
-    resolve_intrinsic_width_constraints, resolve_ratio_dependent_content_contribution, IntrinsicWidthInput,
+    resolve_intrinsic_width_constraints, resolve_ratio_dependent_intrinsic_sizing, IntrinsicWidthInput,
 };
 use crate::compute::common::used_size::StretchSizeProperties;
 use crate::geometry::{
@@ -293,7 +293,7 @@ pub(super) fn align_and_position_item(
         ignored_margins_for_stretch: Rect::default(),
         vertical_margins_are_collapsible: Line::FALSE,
     };
-    let ratio_content_contribution = resolve_ratio_dependent_content_contribution(
+    let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
         inherent_size,
         min_size,
         max_size,
@@ -314,7 +314,7 @@ pub(super) fn align_and_position_item(
             min: raw_min_size.width,
             max: raw_max_size.width,
             available_space: intrinsic_available_space,
-            ratio_content_contribution,
+            ratio_dependent_sizing,
         },
     );
     inherent_size.width = inherent_size.width.or(intrinsic.preferred.value);
