@@ -918,15 +918,17 @@ pub(crate) fn resolve_content_based_block_size_constraints(
 
     let writing_mode = tree.get_writing_mode(node_id);
     let mut known_logical_size = writing_mode.to_logical(child_input.known_dimensions);
-    let mut definite_logical_size = writing_mode.to_logical(child_input.definite_dimensions);
     let outer_inline_size = known_logical_size.inline_size;
     if !resolver.requires_intrinsic_measurement() {
         return resolver.resolve(writing_mode, outer_inline_size, 0.0);
     }
     known_logical_size.block_size = None;
-    definite_logical_size.block_size = None;
     child_input.known_dimensions = writing_mode.to_physical(known_logical_size);
-    child_input.definite_dimensions = writing_mode.to_physical(definite_logical_size);
+    // Measuring intrinsic block content must ignore the node's provisional
+    // block-size without discarding the initial fragment geometry exposed to
+    // descendants. Blink keeps these as separate inputs: its intrinsic
+    // fragment geometry supplies PercentageResolutionSize even while the
+    // algorithm computes content with an indefinite own block-size.
     child_input.sizing_mode = SizingMode::ContentSize;
     let measured =
         tree.measure_child_size_with_metadata(node_id, child_input, RequestedAxis::from(writing_mode.block_axis()));
@@ -1067,8 +1069,9 @@ pub struct ResolvedNodeSizing {
     /// Initial physical border-box geometry after parent-fixed dimensions and
     /// child-owned sizing have been combined.
     pub outer_size: Size<Option<f32>>,
-    /// Used physical dimensions that are definite percentage bases for
-    /// descendants.
+    /// Physical initial-fragment dimensions used as percentage bases for
+    /// descendants. A cyclic percentage can keep a ratio-derived value here
+    /// even when the final `outer_size` grows through an automatic minimum.
     pub definite_size: Size<Option<f32>>,
     /// Whether resolving the logical inline axis measured content dependent
     /// on the containing block's block constraint.
@@ -1094,27 +1097,31 @@ impl ResolvedNodeSizing {
     };
 }
 
-/// Keep the final used value only on axes with a definite sizing source.
+/// Select the exact initial geometry exposed to descendant percentages.
+///
+/// Parent-owned geometry is already the percentage-resolution size chosen by
+/// the parent formatting context. It can intentionally differ from the final
+/// used size when a cyclic percentage contributes to an automatic minimum.
+/// Child-owned definite sizing is used only when the parent did not fix that
+/// axis itself.
 #[inline(always)]
-fn used_definite_size(
-    used_size: Size<Option<f32>>,
+fn percentage_resolution_size(
     known_size: Size<Option<f32>>,
-    parent_definite_size: Size<Option<f32>>,
+    parent_percentage_size: Size<Option<f32>>,
     own_definite_size: Size<Option<f32>>,
 ) -> Size<Option<f32>> {
-    let definite_source = Size {
+    Size {
         width: if known_size.width.is_some() {
-            parent_definite_size.width
+            parent_percentage_size.width
         } else {
-            parent_definite_size.width.or(own_definite_size.width)
+            parent_percentage_size.width.or(own_definite_size.width)
         },
         height: if known_size.height.is_some() {
-            parent_definite_size.height
+            parent_percentage_size.height
         } else {
-            parent_definite_size.height.or(own_definite_size.height)
+            parent_percentage_size.height.or(own_definite_size.height)
         },
-    };
-    Size { width: definite_source.width.and(used_size.width), height: definite_source.height.and(used_size.height) }
+    }
 }
 
 /// Resolve a node's initial sizing geometry without mutating its parent-owned
@@ -1326,7 +1333,7 @@ pub(crate) fn resolve_node_size_constraints(
         available_space,
     );
     let definite_size =
-        used_definite_size(outer_size, inputs.known_dimensions, inputs.definite_dimensions, own_definite_size);
+        percentage_resolution_size(inputs.known_dimensions, inputs.definite_dimensions, own_definite_size);
     let fixed_ratio_applied =
         size_before_fixed_ratio.get_abs(inline_axis).is_none() && size_after_fixed_ratio.get_abs(inline_axis).is_some();
     let applied_aspect_ratio = inputs.known_dimensions.get_abs(inline_axis).is_none()
@@ -1422,6 +1429,28 @@ mod intrinsic_measurement_geometry_tests {
 
         assert_eq!(geometry.known_dimensions, Size::NONE);
         assert_eq!(geometry.definite_dimensions, Size::NONE);
+    }
+
+    #[test]
+    fn parent_percentage_geometry_is_not_replaced_by_a_larger_final_size() {
+        let percentage_size = percentage_resolution_size(
+            Size { width: Some(100.0), height: Some(200.0) },
+            Size { width: Some(100.0), height: Some(100.0) },
+            Size::NONE,
+        );
+
+        assert_eq!(percentage_size, Size { width: Some(100.0), height: Some(100.0) });
+    }
+
+    #[test]
+    fn child_owned_definite_geometry_fills_only_parent_unowned_axes() {
+        let percentage_size = percentage_resolution_size(
+            Size { width: Some(120.0), height: None },
+            Size { width: Some(120.0), height: None },
+            Size { width: Some(90.0), height: Some(75.0) },
+        );
+
+        assert_eq!(percentage_size, Size { width: Some(120.0), height: Some(75.0) });
     }
 
     #[test]

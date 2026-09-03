@@ -1456,6 +1456,28 @@ fn apply_ratio_dependent_inline_automatic_minimum(
     writing_mode.to_physical(logical_known_dimensions)
 }
 
+/// Parent-owned dimensions for the final layout of one in-flow block item.
+///
+/// A cyclic percentage may resolve against the item's initial ratio-derived
+/// fragment geometry even when its content-based automatic minimum grows the
+/// final fragment. Keeping the two projections together prevents the final
+/// used size from silently replacing that percentage basis.
+#[derive(Clone, Copy, Debug)]
+struct ResolvedBlockItemDimensions {
+    /// Exact final border-box dimensions fixed by the parent block algorithm.
+    known_dimensions: Size<Option<f32>>,
+    /// Initial fragment dimensions exposed to descendant percentages.
+    percentage_resolution_dimensions: Size<Option<f32>>,
+}
+
+impl ResolvedBlockItemDimensions {
+    /// Use one geometry projection when no cyclic content measurement occurs.
+    #[inline(always)]
+    const fn identical(dimensions: Size<Option<f32>>) -> Self {
+        Self { known_dimensions: dimensions, percentage_resolution_dimensions: dimensions }
+    }
+}
+
 /// Complete an in-flow block item's logical block size once its inline
 /// constraint is known.
 ///
@@ -1467,7 +1489,7 @@ fn resolve_block_item_known_dimensions(
     tree: &mut impl LayoutBlockContainer,
     item: &mut BlockItem,
     child_input: ChildLayoutInput,
-) -> Size<Option<f32>> {
+) -> ResolvedBlockItemDimensions {
     let mut known_dimensions = child_input.known_dimensions;
     let child_writing_mode = tree.get_writing_mode(item.node_id);
     let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
@@ -1490,26 +1512,43 @@ fn resolve_block_item_known_dimensions(
     );
     let auto_size_is_content_based = child_input.block_auto_behavior.is_content_based(aspect_ratio.is_some());
     if item.inline_automatic_minimum.is_none() && !resolver.requires_intrinsic_measurement() {
-        return known_dimensions;
+        return ResolvedBlockItemDimensions::identical(known_dimensions);
     }
 
-    let child_input =
-        |known_dimensions| ChildLayoutInput { known_dimensions, definite_dimensions: known_dimensions, ..child_input };
+    let child_input = |known_dimensions, percentage_resolution_dimensions| ChildLayoutInput {
+        known_dimensions,
+        definite_dimensions: percentage_resolution_dimensions,
+        ..child_input
+    };
 
-    known_dimensions =
-        apply_ratio_dependent_inline_automatic_minimum(tree, item, known_dimensions, child_input(known_dimensions));
+    known_dimensions = apply_ratio_dependent_inline_automatic_minimum(
+        tree,
+        item,
+        known_dimensions,
+        child_input(known_dimensions, known_dimensions),
+    );
 
     if !resolver.requires_intrinsic_measurement() {
-        return known_dimensions;
+        return ResolvedBlockItemDimensions::identical(known_dimensions);
     }
+
+    let percentage_resolution_dimensions = known_dimensions;
 
     let mut measurement_dimensions = child_writing_mode.to_logical(known_dimensions);
     if properties.preferred_is_content_based(auto_size_is_content_based) {
         measurement_dimensions.block_size = None;
     }
     let measurement_dimensions = child_writing_mode.to_physical(measurement_dimensions);
-    let intrinsic =
-        resolve_content_based_block_size_constraints(tree, item.node_id, child_input(measurement_dimensions), resolver);
+    // The provisional ratio-derived fragment size remains the percentage
+    // resolution geometry for descendants while this node's own block axis is
+    // measured from content. Keeping both values matches Blink's split between
+    // initial fragment geometry and the intrinsic measurement constraint.
+    let intrinsic = resolve_content_based_block_size_constraints(
+        tree,
+        item.node_id,
+        child_input(measurement_dimensions, percentage_resolution_dimensions),
+        resolver,
+    );
     item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
 
     let logical_size = child_writing_mode.to_logical(item.size);
@@ -1521,7 +1560,10 @@ fn resolve_block_item_known_dimensions(
         .or(resolved.preferred)
         .maybe_clamp(resolved.min, resolved.max)
         .maybe_max(Some(minimum_border_box_size));
-    child_writing_mode.to_physical(used_size)
+    ResolvedBlockItemDimensions {
+        known_dimensions: child_writing_mode.to_physical(used_size),
+        percentage_resolution_dimensions,
+    }
 }
 
 /// Immutable container state shared while positioning in-flow block children.
@@ -1750,7 +1792,7 @@ fn perform_final_layout_on_in_flow_children(
                     block_size: child_constraint_block_size,
                 });
                 let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
-                let known_dimensions = resolve_block_item_known_dimensions(
+                let resolved_dimensions = resolve_block_item_known_dimensions(
                     tree,
                     item,
                     ChildLayoutInput::new(
@@ -1768,7 +1810,7 @@ fn perform_final_layout_on_in_flow_children(
                 let item_layout = tree.perform_child_layout(
                     item.node_id,
                     ChildLayoutInput::new(
-                        known_dimensions,
+                        resolved_dimensions.known_dimensions,
                         parent_size,
                         writing_mode,
                         child_available_space,
@@ -1777,6 +1819,7 @@ fn perform_final_layout_on_in_flow_children(
                         // collapse with the margins of its children
                         Line::FALSE,
                     )
+                    .with_definite_dimensions(resolved_dimensions.percentage_resolution_dimensions)
                     .with_ignored_margins_for_stretch(item_ignored_margins_for_stretch),
                 );
                 let logical_item_size = writing_mode.to_logical(item_layout.size);
@@ -1981,7 +2024,7 @@ fn perform_final_layout_on_in_flow_children(
                 inline_size: AvailableSpace::Definite(child_constraint_inline_size),
                 block_size: child_constraint_block_size,
             });
-            let known_dimensions = resolve_block_item_known_dimensions(
+            let resolved_dimensions = resolve_block_item_known_dimensions(
                 tree,
                 item,
                 ChildLayoutInput::new(
@@ -2004,8 +2047,8 @@ fn perform_final_layout_on_in_flow_children(
                 inline_auto_behavior: item.inline_auto_behavior,
                 block_auto_behavior: crate::AutoSizeBehavior::FitContent,
                 orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
-                known_dimensions,
-                definite_dimensions: known_dimensions,
+                known_dimensions: resolved_dimensions.known_dimensions,
+                definite_dimensions: resolved_dimensions.percentage_resolution_dimensions,
                 parent_size,
                 parent_writing_mode: writing_mode,
                 available_space: child_available_space,
@@ -2023,7 +2066,10 @@ fn perform_final_layout_on_in_flow_children(
             let item_layout = if item.is_in_same_bfc {
                 // Replaced elements may not have a known inline size; their
                 // measure function sizes them instead of stretch sizing.
-                let inline_size = writing_mode.to_logical(known_dimensions).inline_size.unwrap_or(stretch_inline_size);
+                let inline_size = writing_mode
+                    .to_logical(resolved_dimensions.known_dimensions)
+                    .inline_size
+                    .unwrap_or(stretch_inline_size);
 
                 // TODO: account for auto margins
                 let inset_start = item_non_auto_margin.inline_start + content_box_inset.inline_start;

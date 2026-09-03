@@ -254,13 +254,16 @@ pub struct LayoutInput {
     ///   "The exact size of this node is WIDTHxHEIGHT. Please lay out your children"
     ///
     pub known_dimensions: Size<Option<f32>>,
-    /// Definite dimensions of this node which descendants may use as a percentage basis.
+    /// Initial dimensions of this node which descendants may use as a
+    /// percentage basis.
     ///
     /// This usually matches `known_dimensions`, but differs when a parent's final
     /// used size is known without making the corresponding CSS size definite. For
     /// example, an absolutely positioned auto-height box clamped by `min-height`
     /// has a known final height, while percentage block-axis insets in its children
-    /// must remain unresolved.
+    /// must remain unresolved. During a cyclic intrinsic measurement this may
+    /// also retain ratio-derived initial fragment geometry while
+    /// `known_dimensions` omits the measured axis.
     pub definite_dimensions: Size<Option<f32>>,
     /// Parent size dimensions are intended to be used for percentage resolution.
     pub parent_size: Size<Option<f32>>,
@@ -385,12 +388,14 @@ impl LayoutInput {
 pub(crate) struct ChildLayoutInput {
     /// Child border-box dimensions that are already known.
     pub known_dimensions: Size<Option<f32>>,
-    /// Known child dimensions that are definite for descendant percentage resolution.
+    /// Initial child dimensions used for descendant percentage resolution.
     ///
     /// This defaults to `known_dimensions`, because most parent formatting
     /// algorithms pass sizes they have fixed themselves. Callers that know a
     /// used size without making it definite must override this field through
-    /// [`Self::with_definite_dimensions`].
+    /// [`Self::with_definite_dimensions`]. A cyclic intrinsic measurement may
+    /// instead preserve an earlier ratio-derived value here while omitting the
+    /// same axis from `known_dimensions`.
     pub definite_dimensions: Size<Option<f32>>,
     /// Physical containing-block dimensions used to resolve child percentages.
     pub parent_size: Size<Option<f32>>,

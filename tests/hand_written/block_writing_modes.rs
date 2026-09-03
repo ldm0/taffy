@@ -89,6 +89,56 @@ fn vertical_block_child_stretches_in_the_inline_axis() {
     assert_eq!(layouts[0].location, Point::ZERO);
 }
 
+fn layout_orthogonal_percentage_child_in_ratio_parent(percentage: f32) -> (Size<f32>, Size<f32>) {
+    let mut tree = TaffyTree::<()>::new();
+    let child = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: percent(1.0), height: percent(percentage) },
+            ..Style::default()
+        })
+        .unwrap();
+    tree.set_writing_mode(child, WritingMode::VerticalLr).unwrap();
+
+    let ratio_parent = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: length(100.0), height: auto() },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let body = tree.new_with_children(Style { display: Display::Block, ..Style::default() }, &[ratio_parent]).unwrap();
+    let document = tree.new_with_children(Style { display: Display::Block, ..Style::default() }, &[body]).unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size { width: length(800.0), height: length(600.0) },
+                ..Style::default()
+            },
+            &[document],
+        )
+        .unwrap();
+
+    tree.compute_layout(root, Size { width: AvailableSpace::Definite(800.0), height: AvailableSpace::Definite(600.0) })
+        .unwrap();
+
+    (tree.layout(ratio_parent).unwrap().size, tree.layout(child).unwrap().size)
+}
+
+#[test]
+fn orthogonal_child_percentages_resolve_against_ratio_derived_parent_block_size() {
+    for (percentage, parent_height, child_height) in [(0.5, 100.0, 50.0), (1.0, 100.0, 100.0), (2.0, 200.0, 200.0)] {
+        let (parent, child) = layout_orthogonal_percentage_child_in_ratio_parent(percentage);
+        assert_eq!(parent, Size { width: 100.0, height: parent_height });
+        assert_eq!(child, Size { width: 100.0, height: child_height });
+    }
+}
+
 #[test]
 fn sideways_lr_uses_bottom_inline_start_and_left_block_start() {
     let layouts = block_layout(
