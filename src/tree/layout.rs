@@ -508,6 +508,33 @@ impl ChildLayoutInput {
         }
     }
 
+    /// Resolve the child's initial fragment geometry without laying out its
+    /// descendants.
+    ///
+    /// Unlike an intrinsic-contribution request, this uses normal layout
+    /// semantics for automatic sizes. Formatting contexts use this boundary
+    /// when an intermediate algorithm needs the same child-owned geometry as
+    /// final layout, such as a flex item's content block-size callback.
+    #[inline(always)]
+    pub(crate) const fn into_initial_geometry(self) -> LayoutInput {
+        LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: self.sizing_mode,
+            sizing_purpose: SizingPurpose::Layout,
+            axis: RequestedAxis::Both,
+            inline_auto_behavior: self.inline_auto_behavior,
+            block_auto_behavior: self.block_auto_behavior,
+            orthogonal_fallback: self.orthogonal_fallback,
+            known_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
+            parent_size: self.parent_size,
+            parent_writing_mode: self.parent_writing_mode,
+            available_space: self.available_space,
+            ignored_margins_for_stretch: self.ignored_margins_for_stretch,
+            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+        }
+    }
+
     /// Convert shared child inputs into a final layout request.
     #[inline(always)]
     pub const fn into_layout(self) -> LayoutInput {
@@ -650,6 +677,13 @@ mod constraint_space_tests {
         let measurement = child_input.into_measurement(RequestedAxis::Vertical);
         assert_eq!(measurement.known_dimensions, known_dimensions);
         assert_eq!(measurement.definite_dimensions, definite_dimensions);
+
+        let initial_geometry = child_input.into_initial_geometry();
+        assert_eq!(initial_geometry.run_mode, RunMode::ComputeSize);
+        assert_eq!(initial_geometry.sizing_purpose, SizingPurpose::Layout);
+        assert_eq!(initial_geometry.axis, RequestedAxis::Both);
+        assert_eq!(initial_geometry.known_dimensions, known_dimensions);
+        assert_eq!(initial_geometry.definite_dimensions, definite_dimensions);
 
         let layout = child_input.into_layout();
         assert_eq!(layout.known_dimensions, known_dimensions);

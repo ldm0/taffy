@@ -33,8 +33,8 @@ use super::common::content_size::{compute_content_size_contribution, content_siz
 use super::common::intrinsic_size::{
     resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
     resolve_ratio_dependent_intrinsic_sizing, AutomaticInlineSizeResolution, BlockSizeProperties,
-    ContentBasedBlockSize, IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum,
-    ResolvedNodeSizing,
+    ContentBasedBlockSize, IntrinsicAxisValue, IntrinsicWidthInput, NodeSizeConstraintInput,
+    RatioDependentAutomaticMinimum, ResolvedNodeSizing,
 };
 use super::common::used_size::StretchSizeProperties;
 
@@ -104,6 +104,63 @@ impl UsedFlexBasis {
     #[inline(always)]
     fn is_definite(self) -> bool {
         matches!(self, Self::Resolved(_))
+    }
+}
+
+/// Resolver for the content block-size callback used by an unresolved flex
+/// basis when a preferred aspect ratio is present.
+///
+/// Flexbox temporarily replaces the item's block-axis preferred size with its
+/// content size and ignores block-axis min/max constraints. The remaining
+/// inline-axis properties are ordinary initial-fragment geometry; once they
+/// resolve, the preferred ratio supplies the block-axis flex basis. This is
+/// the same ownership boundary as Blink's `BlockSizeFunc(SizeType::kContent)`.
+#[derive(Clone, Copy, Debug)]
+struct RatioContentBlockFlexBasis {
+    /// Node-owned sizing after flexbox removes block-axis size constraints.
+    sizing: NodeSizeConstraintInput,
+}
+
+impl RatioContentBlockFlexBasis {
+    /// Capture node-owned sizing with the flex main-axis properties removed.
+    fn new(mut sizing: NodeSizeConstraintInput, writing_mode: WritingMode, is_replaced: bool) -> Option<Self> {
+        if is_replaced || sizing.aspect_ratio.is_none() {
+            return None;
+        }
+
+        let mut size = writing_mode.to_logical(sizing.raw_size);
+        let mut min_size = writing_mode.to_logical(sizing.raw_min_size);
+        let mut max_size = writing_mode.to_logical(sizing.raw_max_size);
+        size.block_size = Dimension::auto();
+        min_size.block_size = Dimension::auto();
+        max_size.block_size = Dimension::auto();
+        sizing.raw_size = writing_mode.to_physical(size);
+        sizing.raw_min_size = writing_mode.to_physical(min_size);
+        sizing.raw_max_size = writing_mode.to_physical(max_size);
+
+        Some(Self { sizing })
+    }
+
+    /// Resolve initial inline geometry and transfer it into the block axis.
+    fn resolve(
+        self,
+        tree: &mut impl LayoutFlexboxContainer,
+        node: NodeId,
+        flex_main_axis: AbsoluteAxis,
+        inputs: ChildLayoutInput,
+    ) -> IntrinsicAxisValue {
+        let writing_mode = tree.get_writing_mode(node);
+        if flex_main_axis != writing_mode.block_axis() {
+            return IntrinsicAxisValue::default();
+        }
+
+        let initial_geometry = resolve_node_size_constraints(tree, node, inputs.into_initial_geometry(), self.sizing);
+        let value = writing_mode.to_logical(initial_geometry.outer_size).block_size;
+        IntrinsicAxisValue {
+            value,
+            depends_on_block_constraints: initial_geometry.depends_on_block_constraints,
+            applied_aspect_ratio: value.is_some(),
+        }
     }
 }
 
@@ -234,6 +291,9 @@ struct FlexItem {
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
+    /// Content block-size callback backed by initial inline geometry and the
+    /// preferred aspect ratio. Replaced items use their dedicated sizing path.
+    ratio_content_block_flex_basis: Option<RatioContentBlockFlexBasis>,
     /// Whether this item's intrinsic contribution depends on the flex
     /// container's block-size.
     depends_on_block_constraints: bool,
@@ -1162,6 +1222,23 @@ fn generate_anonymous_flex_items(
             let flex_shrink = child_style.flex_shrink();
             drop(child_style);
 
+            let contained_outer_size =
+                tree.get_size_containment(child).resolve_outer_size(Size::ZERO, pb_sum + scrollbar_size);
+            let ratio_content_block_flex_basis = RatioContentBlockFlexBasis::new(
+                NodeSizeConstraintInput {
+                    raw_size,
+                    raw_min_size,
+                    raw_max_size,
+                    box_sizing_adjustment,
+                    padding_border_size: pb_sum,
+                    aspect_ratio,
+                    contained_outer_size,
+                    automatic_inline_size_resolution: AutomaticInlineSizeResolution::FitContent,
+                },
+                child_writing_mode,
+                is_replaced,
+            );
+
             let available_width = child_available_space.width.maybe_sub(margin.horizontal_axis_sum());
             let intrinsic_inputs = LayoutInput {
                 run_mode: RunMode::ComputeSize,
@@ -1249,6 +1326,7 @@ fn generate_anonymous_flex_items(
                 aspect_ratio,
                 box_sizing,
                 used_flex_basis,
+                ratio_content_block_flex_basis,
                 depends_on_block_constraints,
                 is_replaced,
                 column_wrap_intrinsic_cross_size: None,
@@ -1495,6 +1573,61 @@ fn determine_flex_base_size(
         let content_ratio_size =
             if matches!(used_flex_basis, UsedFlexBasis::Content) { ratio_dependent_main_size } else { None };
 
+        let ratio_content_block_size = if used_flex_basis.is_unresolved() && content_ratio_size.is_none() {
+            let available_cross_space = constants
+                .node_inner_size
+                .cross(dir)
+                .map(AvailableSpace::Definite)
+                .unwrap_or(available_space.cross(dir));
+            let geometry_available_space = Size::MAX_CONTENT
+                .with_main(
+                    dir,
+                    if available_space.main(dir) == AvailableSpace::MinContent {
+                        AvailableSpace::MinContent
+                    } else {
+                        AvailableSpace::MaxContent
+                    },
+                )
+                .with_cross(dir, available_cross_space);
+            // Initial inline geometry owns the item's authored inline sizing.
+            // Do not reuse `child_known_dimensions`: it may already contain a
+            // cross size transferred from block-axis constraints, which flex
+            // base sizing is required to ignore. A wrapped-column pass is the
+            // only parent-owned inline override at this stage.
+            let known_dimensions = Size::from_cross(dir, child.column_wrap_intrinsic_cross_size);
+            let inline_auto_behavior = if child.align_self == AlignSelf::STRETCH
+                && !child.margin_is_auto.cross_start(dir)
+                && !child.margin_is_auto.cross_end(dir)
+                && constants.node_inner_size.cross(dir).is_some()
+            {
+                AutoSizeBehavior::StretchExplicit
+            } else {
+                AutoSizeBehavior::FitContent
+            };
+            child
+                .ratio_content_block_flex_basis
+                .map(|resolver| {
+                    resolver.resolve(
+                        tree,
+                        child.node,
+                        dir.main_axis(),
+                        ChildLayoutInput::new(
+                            known_dimensions,
+                            child_parent_size,
+                            constants.writing_mode,
+                            geometry_available_space,
+                            SizingMode::InherentSize,
+                            Line::FALSE,
+                        )
+                        .with_inline_auto_behavior(inline_auto_behavior),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            IntrinsicAxisValue::default()
+        };
+        child.depends_on_block_constraints |= ratio_content_block_size.depends_on_block_constraints;
+
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
 
@@ -1514,6 +1647,10 @@ fn determine_flex_base_size(
                     }
                 }
                 UsedFlexBasis::Intrinsic(_) | UsedFlexBasis::Stretch => {}
+            }
+
+            if let Some(ratio_content_block_size) = ratio_content_block_size.value {
+                break 'flex_basis ratio_content_block_size;
             }
 
             // C. If the used flex basis is content or depends on its available space,

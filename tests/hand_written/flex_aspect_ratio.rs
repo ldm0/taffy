@@ -1,5 +1,5 @@
 use taffy::prelude::*;
-use taffy::Overflow;
+use taffy::{AbsoluteAxis, Overflow, WritingMode};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
 
 /// Regression for WPT css/css-flexbox/aspect-ratio-transferred-max-size.html.
@@ -268,6 +268,185 @@ fn column_flex_item_ratio_size_encompasses_its_intrinsic_block_size() {
     );
 
     assert_eq!(size, Size { width: 100.0, height: 100.0 });
+}
+
+fn size_in_axis(axis: AbsoluteAxis, value: Dimension) -> Size<Dimension> {
+    match axis {
+        AbsoluteAxis::Horizontal => Size { width: value, height: Dimension::auto() },
+        AbsoluteAxis::Vertical => Size { width: Dimension::auto(), height: value },
+    }
+}
+
+fn layout_column_ratio_basis(
+    writing_mode: WritingMode,
+    direction: FlexDirection,
+    mut item_style: Style,
+) -> (Size<f32>, Size<f32>) {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: size_in_axis(writing_mode.inline_axis(), Dimension::length(100.0)),
+            ..Style::default()
+        })
+        .unwrap();
+    item_style.display = Display::Block;
+    match writing_mode.block_axis() {
+        AbsoluteAxis::Horizontal => item_style.min_size.width = Dimension::length(0.0),
+        AbsoluteAxis::Vertical => item_style.min_size.height = Dimension::length(0.0),
+    }
+    let item = tree.new_with_children(item_style, &[content]).unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: direction,
+                align_items: Some(AlignItems::FLEX_START),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    for node in [content, item, container] {
+        tree.set_writing_mode(node, writing_mode).unwrap();
+    }
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    (tree.layout(item).unwrap().size, tree.layout(container).unwrap().size)
+}
+
+/// Regression for WPT css/css-sizing/aspect-ratio/flex-aspect-ratio-037.html.
+#[test]
+fn column_flex_base_uses_the_ratio_of_its_max_content_inline_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: Some(AlignItems::FLEX_START),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+    assert_eq!(tree.layout(container).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn content_block_flex_basis_keywords_use_initial_inline_geometry() {
+    for flex_basis in [
+        Dimension::auto(),
+        Dimension::content(),
+        Dimension::min_content(),
+        Dimension::max_content(),
+        Dimension::fit_content(),
+        Dimension::stretch(),
+    ] {
+        let sizes = layout_column_ratio_basis(
+            WritingMode::HorizontalTb,
+            FlexDirection::Column,
+            Style { aspect_ratio: Some(1.0), flex_basis, ..Style::default() },
+        );
+
+        assert_eq!(
+            sizes,
+            (Size { width: 100.0, height: 100.0 }, Size { width: 100.0, height: 100.0 }),
+            "flex-basis={flex_basis:?}"
+        );
+    }
+}
+
+#[test]
+fn content_block_flex_basis_preserves_inline_constraints_and_ratio_box_sizing() {
+    let padding = Rect {
+        left: LengthPercentage::length(10.0),
+        right: LengthPercentage::length(10.0),
+        top: LengthPercentage::length(10.0),
+        bottom: LengthPercentage::length(10.0),
+    };
+    let content_box = layout_column_ratio_basis(
+        WritingMode::HorizontalTb,
+        FlexDirection::Column,
+        Style { aspect_ratio: Some(2.0), padding, box_sizing: BoxSizing::ContentBox, ..Style::default() },
+    );
+    let border_box = layout_column_ratio_basis(
+        WritingMode::HorizontalTb,
+        FlexDirection::Column,
+        Style { aspect_ratio: Some(2.0), padding, box_sizing: BoxSizing::BorderBox, ..Style::default() },
+    );
+    let inline_maximum = layout_column_ratio_basis(
+        WritingMode::HorizontalTb,
+        FlexDirection::Column,
+        Style {
+            aspect_ratio: Some(1.0),
+            max_size: Size { width: Dimension::length(80.0), height: Dimension::auto() },
+            ..Style::default()
+        },
+    );
+
+    assert_eq!(content_box.0, Size { width: 120.0, height: 70.0 });
+    assert_eq!(border_box.0, Size { width: 120.0, height: 60.0 });
+    assert_eq!(inline_maximum.0, Size { width: 80.0, height: 80.0 });
+}
+
+#[test]
+fn content_block_flex_basis_follows_the_items_logical_block_axis() {
+    for writing_mode in [WritingMode::HorizontalTb, WritingMode::VerticalLr, WritingMode::VerticalRl] {
+        for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+            let sizes = layout_column_ratio_basis(
+                writing_mode,
+                direction,
+                Style { aspect_ratio: Some(2.0), ..Style::default() },
+            );
+            let expected = if writing_mode.is_horizontal() {
+                Size { width: 100.0, height: 50.0 }
+            } else {
+                Size { width: 200.0, height: 100.0 }
+            };
+
+            assert_eq!(sizes.0, expected, "writing-mode={writing_mode:?} direction={direction:?}");
+        }
+    }
+}
+
+#[test]
+fn content_flex_basis_ignores_the_authored_block_size_before_ratio_transfer() {
+    let sizes = layout_column_ratio_basis(
+        WritingMode::HorizontalTb,
+        FlexDirection::Column,
+        Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(500.0) },
+            aspect_ratio: Some(1.0),
+            flex_basis: Dimension::content(),
+            ..Style::default()
+        },
+    );
+
+    assert_eq!(sizes.0, Size { width: 100.0, height: 100.0 });
 }
 
 #[test]
