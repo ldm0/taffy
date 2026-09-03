@@ -594,6 +594,8 @@ fn compute_inner(
         inline_size: outer_logical_size.inline_size.maybe_sub(logical_content_box_inset.inline_axis_sum()),
         block_size: outer_logical_size.block_size.maybe_sub(logical_content_box_inset.block_axis_sum()),
     };
+    let container_percentage_resolution_content_box_size =
+        definite_logical_size.maybe_sub(logical_content_box_inset.sum_axes());
 
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
@@ -654,6 +656,7 @@ fn compute_inner(
         node_id,
         writing_direction,
         container_content_box_size,
+        container_percentage_resolution_content_box_size,
         available_logical_space,
         ignored_margins_for_stretch,
     );
@@ -703,15 +706,16 @@ fn compute_inner(
             .with_block_constraint_dependency(content_inline_size_depends_on_block_constraints);
     }
 
-    let container_percentage_resolution_block_size = definite_logical_size
-        .block_size
-        .or(outer_logical_size.block_size)
-        .or(size_logical.block_size.maybe_max(min_size_logical.block_size))
-        .or(min_size_logical.block_size);
+    // `definite_size` is the sole initial-fragment geometry exposed to
+    // descendant percentages. A parent may fix `outer_size` for final layout
+    // without making that size definite (for example, a content-based flex
+    // item in an indefinite column), while special formatting-context floors
+    // publish their percentage basis through `definite_size` explicitly.
+    let container_percentage_resolution_block_size = definite_logical_size.block_size;
     // Relative block-axis percentage insets only resolve against a definite
     // containing-block block size. A minimum may determine the eventual used
     // size, but it does not make an otherwise-auto block size definite.
-    let relative_inset_percentage_resolution_block_size = definite_logical_size.block_size.or(size_logical.block_size);
+    let relative_inset_percentage_resolution_block_size = definite_logical_size.block_size;
 
     // 3. Perform final item layout and return the content block size.
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
@@ -946,11 +950,12 @@ fn generate_item_list(
     node: NodeId,
     writing_direction: WritingDirection,
     node_inner_size: LogicalSize<Option<f32>>,
+    percentage_resolution_size: LogicalSize<Option<f32>>,
     available_space: LogicalSize<AvailableSpace>,
     ignored_margins_for_stretch: Rect<bool>,
 ) -> Vec<BlockItem> {
     let writing_mode = writing_direction.mode;
-    let physical_node_inner_size = writing_mode.to_physical(node_inner_size);
+    let physical_percentage_resolution_size = writing_mode.to_physical(percentage_resolution_size);
     let child_ids: Vec<_> = tree.child_ids(node).collect();
     child_ids
         .into_iter()
@@ -967,7 +972,7 @@ fn generate_item_list(
             // contributions against zero. Preferred and max sizes remain
             // unresolved until final layout, so keep their original
             // containing-block basis here.
-            let mut logical_contribution_parent_size = node_inner_size;
+            let mut logical_contribution_parent_size = percentage_resolution_size;
             logical_contribution_parent_size.inline_size = logical_contribution_parent_size.inline_size.or(Some(0.0));
             let contribution_parent_size = writing_mode.to_physical(logical_contribution_parent_size);
             let contribution_inline_size = logical_contribution_parent_size.inline_size;
@@ -990,13 +995,13 @@ fn generate_item_list(
                     .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.is_some();
             let mut size = raw_size
-                .maybe_resolve(physical_node_inner_size, |val, basis| tree.calc(val, basis))
+                .maybe_resolve(physical_percentage_resolution_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
             let mut min_size = raw_min_size
                 .maybe_resolve(contribution_parent_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
             let mut max_size = raw_max_size
-                .maybe_resolve(physical_node_inner_size, |val, basis| tree.calc(val, basis))
+                .maybe_resolve(physical_percentage_resolution_size, |val, basis| tree.calc(val, basis))
                 .maybe_add(box_sizing_adjustment);
             let position = child_style.position();
             let overflow = child_style.overflow();
@@ -1077,7 +1082,7 @@ fn generate_item_list(
                 max_size = max_size.or(stretch.max);
                 let intrinsic_inputs = ChildLayoutInput::new(
                     Size::NONE,
-                    physical_node_inner_size,
+                    physical_percentage_resolution_size,
                     writing_mode,
                     child_available_space,
                     SizingMode::ContentSize,
@@ -1531,7 +1536,15 @@ fn resolve_block_item_known_dimensions(
         return ResolvedBlockItemDimensions::identical(known_dimensions);
     }
 
-    let percentage_resolution_dimensions = known_dimensions;
+    let mut percentage_resolution_dimensions = child_writing_mode.to_logical(known_dimensions);
+    if percentage_resolution_dimensions.block_size.is_none() {
+        let logical_known_dimensions = child_writing_mode.to_logical(known_dimensions);
+        let ratio_block_size =
+            resolver.ratio_derived_block_size(child_writing_mode, logical_known_dimensions.inline_size);
+        let (min_block_size, max_block_size) = item.block_axis_constraints.resolve(None, None, None);
+        percentage_resolution_dimensions.block_size = ratio_block_size.maybe_clamp(min_block_size, max_block_size);
+    }
+    let percentage_resolution_dimensions = child_writing_mode.to_physical(percentage_resolution_dimensions);
 
     let mut measurement_dimensions = child_writing_mode.to_logical(known_dimensions);
     if properties.preferred_is_content_based(auto_size_is_content_based) {

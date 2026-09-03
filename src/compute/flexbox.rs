@@ -293,6 +293,13 @@ struct FlexItem {
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
+    /// Whether the item's block-axis main size was initially indefinite.
+    ///
+    /// Flex layout can later assign an exact used main size while descendants
+    /// must still treat percentage block sizes as unresolved. This is the
+    /// semantic counterpart of Blink's
+    /// `FlexItem::is_initial_block_size_indefinite`.
+    initial_block_size_is_indefinite: bool,
     /// Content block-size callback backed by initial inline geometry and the
     /// preferred aspect ratio. Replaced items use their dedicated sizing path.
     ratio_content_block_flex_basis: Option<RatioContentBlockFlexBasis>,
@@ -1335,6 +1342,7 @@ fn generate_anonymous_flex_items(
                 max_size_with_transfer: constraints_with_transfer.max_size,
                 aspect_ratio,
                 used_flex_basis,
+                initial_block_size_is_indefinite: false,
                 ratio_content_block_flex_basis,
                 depends_on_block_constraints,
                 is_replaced,
@@ -1633,6 +1641,30 @@ fn determine_flex_base_size(
             IntrinsicAxisValue::default()
         };
         child.depends_on_block_constraints |= ratio_content_block_size.depends_on_block_constraints;
+
+        // A content-resolved flex basis remains indefinite even after it has
+        // produced a numeric flex base size. If an indefinite column assigns
+        // that item a final block-axis size, descendants must not resolve
+        // percentage block sizes against it. A preferred aspect ratio fed by
+        // independently resolved inline geometry is the exception: it
+        // provides definite initial block geometry for a non-replaced item.
+        //
+        // This mirrors Blink's separation between a fixed final block size and
+        // `is_initial_block_size_indefinite` instead of inferring definiteness
+        // from the final numeric target size.
+        let used_flex_basis_is_indefinite = match used_flex_basis {
+            UsedFlexBasis::Resolved(_) => false,
+            UsedFlexBasis::Stretch => available_space.main(dir).into_option().is_none(),
+            UsedFlexBasis::Content | UsedFlexBasis::Intrinsic(_) => true,
+        };
+        let child_writing_mode = tree.get_writing_mode(child.node);
+        let aspect_ratio_provides_block_main_size =
+            !child.is_replaced && (content_ratio_size.is_some() || ratio_content_block_size.applied_aspect_ratio);
+        child.initial_block_size_is_indefinite = constants.main_axis_is_block
+            && dir.main_axis() == child_writing_mode.block_axis()
+            && constants.node_definite_inner_size.main(dir).is_none()
+            && used_flex_basis_is_indefinite
+            && !aspect_ratio_provides_block_main_size;
 
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
@@ -3241,16 +3273,23 @@ fn calculate_flex_item(
 ) {
     let direction = constants.dir;
     let horizontal_direction = constants.horizontal_direction;
+    let final_dimensions = item.target_size.map(Some);
+    let percentage_resolution_dimensions = if item.initial_block_size_is_indefinite {
+        final_dimensions.with_main(direction, None)
+    } else {
+        final_dimensions
+    };
     let layout_output = tree.perform_child_layout(
         item.node,
         ChildLayoutInput::new(
-            item.target_size.map(|s| s.into()),
+            final_dimensions,
             constants.node_inner_size,
             constants.writing_mode,
             constants.container_size.map(|s| s.into()),
             SizingMode::ContentSize,
             Line::FALSE,
-        ),
+        )
+        .with_definite_dimensions(percentage_resolution_dimensions),
     );
     let LayoutOutput {
         size,

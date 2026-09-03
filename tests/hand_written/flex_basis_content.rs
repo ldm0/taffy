@@ -163,3 +163,138 @@ fn content_basis_aspect_ratio_respects_the_box_sizing_edge() {
     assert_eq!(tree.layout(content_box_stretch).unwrap().size, Size { width: 88.0, height: 50.0 });
     assert_eq!(tree.layout(border_box_start).unwrap().size, Size { width: 60.0, height: 30.0 });
 }
+
+struct PercentageFlexItemCase {
+    direction: FlexDirection,
+    flex_basis: Dimension,
+    item_size: Size<Dimension>,
+    container_size: Size<Dimension>,
+    aspect_ratio: Option<f32>,
+    fixed_child_height: Option<f32>,
+}
+
+fn percentage_child_height_in_flex_item(case: PercentageFlexItemCase) -> f32 {
+    let mut tree = TaffyTree::<()>::new();
+    let percentage_child = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: Dimension::length(50.0), height: Dimension::percent(1.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let mut children = Vec::new();
+    if let Some(height) = case.fixed_child_height {
+        children.push(
+            tree.new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::length(50.0), height: Dimension::length(height) },
+                ..Style::default()
+            })
+            .unwrap(),
+        );
+    }
+    children.push(percentage_child);
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: case.item_size,
+                min_size: Size { width: Dimension::auto(), height: Dimension::length(0.0) },
+                flex_basis: case.flex_basis,
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                aspect_ratio: case.aspect_ratio,
+                ..Style::default()
+            },
+            &children,
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: case.direction,
+                size: case.container_size,
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+    tree.layout(percentage_child).unwrap().size.height
+}
+
+#[test]
+fn content_basis_keeps_an_indefinite_block_main_size_out_of_percentage_resolution() {
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Column,
+            flex_basis: Dimension::content(),
+            item_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            container_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            aspect_ratio: None,
+            fixed_child_height: None,
+        }),
+        0.0,
+    );
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Column,
+            flex_basis: Dimension::content(),
+            item_size: Size { width: Dimension::auto(), height: Dimension::length(200.0) },
+            container_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            aspect_ratio: None,
+            fixed_child_height: Some(50.0),
+        }),
+        0.0,
+    );
+}
+
+#[test]
+fn definite_flex_item_block_sizes_remain_percentage_resolution_bases() {
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Column,
+            flex_basis: Dimension::auto(),
+            item_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            container_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            aspect_ratio: None,
+            fixed_child_height: None,
+        }),
+        100.0,
+    );
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Row,
+            flex_basis: Dimension::content(),
+            item_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            container_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            aspect_ratio: None,
+            fixed_child_height: None,
+        }),
+        100.0,
+    );
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Column,
+            flex_basis: Dimension::content(),
+            item_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            container_size: fixed_size(200.0, 200.0),
+            aspect_ratio: None,
+            fixed_child_height: None,
+        }),
+        200.0,
+    );
+    assert_eq!(
+        percentage_child_height_in_flex_item(PercentageFlexItemCase {
+            direction: FlexDirection::Column,
+            flex_basis: Dimension::content(),
+            item_size: fixed_size(100.0, 200.0),
+            container_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+            aspect_ratio: Some(2.0),
+            fixed_child_height: None,
+        }),
+        200.0,
+    );
+}

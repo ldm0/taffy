@@ -837,6 +837,32 @@ impl ContentBasedBlockSize {
         self.properties.resolves_auto_size_from_ratio(self.aspect_ratio.is_some(), self.auto_size_is_content_based)
     }
 
+    /// Resolve the provisional logical block size supplied by a preferred
+    /// aspect ratio before content-based minimums are measured.
+    ///
+    /// This value is initial fragment geometry: descendants may use it for
+    /// percentage resolution even when a later intrinsic measurement grows
+    /// the final used block size.
+    #[inline(always)]
+    pub(crate) fn ratio_derived_block_size(
+        self,
+        writing_mode: WritingMode,
+        outer_inline_size: Option<f32>,
+    ) -> Option<f32> {
+        if !self.resolves_auto_size_from_ratio() {
+            return None;
+        }
+
+        let physical_size = writing_mode.to_physical(LogicalSize { inline_size: outer_inline_size, block_size: None });
+        writing_mode
+            .to_logical(physical_size.maybe_apply_aspect_ratio_with_box_sizing(
+                self.aspect_ratio,
+                BoxSizing::BorderBox,
+                self.padding_border,
+            ))
+            .block_size
+    }
+
     /// Whether the real intrinsic block contribution is required.
     #[inline(always)]
     pub(crate) fn requires_intrinsic_measurement(self) -> bool {
