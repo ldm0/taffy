@@ -28,7 +28,7 @@ use super::common::aspect_ratio::{
 };
 use super::common::baseline::physical_baseline;
 use super::common::intrinsic_size::{
-    measure_intrinsic_axis, resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
+    resolve_content_based_block_size_constraints, resolve_intrinsic_axis_constraints,
     resolve_intrinsic_width_constraints, resolve_node_size_constraints, resolve_ratio_dependent_intrinsic_sizing,
     AutomaticInlineSizeResolution, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
     IntrinsicPreferredSize, IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum,
@@ -1434,25 +1434,24 @@ fn apply_ratio_dependent_inline_automatic_minimum(
 
     let writing_mode = tree.get_writing_mode(item.node_id);
     let inline_axis = writing_mode.inline_axis();
-    let intrinsic = measure_intrinsic_axis(
+    let resolved = automatic_minimum.resolve_for_node(
         tree,
         item.node_id,
         ChildLayoutInput { known_dimensions, ..child_input },
-        AvailableSpace::MinContent,
         inline_axis,
     );
-    item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
-    let (used_minimum, used_maximum) = automatic_minimum.resolve(intrinsic.size.get_abs(inline_axis));
+    item.depends_on_block_constraints |= resolved.depends_on_block_constraints;
 
     let mut logical_min_size = writing_mode.to_logical(item.min_size);
     let mut logical_max_size = writing_mode.to_logical(item.max_size);
-    logical_min_size.inline_size = used_minimum;
-    logical_max_size.inline_size = used_maximum;
+    logical_min_size.inline_size = resolved.min_size;
+    logical_max_size.inline_size = resolved.max_size;
     item.min_size = writing_mode.to_physical(logical_min_size);
     item.max_size = writing_mode.to_physical(logical_max_size);
 
     let mut logical_known_dimensions = writing_mode.to_logical(known_dimensions);
-    logical_known_dimensions.inline_size = logical_known_dimensions.inline_size.maybe_clamp(used_minimum, used_maximum);
+    logical_known_dimensions.inline_size =
+        logical_known_dimensions.inline_size.maybe_clamp(resolved.min_size, resolved.max_size);
     writing_mode.to_physical(logical_known_dimensions)
 }
 
@@ -2585,6 +2584,29 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         });
+        let inline_automatic_minimum = RatioDependentAutomaticMinimum::new(
+            resolved.axis_constraints(AbsoluteAxis::Horizontal),
+            resolved.aspect_ratio_applied.width || intrinsic.preferred.applied_aspect_ratio,
+            raw_min_size.width,
+            tree.is_scroll_container_for_automatic_minimum(item.node_id),
+            item.is_replaced,
+        );
+        let resolved_sizing =
+            AbsoluteBoxSizing { size: resolved.size, min_size: resolved.min_size, max_size: resolved.max_size }
+                .resolve_ratio_automatic_minimum(
+                    tree,
+                    item.node_id,
+                    ChildLayoutInput::new(
+                        resolved.size,
+                        area_size.map(Some),
+                        writing_mode,
+                        child_available_size.map(AvailableSpace::Definite),
+                        SizingMode::ContentSize,
+                        Line::FALSE,
+                    ),
+                    AbsoluteAxis::Horizontal,
+                    inline_automatic_minimum,
+                );
         let block_size_resolver = AbsoluteBlockSizeResolver::new(AbsoluteBlockSizeInput {
             writing_mode: child_writing_mode,
             size: raw_size,
@@ -2597,10 +2619,10 @@ fn perform_absolute_layout_on_absolute_children(
             is_replaced: item.is_replaced,
             constraint_sources: resolved.block_axis_constraints(child_writing_mode),
         });
-        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let mut max_size = resolved.max_size;
+        let mut min_size = resolved_sizing.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let mut max_size = resolved_sizing.max_size;
         let mut known_dimensions = resolve_formatting_context_size(FormattingContextSizeInput {
-            size: resolved.size,
+            size: resolved_sizing.size,
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode: child_writing_mode,
             inline_auto_behavior,

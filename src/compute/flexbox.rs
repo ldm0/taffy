@@ -33,7 +33,8 @@ use super::common::content_size::{compute_content_size_contribution, content_siz
 use super::common::intrinsic_size::{
     resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
     resolve_ratio_dependent_intrinsic_sizing, AutomaticInlineSizeResolution, BlockSizeProperties,
-    ContentBasedBlockSize, IntrinsicWidthInput, NodeSizeConstraintInput, ResolvedNodeSizing,
+    ContentBasedBlockSize, IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum,
+    ResolvedNodeSizing,
 };
 use super::common::used_size::StretchSizeProperties;
 
@@ -3518,6 +3519,29 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         });
+        let inline_automatic_minimum = RatioDependentAutomaticMinimum::new(
+            resolved.axis_constraints(AbsoluteAxis::Horizontal),
+            resolved.aspect_ratio_applied.width || intrinsic.preferred.applied_aspect_ratio,
+            raw_min_size.width,
+            tree.is_scroll_container_for_automatic_minimum(child),
+            is_replaced,
+        );
+        let resolved_sizing =
+            AbsoluteBoxSizing { size: resolved.size, min_size: resolved.min_size, max_size: resolved.max_size }
+                .resolve_ratio_automatic_minimum(
+                    tree,
+                    child,
+                    ChildLayoutInput::new(
+                        resolved.size,
+                        constants.node_inner_size,
+                        constants.writing_mode,
+                        child_available_size.map(AvailableSpace::Definite),
+                        SizingMode::InherentSize,
+                        Line::FALSE,
+                    ),
+                    AbsoluteAxis::Horizontal,
+                    inline_automatic_minimum,
+                );
         let block_size_resolver = AbsoluteBlockSizeResolver::new(AbsoluteBlockSizeInput {
             writing_mode: child_writing_mode,
             size: raw_size,
@@ -3530,10 +3554,10 @@ fn perform_absolute_layout_on_absolute_children(
             is_replaced,
             constraint_sources: resolved.block_axis_constraints(child_writing_mode),
         });
-        let mut min_size = resolved.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
-        let mut max_size = resolved.max_size;
+        let mut min_size = resolved_sizing.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+        let mut max_size = resolved_sizing.max_size;
         let mut known_dimensions = resolve_formatting_context_size(FormattingContextSizeInput {
-            size: resolved.size,
+            size: resolved_sizing.size,
             size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
             writing_mode: child_writing_mode,
             inline_auto_behavior,

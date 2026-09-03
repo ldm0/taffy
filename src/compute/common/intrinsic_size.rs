@@ -436,6 +436,18 @@ pub(crate) struct RatioDependentAutomaticMinimum {
     constraint_sources: ResolvedAxisConstraints,
 }
 
+/// Source-ordered constraints produced by measuring a ratio-dependent
+/// automatic minimum.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ResolvedRatioDependentAutomaticMinimum {
+    /// Used minimum after authored and transferred constraints are merged.
+    pub(crate) min_size: Option<f32>,
+    /// Used maximum after authored and transferred constraints are merged.
+    pub(crate) max_size: Option<f32>,
+    /// Whether the min-intrinsic measurement observed a block constraint.
+    pub(crate) depends_on_block_constraints: bool,
+}
+
 impl RatioDependentAutomaticMinimum {
     /// Capture the automatic-minimum state while authored style and ratio
     /// provenance are both available.
@@ -451,11 +463,22 @@ impl RatioDependentAutomaticMinimum {
             .then_some(Self { constraint_sources })
     }
 
-    /// Merge a measured min-intrinsic contribution with authored and
+    /// Measure the min-intrinsic contribution and merge it with authored and
     /// ratio-transferred constraints in CSS sizing order.
-    #[inline(always)]
-    pub(crate) fn resolve(self, min_intrinsic_size: f32) -> (Option<f32>, Option<f32>) {
-        self.constraint_sources.resolve(None, None, Some(min_intrinsic_size))
+    pub(crate) fn resolve_for_node(
+        self,
+        tree: &mut impl LayoutPartialTree,
+        node_id: crate::NodeId,
+        inputs: ChildLayoutInput,
+        axis: AbsoluteAxis,
+    ) -> ResolvedRatioDependentAutomaticMinimum {
+        let intrinsic = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+        let (min_size, max_size) = self.constraint_sources.resolve(None, None, Some(intrinsic.size.get_abs(axis)));
+        ResolvedRatioDependentAutomaticMinimum {
+            min_size,
+            max_size,
+            depends_on_block_constraints: intrinsic.depends_on_block_constraints,
+        }
     }
 }
 

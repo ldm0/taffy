@@ -1,5 +1,6 @@
+use taffy::geometry::Point;
 use taffy::prelude::*;
-use taffy::style::Float;
+use taffy::style::{Float, Overflow};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode};
 
 fn text_context() -> TestNodeContext {
@@ -226,6 +227,44 @@ fn absolute_intrinsic_width_properties_use_the_ratio_content_contribution() {
             150.0,
         );
         assert_eq!(minimum, Size { width: 100.0, height: 25.0 }, "{display:?} minimum");
+    }
+}
+
+#[test]
+fn absolute_auto_width_honors_the_ratio_dependent_automatic_minimum() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        let base_style = || Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            aspect_ratio: Some(0.5),
+            ..Style::default()
+        };
+
+        let content_minimum = layout_absolute_ratio_item(display, base_style(), 100.0);
+        assert_eq!(content_minimum, Size { width: 100.0, height: 100.0 }, "{display:?} content minimum");
+
+        let ratio_suggestion = layout_absolute_ratio_item(display, base_style(), 40.0);
+        assert_eq!(ratio_suggestion, Size { width: 50.0, height: 100.0 }, "{display:?} ratio suggestion");
+
+        let explicit_minimum = layout_absolute_ratio_item(
+            display,
+            Style { min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() }, ..base_style() },
+            100.0,
+        );
+        assert_eq!(explicit_minimum, Size { width: 50.0, height: 100.0 }, "{display:?} explicit minimum");
+
+        let authored_maximum = layout_absolute_ratio_item(
+            display,
+            Style { max_size: Size { width: Dimension::length(75.0), height: Dimension::auto() }, ..base_style() },
+            100.0,
+        );
+        assert_eq!(authored_maximum, Size { width: 75.0, height: 100.0 }, "{display:?} authored maximum");
+
+        let scroll_container = layout_absolute_ratio_item(
+            display,
+            Style { overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden }, ..base_style() },
+            100.0,
+        );
+        assert_eq!(scroll_container, Size { width: 50.0, height: 100.0 }, "{display:?} scroll container");
     }
 }
 

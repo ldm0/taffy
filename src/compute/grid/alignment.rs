@@ -15,6 +15,7 @@ use crate::compute::common::baseline::{
 };
 use crate::compute::common::intrinsic_size::{
     resolve_intrinsic_width_constraints, resolve_ratio_dependent_intrinsic_sizing, IntrinsicWidthInput,
+    RatioDependentAutomaticMinimum,
 };
 use crate::compute::common::used_size::StretchSizeProperties;
 use crate::geometry::{
@@ -379,6 +380,17 @@ pub(super) fn align_and_position_item(
         aspect_ratio,
         padding_border: padding_border_size,
     });
+    let inline_automatic_minimum = if position == Position::Absolute {
+        RatioDependentAutomaticMinimum::new(
+            resolved.axis_constraints(crate::AbsoluteAxis::Horizontal),
+            resolved.aspect_ratio_applied.width || intrinsic.preferred.applied_aspect_ratio,
+            raw_min_size.width,
+            tree.is_scroll_container_for_automatic_minimum(node),
+            is_replaced,
+        )
+    } else {
+        None
+    };
     let block_size_resolver = (position == Position::Absolute).then(|| {
         AbsoluteBlockSizeResolver::new(AbsoluteBlockSizeInput {
             writing_mode: item_writing_mode,
@@ -417,6 +429,24 @@ pub(super) fn align_and_position_item(
     // constraints are resolved only now, once the absolute inline size and
     // inset-modified containing block are known.
     let mut used_size = Size { width, height }.maybe_clamp(min_size, max_size);
+    let resolved_sizing = AbsoluteBoxSizing { size: used_size, min_size, max_size }.resolve_ratio_automatic_minimum(
+        tree,
+        node,
+        ChildLayoutInput::new(
+            used_size,
+            grid_area_size.map(Some),
+            parent_writing_mode,
+            child_available_size.map(|size| AvailableSpace::Definite(f32_max(size, 0.0))),
+            SizingMode::InherentSize,
+            Line::FALSE,
+        )
+        .without_orthogonal_fallback(),
+        crate::AbsoluteAxis::Horizontal,
+        inline_automatic_minimum,
+    );
+    used_size = resolved_sizing.size;
+    min_size = resolved_sizing.min_size;
+    max_size = resolved_sizing.max_size;
     if let Some(resolver) = block_size_resolver {
         let sizing = resolver.resolve(
             tree,

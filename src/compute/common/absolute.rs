@@ -1,8 +1,9 @@
 use crate::compute::common::aspect_ratio::ResolvedAxisConstraints;
 use crate::compute::common::intrinsic_size::{
     resolve_content_based_block_size_constraints, BlockSizeProperties, ContentBasedBlockSize,
+    RatioDependentAutomaticMinimum,
 };
-#[cfg(any(feature = "block_layout", feature = "flexbox"))]
+#[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 use crate::geometry::AbsoluteAxis;
 #[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 use crate::geometry::Rect;
@@ -121,6 +122,42 @@ pub(crate) struct AbsoluteBoxSizing {
     pub(crate) min_size: Size<Option<f32>>,
     /// Resolved maximum dimensions.
     pub(crate) max_size: Size<Option<f32>>,
+}
+
+impl AbsoluteBoxSizing {
+    /// Resolve the content-based automatic minimum activated when a preferred
+    /// size in `axis` came from the opposite axis through `aspect-ratio`.
+    ///
+    /// Out-of-flow boxes do not contribute this measurement dependency to the
+    /// containing block, but Block, Flex, and Grid must still use the same
+    /// source-ordered clamp for the positioned fragment itself.
+    pub(crate) fn resolve_ratio_automatic_minimum(
+        mut self,
+        tree: &mut impl LayoutPartialTree,
+        node: NodeId,
+        inputs: ChildLayoutInput,
+        axis: AbsoluteAxis,
+        automatic_minimum: Option<RatioDependentAutomaticMinimum>,
+    ) -> Self {
+        let Some(automatic_minimum) = automatic_minimum else {
+            return self;
+        };
+        let resolved = automatic_minimum.resolve_for_node(tree, node, inputs, axis);
+
+        match axis {
+            AbsoluteAxis::Horizontal => {
+                self.min_size.width = resolved.min_size;
+                self.max_size.width = resolved.max_size;
+                self.size.width = self.size.width.maybe_clamp(resolved.min_size, resolved.max_size);
+            }
+            AbsoluteAxis::Vertical => {
+                self.min_size.height = resolved.min_size;
+                self.max_size.height = resolved.max_size;
+                self.size.height = self.size.height.maybe_clamp(resolved.min_size, resolved.max_size);
+            }
+        }
+        self
+    }
 }
 
 /// Authored and already-resolved state required to finish one absolute
