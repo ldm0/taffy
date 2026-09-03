@@ -261,18 +261,21 @@ struct FlexItem {
     /// A ratio-derived cross-axis value is provisional until flexible-length
     /// resolution establishes the item's final main size.
     resolved_preferred_size: Size<Option<f32>>,
-    /// Border-box preferred sizes resolved directly from authored properties.
+    /// Border-box preferred sizes supplied by a non-automatic authored size.
     ///
-    /// Ratio-derived sizes are deliberately excluded: the flex automatic
-    /// minimum treats those as part of its content-size suggestion, not as a
-    /// specified-size suggestion.
-    direct_preferred_size: Size<Option<f32>>,
-    /// The preferred size before transferring a dimension through `aspect-ratio`
-    /// or applying a content-box padding/border adjustment.
+    /// This is the flex automatic minimum's specified-size suggestion. An
+    /// intrinsic keyword remains a specified suggestion even when resolving
+    /// it needs the preferred aspect ratio; `auto` never becomes one merely
+    /// because content measurement produced a numeric size.
+    specified_size_suggestion: Size<Option<f32>>,
+    /// Border-box preferred sizes that are definite without transferring the
+    /// opposite axis through the preferred aspect ratio.
     ///
-    /// `flex-basis: content` must ignore a preferred main size, but it may use
-    /// an independently definite cross size with the intrinsic aspect ratio.
-    untransferred_size: Size<Option<f32>>,
+    /// Flex-basis and cross-size measurement may transfer this geometry in the
+    /// other direction. Keeping it separate from the specified-size
+    /// suggestion prevents a main-derived cross size from feeding back into
+    /// automatic minimum sizing.
+    independent_preferred_size: Size<Option<f32>>,
     /// The minimum allowable size with aspect-ratio transfers ignored.
     ///
     /// Flexible-length resolution uses this constraint; transferred constraints
@@ -286,8 +289,6 @@ struct FlexItem {
     max_size_with_transfer: Size<Option<f32>>,
     /// The used aspect ratio and the CSS sizing box that it constrains.
     aspect_ratio: Option<ResolvedAspectRatio>,
-    /// The CSS sizing box used by authored size properties.
-    box_sizing: BoxSizing,
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
@@ -1162,6 +1163,11 @@ fn generate_anonymous_flex_items(
             let mut untransferred_size = raw_size
                 .maybe_resolve(constants.node_percentage_size, |val, basis| tree.calc(val, basis))
                 .or(stretch_preferred_in_sizing_box);
+            let mut independent_preferred_size = untransferred_size.maybe_add(box_sizing_adjustment);
+            let mut specified_size_suggestion = Size {
+                width: if raw_size.width.is_auto() { None } else { independent_preferred_size.width },
+                height: if raw_size.height.is_auto() { None } else { independent_preferred_size.height },
+            };
             let unresolved_flex_basis = if flex_basis.is_auto() { raw_size.main(constants.dir) } else { flex_basis };
             let resolved_flex_basis = if flex_basis.is_auto() {
                 untransferred_size.main(constants.dir)
@@ -1279,6 +1285,12 @@ fn generate_anonymous_flex_items(
             );
             if let Some(intrinsic_width) = intrinsic.preferred.value {
                 untransferred_size.width = Some(intrinsic_width - box_sizing_adjustment.width);
+                if !raw_size.width.is_auto() {
+                    specified_size_suggestion.width = Some(intrinsic_width);
+                }
+                if !intrinsic.preferred.applied_aspect_ratio {
+                    independent_preferred_size.width = Some(intrinsic_width);
+                }
                 // `flex-basis:auto` defers to the preferred main size. Once an
                 // intrinsic width has been measured, that indirection has a
                 // resolved value and must not fall through to the max-content
@@ -1293,7 +1305,6 @@ fn generate_anonymous_flex_items(
             min_size.width = min_size.width.or(intrinsic.min.value);
             max_size.width = max_size.width.or(intrinsic.max.value);
             depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
-            let direct_preferred_size = untransferred_size.maybe_add(box_sizing_adjustment);
             let constraint_input = SizeConstraintInput {
                 size,
                 min_size,
@@ -1317,14 +1328,13 @@ fn generate_anonymous_flex_items(
                 node: child,
                 order: index as u32,
                 resolved_preferred_size: size,
-                direct_preferred_size,
-                untransferred_size,
+                specified_size_suggestion,
+                independent_preferred_size,
                 min_size: constraints_without_transfer.min_size,
                 max_size: constraints_without_transfer.max_size,
                 min_size_with_transfer: constraints_with_transfer.min_size,
                 max_size_with_transfer: constraints_with_transfer.max_size,
                 aspect_ratio,
-                box_sizing,
                 used_flex_basis,
                 ratio_content_block_flex_basis,
                 depends_on_block_constraints,
@@ -1419,7 +1429,7 @@ fn determine_column_wrap_intrinsic_cross_sizes(
 
         let padding_border = (item.padding + item.border).cross_axis_sum(dir);
         let content_size = measured.size.get_abs(dir.cross_axis());
-        let preferred_size = item.direct_preferred_size.cross(dir);
+        let preferred_size = item.independent_preferred_size.cross(dir);
         item.column_wrap_intrinsic_cross_size = Some(resolve_flex_item_intrinsic_contribution(
             content_size,
             preferred_size,
@@ -1505,10 +1515,8 @@ fn determine_flex_base_size(
 
     for child in flex_items.iter_mut() {
         let used_flex_basis = child.used_flex_basis;
-        let flex_basis_is_unresolved = used_flex_basis.is_unresolved();
         let aspect_ratio = child.aspect_ratio;
         let padding_border = (child.padding + child.border).sum_axes();
-        let box_sizing_adjustment = if child.box_sizing == BoxSizing::ContentBox { padding_border } else { Size::ZERO };
 
         // Parent size for child sizing
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
@@ -1533,11 +1541,7 @@ fn determine_flex_base_size(
 
         // Known dimensions for child sizing
         let child_known_dimensions = {
-            let mut ckd = if flex_basis_is_unresolved {
-                child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
-            } else {
-                child.resolved_preferred_size.with_main(dir, None)
-            };
+            let mut ckd = child.independent_preferred_size.with_main(dir, None);
             // Clamp the definite cross size by the cross min/max sizes so that sizes
             // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
             // are based on the used cross size.
@@ -1805,7 +1809,7 @@ fn determine_flex_base_size(
             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
             resolve_flex_automatic_minimum(
                 min_content_main_size,
-                child.direct_preferred_size.main(dir),
+                child.specified_size_suggestion.main(dir),
                 ratio_dependent_main_size,
                 max_size_with_transfer.main(dir),
                 child.is_replaced,
@@ -1974,7 +1978,7 @@ fn flex_item_content_main_contribution(
     let used_minimum = item.resolved_minimum_main_size.maybe_max(item.min_size_with_transfer.main(dir));
     resolve_flex_item_intrinsic_contribution(
         content_size,
-        item.direct_preferred_size.main(dir),
+        item.specified_size_suggestion.main(dir),
         Some(used_minimum),
         item.max_size_with_transfer.main(dir),
         padding_border,
@@ -2586,7 +2590,7 @@ fn determine_hypothetical_cross_size(
         // outrank the transfer from the final main size at this phase boundary.
         let preferred_cross = child
             .column_wrap_intrinsic_cross_size
-            .or(child.direct_preferred_size.cross(constants.dir))
+            .or(child.independent_preferred_size.cross(constants.dir))
             .or(ratio_cross)
             .maybe_max(padding_border_sum);
 

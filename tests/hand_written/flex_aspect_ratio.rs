@@ -520,6 +520,62 @@ fn flex_automatic_minimum_keeps_specified_and_ratio_dependent_suggestions_distin
     assert_eq!(replaced_size, Size { width: 50.0, height: 100.0 });
 }
 
+fn layout_replaced_flex_item(item_style: Style, mut container_style: Style) -> Size<f32> {
+    fn square_replaced_measure(
+        known_dimensions: Size<Option<f32>>,
+        _available_space: Size<AvailableSpace>,
+        _node_id: NodeId,
+        _context: Option<&mut TestNodeContext>,
+        _style: &Style,
+    ) -> Size<f32> {
+        match known_dimensions {
+            Size { width: Some(width), height: Some(height) } => Size { width, height },
+            Size { width: Some(width), height: None } => Size { width, height: width },
+            Size { width: None, height: Some(height) } => Size { width: height, height },
+            Size { width: None, height: None } => Size { width: 10.0, height: 10.0 },
+        }
+    }
+
+    let mut tree = new_test_tree();
+    let item = tree.new_leaf_with_context(item_style, TestNodeContext::zero()).unwrap();
+    container_style.display = Display::Flex;
+    let container = tree.new_with_children(container_style, &[item]).unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, square_replaced_measure).unwrap();
+
+    tree.layout(item).unwrap().size
+}
+
+/// Regression for WPT css/css-flexbox/flex-aspect-ratio-img-column-011.html.
+#[test]
+fn replaced_automatic_minimum_uses_only_an_independently_definite_cross_size() {
+    let row = layout_replaced_flex_item(
+        Style {
+            size: Size { width: Dimension::length(100.0), height: Dimension::auto() },
+            aspect_ratio: Some(1.0),
+            item_is_replaced: true,
+            ..Style::default()
+        },
+        Style { size: Size { width: Dimension::length(10.0), height: Dimension::auto() }, ..Style::default() },
+    );
+    let column = layout_replaced_flex_item(
+        Style {
+            size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            aspect_ratio: Some(1.0),
+            item_is_replaced: true,
+            ..Style::default()
+        },
+        Style {
+            flex_direction: FlexDirection::Column,
+            size: Size { width: Dimension::length(50.0), height: Dimension::length(10.0) },
+            ..Style::default()
+        },
+    );
+
+    assert_eq!(row, Size { width: 10.0, height: 10.0 });
+    assert_eq!(column, Size { width: 50.0, height: 50.0 });
+}
+
 #[test]
 fn scrollable_flex_item_uses_zero_automatic_minimum() {
     let mut scroll_container = ratio_flex_item_style();
