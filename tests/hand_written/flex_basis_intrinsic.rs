@@ -1,7 +1,7 @@
 use taffy::prelude::*;
 #[cfg(feature = "float_layout")]
 use taffy::Float;
-use taffy::{AbsoluteAxis, WritingMode};
+use taffy::{AbsoluteAxis, Overflow, Point, WritingMode};
 use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext, WritingMode as TextWritingMode};
 
 const FLEX_DIRECTIONS: [FlexDirection; 4] =
@@ -533,4 +533,169 @@ fn percentage_flex_basis_keeps_definite_and_content_fallback_semantics() {
         tree.new_with_children(Style { display: Display::Flex, ..Default::default() }, &[fallback_item]).unwrap();
     tree.compute_layout_with_measure(indefinite, Size::MAX_CONTENT, test_measure_function).unwrap();
     assert_eq!(tree.layout(fallback_item).unwrap().size.width, 30.0);
+}
+
+#[test]
+fn intrinsic_block_maximum_clamps_a_flex_items_hypothetical_main_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree
+        .new_leaf(Style {
+            display: Display::Block,
+            size: Size { width: length(100.0), height: length(100.0) },
+            ..Style::default()
+        })
+        .unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                flex_basis: length(200.0),
+                max_size: Size { width: auto(), height: Dimension::min_content() },
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size::from_lengths(100.0, 200.0),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn intrinsic_block_minimum_clamps_a_flex_items_hypothetical_main_size() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree.new_leaf(Style { size: Size::from_lengths(100.0, 100.0), ..Style::default() }).unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                flex_basis: length(50.0),
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                min_size: Size { width: auto(), height: Dimension::max_content() },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                size: Size::from_lengths(100.0, 200.0),
+                ..Style::default()
+            },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn intrinsic_block_maximum_limits_cross_axis_stretch_at_the_final_inline_size() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                flex_basis: length(50.0),
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                min_size: Size::from_lengths(0.0, 0.0),
+                max_size: Size { width: auto(), height: Dimension::min_content() },
+                ..Style::default()
+            },
+            TestNodeContext::ahem_text("aaaaa\u{200b}bbbbb".to_owned(), TextWritingMode::Horizontal),
+        )
+        .unwrap();
+    let container = tree
+        .new_with_children(
+            Style { display: Display::Flex, size: Size::from_lengths(50.0, 100.0), ..Style::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(container, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 50.0, height: 20.0 });
+}
+
+#[test]
+fn intrinsic_block_constraints_follow_the_items_writing_mode() {
+    let mut tree = TaffyTree::<()>::new();
+    let content = tree.new_leaf(Style { size: Size::from_lengths(100.0, 100.0), ..Style::default() }).unwrap();
+    let item = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                flex_basis: length(200.0),
+                max_size: Size { width: Dimension::min_content(), height: auto() },
+                ..Style::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    tree.set_writing_mode(item, WritingMode::VerticalRl).unwrap();
+    let container = tree
+        .new_with_children(
+            Style { display: Display::Flex, size: Size::from_lengths(200.0, 100.0), ..Style::default() },
+            &[item],
+        )
+        .unwrap();
+
+    tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn intrinsic_block_constraints_include_padding_for_each_box_sizing_mode() {
+    for box_sizing in [BoxSizing::ContentBox, BoxSizing::BorderBox] {
+        let mut tree = TaffyTree::<()>::new();
+        let content = tree.new_leaf(Style { size: Size::from_lengths(80.0, 100.0), ..Style::default() }).unwrap();
+        let item = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    flex_basis: length(200.0),
+                    max_size: Size { width: auto(), height: Dimension::min_content() },
+                    padding: Rect { top: length(10.0), bottom: length(10.0), ..Rect::zero() },
+                    box_sizing,
+                    ..Style::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let container = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    size: Size::from_lengths(100.0, 200.0),
+                    ..Style::default()
+                },
+                &[item],
+            )
+            .unwrap();
+
+        tree.compute_layout(container, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(tree.layout(item).unwrap().size, Size { width: 100.0, height: 120.0 }, "{box_sizing:?}");
+    }
 }

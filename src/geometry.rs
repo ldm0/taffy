@@ -243,6 +243,15 @@ impl<T> Size<T> {
             AbsoluteAxis::Vertical => self.height,
         }
     }
+
+    #[inline(always)]
+    /// Set either the width or height depending on the AbsoluteAxis passed in
+    pub fn set_abs(&mut self, axis: AbsoluteAxis, value: T) {
+        match axis {
+            AbsoluteAxis::Horizontal => self.width = value,
+            AbsoluteAxis::Vertical => self.height = value,
+        }
+    }
 }
 
 impl<T: Add> Rect<T> {

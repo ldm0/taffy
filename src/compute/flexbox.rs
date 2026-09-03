@@ -31,10 +31,10 @@ use super::common::baseline::{
 #[cfg(feature = "content_size")]
 use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
 use super::common::intrinsic_size::{
-    resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints, resolve_node_size_constraints,
-    resolve_ratio_dependent_intrinsic_sizing, AutomaticInlineSizeResolution, BlockSizeProperties,
-    ContentBasedBlockSize, IntrinsicAxisValue, IntrinsicWidthInput, NodeSizeConstraintInput,
-    RatioDependentAutomaticMinimum, ResolvedNodeSizing,
+    resolve_intrinsic_axis_constraints, resolve_intrinsic_preferred_axis_size, resolve_intrinsic_width_constraints,
+    resolve_node_size_constraints, resolve_ratio_dependent_intrinsic_sizing, AutomaticInlineSizeResolution,
+    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput, IntrinsicAxisValue, IntrinsicPreferredSize,
+    IntrinsicWidthInput, NodeSizeConstraintInput, RatioDependentAutomaticMinimum, ResolvedNodeSizing,
 };
 use super::common::used_size::StretchSizeProperties;
 
@@ -1161,9 +1161,13 @@ fn generate_anonymous_flex_items(
             // stretch result only for that intermediate representation.
             let stretch_preferred_in_sizing_box =
                 stretch.preferred.maybe_sub(box_sizing_adjustment).maybe_max(Size::ZERO);
-            let child_block_size_depends_on_parent = [raw_size.height, raw_min_size.height, raw_max_size.height]
-                .into_iter()
-                .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+            let raw_logical_size = child_writing_mode.to_logical(raw_size);
+            let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+            let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+            let child_block_size_depends_on_parent =
+                [raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
+                    .into_iter()
+                    .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
             let mut depends_on_block_constraints = child_block_size_depends_on_parent && aspect_ratio.is_some();
             let flex_basis = child_style.flex_basis();
             let mut untransferred_size = raw_size
@@ -1251,65 +1255,66 @@ fn generate_anonymous_flex_items(
                 is_replaced,
             );
 
-            let available_width = child_available_space.width.maybe_sub(margin.horizontal_axis_sum());
-            let intrinsic_inputs = LayoutInput {
-                run_mode: RunMode::ComputeSize,
-                sizing_mode: SizingMode::InherentSize,
-                sizing_purpose: SizingPurpose::IntrinsicContribution,
-                axis: RequestedAxis::Horizontal,
-                inline_auto_behavior: AutoSizeBehavior::FitContent,
-                block_auto_behavior: crate::AutoSizeBehavior::FitContent,
-                orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
-                known_dimensions: Size::NONE,
-                definite_dimensions: Size::NONE,
-                parent_size: constants.node_percentage_size,
-                parent_writing_mode: constants.writing_mode,
-                available_space: child_available_space,
-                ignored_margins_for_stretch: Rect::default(),
-                vertical_margins_are_collapsible: Line::FALSE,
-            };
+            // Intrinsic inline constraints are independent contributions and
+            // can be resolved while the item is materialized. Intrinsic block
+            // constraints need the item's used inline constraint, so they are
+            // deliberately deferred to the flex main- or cross-size phase.
+            let child_inline_axis = child_writing_mode.inline_axis();
+            let available_inline_size =
+                child_available_space.get_abs(child_inline_axis).maybe_sub(margin.grid_axis_sum(child_inline_axis));
+            let intrinsic_inputs = ChildLayoutInput::new(
+                Size::NONE,
+                constants.node_percentage_size,
+                constants.writing_mode,
+                child_available_space,
+                SizingMode::ContentSize,
+                Line::FALSE,
+            );
             let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
                 untransferred_size.maybe_add(box_sizing_adjustment),
                 min_size,
                 max_size,
                 aspect_ratio,
                 pb_sum,
-                AbsoluteAxis::Horizontal,
+                child_inline_axis,
                 child_block_size_depends_on_parent && aspect_ratio.is_some(),
             );
-            let intrinsic = resolve_intrinsic_width_constraints(
+            let intrinsic = resolve_intrinsic_axis_constraints(
                 tree,
                 child,
                 intrinsic_inputs,
-                IntrinsicWidthInput {
-                    preferred: raw_size.width,
-                    min: raw_min_size.width,
-                    max: raw_max_size.width,
-                    available_space: available_width,
+                IntrinsicAxisInput {
+                    preferred: IntrinsicPreferredSize::Authored(raw_logical_size.inline_size),
+                    min: raw_logical_min_size.inline_size,
+                    max: raw_logical_max_size.inline_size,
+                    available_space: available_inline_size,
+                    axis: child_inline_axis,
                     ratio_dependent_sizing,
                 },
             );
-            if let Some(intrinsic_width) = intrinsic.preferred.value {
-                untransferred_size.width = Some(intrinsic_width - box_sizing_adjustment.width);
-                if !raw_size.width.is_auto() {
-                    specified_size_suggestion.width = Some(intrinsic_width);
+            if let Some(intrinsic_inline_size) = intrinsic.preferred.value {
+                untransferred_size.set_abs(
+                    child_inline_axis,
+                    Some(intrinsic_inline_size - box_sizing_adjustment.get_abs(child_inline_axis)),
+                );
+                if !raw_logical_size.inline_size.is_auto() {
+                    specified_size_suggestion.set_abs(child_inline_axis, Some(intrinsic_inline_size));
                 }
                 if !intrinsic.preferred.applied_aspect_ratio {
-                    independent_preferred_size.width = Some(intrinsic_width);
+                    independent_preferred_size.set_abs(child_inline_axis, Some(intrinsic_inline_size));
                 }
-                // `flex-basis:auto` defers to the preferred main size. Once an
-                // intrinsic width has been measured, that indirection has a
-                // resolved value and must not fall through to the max-content
-                // measurement used by `flex-basis:content`.
-                if flex_basis.is_auto() && constants.dir.main_axis() == AbsoluteAxis::Horizontal {
-                    used_flex_basis = UsedFlexBasis::Resolved(intrinsic_width);
+                // `flex-basis:auto` defers to the preferred main size. Once
+                // an intrinsic inline size has been measured, that
+                // indirection must not fall through to `content` sizing.
+                if flex_basis.is_auto() && constants.dir.main_axis() == child_inline_axis {
+                    used_flex_basis = UsedFlexBasis::Resolved(intrinsic_inline_size);
                 }
-                if !used_flex_basis.is_unresolved() || !constants.dir.is_row() {
-                    size.width = size.width.or(Some(intrinsic_width));
+                if !used_flex_basis.is_unresolved() || constants.dir.main_axis() != child_inline_axis {
+                    size.set_abs(child_inline_axis, size.get_abs(child_inline_axis).or(Some(intrinsic_inline_size)));
                 }
             }
-            min_size.width = min_size.width.or(intrinsic.min.value);
-            max_size.width = max_size.width.or(intrinsic.max.value);
+            min_size.set_abs(child_inline_axis, min_size.get_abs(child_inline_axis).or(intrinsic.min.value));
+            max_size.set_abs(child_inline_axis, max_size.get_abs(child_inline_axis).or(intrinsic.max.value));
             depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
             let constraint_input = SizeConstraintInput {
                 size,
@@ -1383,6 +1388,163 @@ fn generate_anonymous_flex_items(
             })
         })
         .collect()
+}
+
+/// Resolve intrinsic properties in a flex item's logical block axis once its
+/// inline constraint is known.
+///
+/// Inline intrinsic contributions can be measured while flex items are
+/// materialized. Block contributions cannot: their content size can change
+/// with the inline size selected by flex alignment or flexible-length
+/// resolution. Blink makes the same distinction with separate inline
+/// min/max callbacks and a late `BlockSizeFunc` bound to the child constraint
+/// space.
+fn resolve_flex_item_intrinsic_block_constraints(
+    tree: &mut impl LayoutFlexboxContainer,
+    item: &mut FlexItem,
+    constants: &AlgoConstants,
+    known_dimensions: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+) -> bool {
+    let child_writing_mode = tree.get_writing_mode(item.node);
+    let block_axis = child_writing_mode.block_axis();
+    let (raw_size, raw_min_size, raw_max_size, flex_basis) = {
+        let style = tree.get_flexbox_child_style(item.node);
+        (style.size(), style.min_size(), style.max_size(), style.flex_basis())
+    };
+    let raw_logical_size = child_writing_mode.to_logical(raw_size);
+    let raw_logical_min_size = child_writing_mode.to_logical(raw_min_size);
+    let raw_logical_max_size = child_writing_mode.to_logical(raw_max_size);
+    if ![raw_logical_size.block_size, raw_logical_min_size.block_size, raw_logical_max_size.block_size]
+        .into_iter()
+        .any(Dimension::is_intrinsic)
+    {
+        return false;
+    }
+
+    let padding_border = (item.padding + item.border).sum_axes();
+    let available_block_size = available_space.get_abs(block_axis).maybe_sub(item.margin.grid_axis_sum(block_axis));
+    let child_inline_size_depends_on_parent =
+        [raw_logical_size.inline_size, raw_logical_min_size.inline_size, raw_logical_max_size.inline_size]
+            .into_iter()
+            .any(|value| value.may_have_percentage_dependence() || value.is_stretch());
+    let ratio_dependent_sizing = resolve_ratio_dependent_intrinsic_sizing(
+        item.independent_preferred_size,
+        item.min_size,
+        item.max_size,
+        item.aspect_ratio,
+        padding_border,
+        block_axis,
+        child_inline_size_depends_on_parent && item.aspect_ratio.is_some(),
+    );
+    let intrinsic = resolve_intrinsic_axis_constraints(
+        tree,
+        item.node,
+        ChildLayoutInput::new(
+            known_dimensions,
+            constants.node_percentage_size,
+            constants.writing_mode,
+            available_space,
+            SizingMode::ContentSize,
+            Line::FALSE,
+        ),
+        IntrinsicAxisInput {
+            preferred: IntrinsicPreferredSize::Authored(raw_logical_size.block_size),
+            min: raw_logical_min_size.block_size,
+            max: raw_logical_max_size.block_size,
+            available_space: available_block_size,
+            axis: block_axis,
+            ratio_dependent_sizing,
+        },
+    );
+    item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints();
+
+    if let Some(preferred) = intrinsic.preferred.value {
+        if !raw_logical_size.block_size.is_auto() {
+            item.specified_size_suggestion.set_abs(block_axis, Some(preferred));
+        }
+        if !intrinsic.preferred.applied_aspect_ratio {
+            item.independent_preferred_size.set_abs(block_axis, Some(preferred));
+        }
+        if flex_basis.is_auto() && constants.dir.main_axis() == block_axis {
+            item.used_flex_basis = UsedFlexBasis::Resolved(preferred);
+        }
+    }
+    item.min_size.set_abs(block_axis, item.min_size.get_abs(block_axis).or(intrinsic.min.value));
+    item.max_size.set_abs(block_axis, item.max_size.get_abs(block_axis).or(intrinsic.max.value));
+
+    // Re-run the shared ratio transfer after late block constraints become
+    // concrete. This also transfers an intrinsic block min/max constraint to
+    // an automatic inline axis instead of losing that source at the early
+    // item-generation seam.
+    let constraint_input = SizeConstraintInput {
+        size: item.independent_preferred_size,
+        min_size: item.min_size,
+        max_size: item.max_size,
+        size_is_auto: raw_size.map(Dimension::is_auto),
+        writing_mode: child_writing_mode,
+        inline_auto_behavior: AutoSizeBehavior::FitContent,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
+        aspect_ratio: item.aspect_ratio,
+        padding_border,
+    };
+    let constraints_with_transfer = resolve_size_constraints(constraint_input);
+    let constraints_without_transfer = resolve_size_constraints(SizeConstraintInput {
+        transferred_sizes_mode: TransferredSizesMode::Ignore,
+        ..constraint_input
+    });
+    item.resolved_preferred_size = constraints_with_transfer.size;
+    item.min_size = constraints_without_transfer.min_size;
+    item.max_size = constraints_without_transfer.max_size;
+    item.min_size_with_transfer = constraints_with_transfer.min_size;
+    item.max_size_with_transfer = constraints_with_transfer.max_size;
+    true
+}
+
+/// Construct the cross-axis input used while determining a flex basis.
+///
+/// Intrinsic block constraints can feed back through a preferred aspect ratio,
+/// so callers may invoke this before and after resolving those late
+/// constraints. Keeping the operation in one helper makes both passes use the
+/// same child margins, transfer constraints, and stretch rules.
+fn flex_basis_cross_geometry(
+    item: &FlexItem,
+    constants: &AlgoConstants,
+    available_space: Size<AvailableSpace>,
+) -> (AvailableSpace, Size<Option<f32>>) {
+    let dir = constants.dir;
+    let cross_axis_parent_size = constants.node_inner_size.cross(dir);
+    let cross_axis_margin_sum = item.margin.cross_axis_sum(dir);
+    let child_min_cross = item.min_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
+    let child_max_cross = item.max_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
+    let cross_axis_available_space = resolve_cross_axis_available_space(
+        available_space.cross(dir),
+        cross_axis_parent_size,
+        child_min_cross,
+        child_max_cross,
+    );
+
+    let mut known_dimensions = item.independent_preferred_size.with_main(dir, None);
+    known_dimensions.set_cross(
+        dir,
+        known_dimensions
+            .cross(dir)
+            .maybe_clamp(item.min_size_with_transfer.cross(dir), item.max_size_with_transfer.cross(dir)),
+    );
+    if item.align_self == AlignSelf::STRETCH
+        && !item.margin_is_auto.cross_start(dir)
+        && !item.margin_is_auto.cross_end(dir)
+        && known_dimensions.cross(dir).is_none()
+    {
+        known_dimensions
+            .set_cross(dir, cross_axis_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
+    }
+    if let Some(intrinsic_cross_size) = item.column_intrinsic_cross_size {
+        known_dimensions.set_cross(dir, Some(intrinsic_cross_size));
+    }
+
+    (cross_axis_available_space, known_dimensions)
 }
 
 /// Resolve an ordinary border-box min/max-content contribution before any
@@ -1524,7 +1686,6 @@ fn determine_flex_base_size(
     let dir = constants.dir;
 
     for child in flex_items.iter_mut() {
-        let used_flex_basis = child.used_flex_basis;
         let aspect_ratio = child.aspect_ratio;
         let padding_border = (child.padding + child.border).sum_axes();
 
@@ -1532,48 +1693,28 @@ fn determine_flex_base_size(
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
         let child_parent_size = Size::from_cross(dir, cross_axis_parent_size);
 
-        // Available space for child sizing
-        // Min/max sizes transferred through the aspect ratio are taken into account here
-        // https://github.com/w3c/csswg-drafts/issues/10997
-        let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
+        // Block-axis intrinsic properties need the item inline constraint.
+        // For a block-main item that constraint is the flex cross geometry.
+        // Resolve once with the initial constraints, then rebuild the geometry
+        // if a late block constraint transferred back through aspect-ratio.
+        let (mut cross_axis_available_space, mut child_known_dimensions) =
+            flex_basis_cross_geometry(child, constants, available_space);
+        if dir.main_axis() == tree.get_writing_mode(child.node).block_axis() {
+            let intrinsic_available_space = Size::MAX_CONTENT.with_cross(dir, cross_axis_available_space);
+            if resolve_flex_item_intrinsic_block_constraints(
+                tree,
+                child,
+                constants,
+                child_known_dimensions,
+                intrinsic_available_space,
+            ) {
+                (cross_axis_available_space, child_known_dimensions) =
+                    flex_basis_cross_geometry(child, constants, available_space);
+            }
+        }
+        let used_flex_basis = child.used_flex_basis;
         let min_size_with_transfer = child.min_size_with_transfer;
         let max_size_with_transfer = child.max_size_with_transfer;
-        let child_min_cross = min_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
-        let child_max_cross = max_size_with_transfer.cross(dir).maybe_add(cross_axis_margin_sum);
-
-        // Clamp available space by min- and max- size
-        let cross_axis_available_space = resolve_cross_axis_available_space(
-            available_space.cross(dir),
-            cross_axis_parent_size,
-            child_min_cross,
-            child_max_cross,
-        );
-
-        // Known dimensions for child sizing
-        let child_known_dimensions = {
-            let mut ckd = child.independent_preferred_size.with_main(dir, None);
-            // Clamp the definite cross size by the cross min/max sizes so that sizes
-            // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
-            // are based on the used cross size.
-            ckd.set_cross(
-                dir,
-                ckd.cross(dir).maybe_clamp(min_size_with_transfer.cross(dir), max_size_with_transfer.cross(dir)),
-            );
-            if child.align_self == AlignSelf::STRETCH
-                && !child.margin_is_auto.cross_start(constants.dir)
-                && !child.margin_is_auto.cross_end(constants.dir)
-                && ckd.cross(dir).is_none()
-            {
-                ckd.set_cross(
-                    dir,
-                    cross_axis_available_space.into_option().maybe_sub(child.margin.cross_axis_sum(dir)),
-                );
-            }
-            if let Some(intrinsic_cross_size) = child.column_intrinsic_cross_size {
-                ckd.set_cross(dir, Some(intrinsic_cross_size));
-            }
-            ckd
-        };
         // This must be derived after cross-axis min/max and stretch sizing.
         // Storing it while the item is generated would retain a provisional
         // cross size and make the automatic minimum depend on call order.
@@ -2599,6 +2740,21 @@ fn determine_hypothetical_cross_size(
     available_space: Size<AvailableSpace>,
 ) {
     for child in line.items.iter_mut() {
+        let dir = constants.dir;
+        if dir.cross_axis() == tree.get_writing_mode(child.node).block_axis() {
+            let known_dimensions = Size::NONE.with_main(dir, Some(child.target_size.main(dir)));
+            let intrinsic_available_space = Size::MAX_CONTENT
+                .with_main(dir, AvailableSpace::Definite(child.target_size.main(dir)))
+                .with_cross(dir, available_space.cross(dir));
+            resolve_flex_item_intrinsic_block_constraints(
+                tree,
+                child,
+                constants,
+                known_dimensions,
+                intrinsic_available_space,
+            );
+        }
+
         let padding_border = (child.padding + child.border).sum_axes();
         let padding_border_sum = padding_border.cross(constants.dir);
 
@@ -2929,7 +3085,7 @@ fn determine_used_cross_size(
                 padding_border,
             );
             let min_cross_size = stretch.min.cross(constants.dir).or(child.min_size.cross(constants.dir));
-            let mut max_cross_size = stretch.max.cross(constants.dir).or(child.max_size.cross(constants.dir));
+            let max_cross_size = stretch.max.cross(constants.dir).or(child.max_size.cross(constants.dir));
             let re_resolves_stretch_limit =
                 stretch.min.cross(constants.dir).is_some() || stretch.max.cross(constants.dir).is_some();
 
@@ -2941,17 +3097,12 @@ fn determine_used_cross_size(
                     && !child.margin_is_auto.cross_end(constants.dir)
                     && child_style.size().cross(constants.dir).is_auto()
                 {
-                    // For some reason this particular usage of max_width is an exception to the rule that max_width's transfer
-                    // using the aspect_ratio (if set). Both Chrome and Firefox agree on this. And reading the spec, it seems like
-                    // a reasonable interpretation. Although it seems to me that the spec *should* apply aspect_ratio here.
-                    let box_sizing_adjustment =
-                        if child_style.box_sizing() == BoxSizing::ContentBox { padding_border } else { Size::ZERO };
-
-                    let max_size_ignoring_aspect_ratio = child_style
-                        .max_size()
-                        .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
-                        .maybe_add(box_sizing_adjustment);
-                    max_cross_size = max_size_ignoring_aspect_ratio.cross(constants.dir);
+                    // Flex stretch ignores min/max constraints transferred
+                    // through aspect-ratio. `child.min_size` and
+                    // `child.max_size` already retain exactly the authored
+                    // constraints, including late intrinsic block values;
+                    // explicit `stretch` limits were re-resolved above for
+                    // this line's available cross size.
                     available_cross_size
                 } else {
                     child.hypothetical_inner_size.cross(constants.dir)
