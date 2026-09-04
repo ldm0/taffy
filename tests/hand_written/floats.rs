@@ -1,7 +1,7 @@
 #![cfg(feature = "float_layout")]
 use taffy::geometry::Point;
 use taffy::prelude::*;
-use taffy::style::{Clear, Float};
+use taffy::style::{Clear, Direction, Float};
 use taffy_test_helpers::new_test_tree;
 
 /// Regression test for <https://wpt.live/css/CSS2/floats-clear/floats-146.xht>
@@ -148,4 +148,110 @@ fn float_beside_existing_float_moves_down_instead_of_overflowing() {
     assert_eq!(taffy.layout(left).unwrap().location, Point { x: 0.0, y: 0.0 });
     assert_eq!(taffy.layout(right).unwrap().location, Point { x: 40.0, y: 50.0 });
     assert_eq!(taffy.layout(left2).unwrap().location, Point { x: 0.0, y: 100.0 });
+}
+
+/// Regression for
+/// <https://wpt.live/css/css-sizing/aspect-ratio/floats-aspect-ratio-001.html>.
+///
+/// The first 100x50 opportunity is too short for the square formatting
+/// context produced at that width. Layout must retry the next two-dimensional
+/// opportunity, whose 40px inline size produces a 40x40 square beside the
+/// second float band.
+#[test]
+fn independent_formatting_context_ratio_uses_the_available_float_band() {
+    for direction in [Direction::Ltr, Direction::Rtl] {
+        let mut taffy = new_test_tree();
+        let left = taffy.new_leaf(float_block(50.0, 50.0, Float::Left)).unwrap();
+        let right = taffy.new_leaf(float_block(50.0, 50.0, Float::Right)).unwrap();
+        let next_left = taffy.new_leaf(float_block(160.0, 50.0, Float::Left)).unwrap();
+        let independent = taffy
+            .new_leaf(Style { display: Display::FlowRoot, aspect_ratio: Some(1.0), ..Default::default() })
+            .unwrap();
+        let root = taffy
+            .new_with_children(
+                Style { direction, box_sizing: BoxSizing::ContentBox, border: Rect::length(1.0), ..root_style(200.0) },
+                &[left, right, next_left, independent],
+            )
+            .unwrap();
+
+        taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(
+            (
+                taffy.layout(root).unwrap().size,
+                taffy.layout(next_left).unwrap().location,
+                taffy.layout(independent).unwrap().location,
+                taffy.layout(independent).unwrap().size,
+            ),
+            (
+                Size { width: 202.0, height: 102.0 },
+                Point { x: 1.0, y: 51.0 },
+                Point { x: 161.0, y: 51.0 },
+                Size { width: 40.0, height: 40.0 },
+            ),
+            "direction={direction:?}",
+        );
+    }
+}
+
+/// Regression for the `stretch` variants covered by
+/// <https://wpt.live/css/css-sizing/stretch/bfc-next-to-float-1.html> and
+/// <https://wpt.live/css/css-sizing/stretch/bfc-next-to-float-2.html>.
+///
+/// The available size of an independent formatting context is the selected
+/// float-exclusion opportunity, not the full containing block. Preferred,
+/// minimum, and maximum `stretch` constraints must all be resolved in that
+/// opportunity's constraint space.
+#[test]
+fn independent_formatting_context_stretch_uses_the_available_float_band() {
+    for (size, min_size, max_size) in [
+        (Size { width: Dimension::stretch(), height: length(100.0) }, Size::auto(), Size::auto()),
+        (
+            Size { width: length(0.0), height: length(100.0) },
+            Size { width: Dimension::stretch(), height: auto() },
+            Size::auto(),
+        ),
+        (
+            Size { width: length(1000.0), height: length(100.0) },
+            Size::auto(),
+            Size { width: Dimension::stretch(), height: auto() },
+        ),
+    ] {
+        let mut taffy = new_test_tree();
+        let floated = taffy.new_leaf(float_block(100.0, 100.0, Float::Left)).unwrap();
+        let independent = taffy
+            .new_leaf(Style { display: Display::FlowRoot, size, min_size, max_size, ..Default::default() })
+            .unwrap();
+        let root = taffy.new_with_children(root_style(200.0), &[floated, independent]).unwrap();
+
+        taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+        assert_eq!(taffy.layout(independent).unwrap().location, Point { x: 100.0, y: 0.0 });
+        assert_eq!(taffy.layout(independent).unwrap().size, Size { width: 100.0, height: 100.0 });
+    }
+}
+
+/// The float opportunity constrains the border box. Content-box sizing and
+/// margins must therefore be accounted for before resolving `stretch`.
+#[test]
+fn independent_formatting_context_stretch_keeps_box_edges_inside_the_float_band() {
+    let mut taffy = new_test_tree();
+    let floated = taffy.new_leaf(float_block(100.0, 100.0, Float::Left)).unwrap();
+    let independent = taffy
+        .new_leaf(Style {
+            display: Display::FlowRoot,
+            box_sizing: BoxSizing::ContentBox,
+            size: Size { width: Dimension::stretch(), height: length(100.0) },
+            margin: Rect { left: length(10.0), ..Rect::zero() },
+            padding: Rect { left: length(10.0), right: length(10.0), ..Rect::zero() },
+            border: Rect { left: length(10.0), right: length(10.0), ..Rect::zero() },
+            ..Default::default()
+        })
+        .unwrap();
+    let root = taffy.new_with_children(root_style(200.0), &[floated, independent]).unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    assert_eq!(taffy.layout(independent).unwrap().location, Point { x: 100.0, y: 0.0 });
+    assert_eq!(taffy.layout(independent).unwrap().size, Size { width: 100.0, height: 100.0 });
 }

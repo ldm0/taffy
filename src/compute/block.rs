@@ -37,7 +37,7 @@ use super::common::intrinsic_size::{
 use super::common::used_size::{stretch_border_box_available_space, StretchSizeProperties};
 
 #[cfg(feature = "float_layout")]
-use super::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
+use super::float::{BfcLayoutOpportunity, BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 #[cfg(feature = "float_layout")]
 use crate::{Clear, Float, FloatDirection};
 
@@ -249,7 +249,30 @@ impl BlockContext<'_> {
         slot
     }
 
-    /// Search for a BFC line/block-space suitable for a box that establishes
+    /// Enumerate BFC line/block opportunities suitable for a box that
+    /// establishes an independent formatting context.
+    pub fn bfc_layout_opportunities(
+        &self,
+        min_block_offset: f32,
+        margins: [f32; 2],
+        direction: Direction,
+        clear: Clear,
+    ) -> Vec<BfcLayoutOpportunity> {
+        let mut opportunities = self.bfc.float_context.bfc_layout_opportunities(
+            min_block_offset + self.block_offset,
+            self.content_box_line_insets,
+            margins,
+            direction,
+            clear,
+        );
+        for opportunity in &mut opportunities {
+            opportunity.y -= self.block_offset;
+            opportunity.x -= self.line_insets[0];
+        }
+        opportunities
+    }
+
+    /// Search for one BFC line/block-space suitable for a box that establishes
     /// an independent formatting context (whose border box must not overlap floats).
     pub fn find_bfc_slot(
         &self,
@@ -334,6 +357,7 @@ use super::common::alignment::{apply_alignment_fallback, compute_alignment_offse
 use super::common::content_size::compute_content_size_contribution;
 
 /// Per-child data that is accumulated and modified over the course of the layout algorithm
+#[derive(Clone)]
 struct BlockItem {
     /// The identifier for the associated node
     node_id: NodeId,
@@ -418,6 +442,7 @@ struct BlockItem {
 }
 
 /// A child fragment waiting at the logical/physical layout boundary.
+#[derive(Clone)]
 struct PendingBlockLayout {
     /// Physical fragment data other than its final top-left point.
     layout: Layout,
@@ -746,10 +771,14 @@ fn compute_inner(
         block_ctx,
     );
 
-    // Root BFCs contain floats
+    // A root BFC contains the margin boxes of its floats. The contribution is
+    // measured from this box's border-box block start, so append the box's own
+    // block-end content inset just as the normal-flow accumulator does.
     #[cfg(feature = "float_layout")]
-    if block_ctx.is_bfc_root() || is_scroll_container {
-        intrinsic_outer_block_size = intrinsic_outer_block_size.max(block_ctx.floated_block_size_contribution());
+    if (block_ctx.is_bfc_root() || is_scroll_container) && block_ctx.has_floats() {
+        let floated_outer_block_size =
+            block_ctx.floated_block_size_contribution() + logical_content_box_inset.block_end;
+        intrinsic_outer_block_size = intrinsic_outer_block_size.max(floated_outer_block_size);
     }
 
     let container_outer_block_size = if apply_available_intrinsic_floor {
@@ -1583,6 +1612,109 @@ fn resolve_block_item_known_dimensions(
     }
 }
 
+/// Constraint-space inputs shared by the final layout of in-flow block
+/// children.
+///
+/// Keeping construction here is important for independent formatting
+/// contexts: each float opportunity must run the same complete sizing
+/// protocol, including ratio-dependent automatic minimums and descendant
+/// percentage geometry.
+#[derive(Clone, Copy, Debug)]
+struct InFlowBlockChildConstraints {
+    /// Operation requested by the parent layout pass.
+    run_mode: RunMode,
+    /// Physical containing-block size used to resolve child percentages.
+    parent_size: Size<Option<f32>>,
+    /// Writing mode that defines the parent's inline and block axes.
+    parent_writing_mode: WritingMode,
+    /// Block-axis space offered independently of each float opportunity.
+    available_block_space: AvailableSpace,
+    /// Parent-selected physical margins excluded from explicit stretch.
+    ignored_margins_for_stretch: Rect<bool>,
+}
+
+impl InFlowBlockChildConstraints {
+    /// Resolve a child's complete final-layout input for one offered inline
+    /// size.
+    fn layout_input(
+        self,
+        tree: &mut impl LayoutBlockContainer,
+        item: &mut BlockItem,
+        stretch_inline_size: f32,
+        non_auto_inline_margin_sum: f32,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> LayoutInput {
+        // The offered inline size is the border-box opportunity after float
+        // exclusion. Reconstruct the child's margin-box constraint so the
+        // common final-style resolver accounts for margins exactly once.
+        let child_constraint_inline_size = (stretch_inline_size + non_auto_inline_margin_sum).max(0.0);
+        let child_available_space = self.parent_writing_mode.to_physical(LogicalSize {
+            inline_size: AvailableSpace::Definite(child_constraint_inline_size),
+            block_size: self.available_block_space,
+        });
+        resolve_block_item_final_style(
+            tree,
+            item,
+            self.parent_size,
+            self.parent_writing_mode,
+            child_available_space,
+            self.ignored_margins_for_stretch,
+        );
+
+        // A block formatting context owns the used inline size of a child that
+        // participates in normal block stretch. Fit-content children
+        // (including orthogonal, floated, table, and replaced boxes) keep that
+        // axis unresolved and consume the same value only as available space.
+        let known_dimensions = if item.inline_auto_behavior == AutoSizeBehavior::FitContent {
+            item.size.maybe_clamp(item.min_size, item.max_size)
+        } else {
+            let mut logical_size = self.parent_writing_mode.to_logical(item.size);
+            let logical_min_size = self.parent_writing_mode.to_logical(item.min_size);
+            let logical_max_size = self.parent_writing_mode.to_logical(item.max_size);
+            logical_size.inline_size = Some(
+                logical_size
+                    .inline_size
+                    .unwrap_or(stretch_inline_size)
+                    .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size),
+            );
+            self.parent_writing_mode.to_physical(logical_size).maybe_clamp(item.min_size, item.max_size)
+        };
+
+        let resolved_dimensions = resolve_block_item_known_dimensions(
+            tree,
+            item,
+            ChildLayoutInput::new(
+                known_dimensions,
+                self.parent_size,
+                self.parent_writing_mode,
+                child_available_space,
+                SizingMode::ContentSize,
+                vertical_margins_are_collapsible,
+            )
+            .with_inline_auto_behavior(item.inline_auto_behavior)
+            .with_block_auto_behavior(AutoSizeBehavior::FitContent)
+            .with_ignored_margins_for_stretch(self.ignored_margins_for_stretch),
+        );
+
+        LayoutInput {
+            run_mode: self.run_mode,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::Layout,
+            axis: RequestedAxis::Both,
+            inline_auto_behavior: item.inline_auto_behavior,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
+            known_dimensions: resolved_dimensions.known_dimensions,
+            definite_dimensions: resolved_dimensions.percentage_resolution_dimensions,
+            parent_size: self.parent_size,
+            parent_writing_mode: self.parent_writing_mode,
+            available_space: child_available_space,
+            ignored_margins_for_stretch: self.ignored_margins_for_stretch,
+            vertical_margins_are_collapsible,
+        }
+    }
+}
+
 /// Immutable container state shared while positioning in-flow block children.
 #[derive(Clone, Copy, Debug)]
 struct BlockContainerLayoutContext {
@@ -1777,14 +1909,6 @@ fn perform_final_layout_on_in_flow_children(
                 inline_size: AvailableSpace::Definite(container_inner_inline_size),
                 block_size: child_constraint_block_size,
             });
-            resolve_block_item_final_style(
-                tree,
-                item,
-                parent_size,
-                writing_mode,
-                container_child_available_space,
-                item_ignored_margins_for_stretch,
-            );
             let item_margin =
                 writing_direction.to_logical_box_strut(item.margin.map(|margin| {
                     margin.resolve_to_option(margin_percentage_basis, |val, basis| tree.calc(val, basis))
@@ -1798,6 +1922,15 @@ fn perform_final_layout_on_in_flow_children(
             #[cfg(feature = "float_layout")]
             if let Some(float_direction) = item.float.float_direction() {
                 has_active_floats = true;
+
+                resolve_block_item_final_style(
+                    tree,
+                    item,
+                    parent_size,
+                    writing_mode,
+                    container_child_available_space,
+                    item_ignored_margins_for_stretch,
+                );
 
                 // Child constraint spaces include margins, matching Blink's
                 // ConstraintSpace contract. The child sizing boundary removes
@@ -1924,11 +2057,19 @@ fn perform_final_layout_on_in_flow_children(
             #[cfg(feature = "float_layout")]
             let mut item_moved_past_float = false;
 
-            let (stretch_inline_size, float_avoiding_position) = if item.is_in_same_bfc {
+            let child_constraints = InFlowBlockChildConstraints {
+                run_mode,
+                parent_size,
+                parent_writing_mode: writing_mode,
+                available_block_space: child_constraint_block_size,
+                ignored_margins_for_stretch: item_ignored_margins_for_stretch,
+            };
+
+            let (stretch_inline_size, float_avoiding_position, independent_layout) = if item.is_in_same_bfc {
                 let stretch_inline_size = container_inner_inline_size - item_non_auto_inline_margin_sum;
                 let position = LogicalOffset::ZERO;
 
-                (stretch_inline_size, position)
+                (stretch_inline_size, position, None)
             } else {
                 'block: {
                     // Set block margin offset for a different-BFC child.
@@ -1952,50 +2093,59 @@ fn perform_final_layout_on_in_flow_children(
                         // its margin sum, keeping the margin box non-negative.
                         let min_auto_inline_size = -item_non_auto_inline_margin_sum;
 
-                        // Find the earliest slot at or beyond the minimum block
-                        // offset with enough inline space for the border box.
-                        let mut slot_segment = None;
-                        let slot = loop {
-                            let slot = block_ctx.find_bfc_slot(
-                                min_block_offset,
-                                line_margins,
-                                direction,
-                                item.clear,
-                                slot_segment,
-                            );
-                            let Some(segment_id) = slot.segment_id else { break slot };
-                            let item_size = writing_mode.to_logical(item.size);
-                            let min_size = writing_mode.to_logical(item.min_size);
-                            let max_size = writing_mode.to_logical(item.max_size);
-                            let inline_size = item_size
-                                .inline_size
-                                .unwrap_or(slot.stretch_width.max(min_auto_inline_size))
-                                .maybe_clamp(min_size.inline_size, max_size.inline_size);
-                            if inline_size <= slot.border_width + 0.001 {
-                                break slot;
-                            }
-                            slot_segment = Some(segment_id);
-                        };
+                        // Like Blink's LayoutNewFormattingContext, lay the
+                        // child out in each two-dimensional opportunity. Its
+                        // final block size may depend on the offered inline
+                        // size through wrapping or a preferred aspect ratio,
+                        // so an inline-only fit check is insufficient.
+                        let opportunities =
+                            block_ctx.bfc_layout_opportunities(min_block_offset, line_margins, direction, item.clear);
+                        for slot in opportunities {
+                            let stretch_inline_size = slot.stretch_width.max(min_auto_inline_size);
 
-                        // Moving in the block direction to avoid a float
-                        // separates the item's block-start margin from the
-                        // parent's collapsing strut.
-                        if slot.y > min_block_offset {
-                            item_moved_past_float = true;
+                            // Sizing resolution mutates the per-item used
+                            // constraints. Keep speculative opportunities
+                            // isolated and commit only the accepted one.
+                            let mut candidate = item.clone();
+                            let inputs = child_constraints.layout_input(
+                                tree,
+                                &mut candidate,
+                                stretch_inline_size,
+                                item_non_auto_inline_margin_sum,
+                                Line::FALSE,
+                            );
+                            let item_layout = tree.compute_child_layout(candidate.node_id, inputs);
+                            let final_logical_size = writing_mode.to_logical(item_layout.size);
+                            let fits_opportunity = !slot.is_float_constrained()
+                                || (final_logical_size.inline_size <= slot.border_width + 0.001
+                                    && final_logical_size.block_size <= slot.block_size + 0.001);
+                            if !fits_opportunity {
+                                continue;
+                            }
+
+                            // Moving in the block direction to avoid a float
+                            // separates the item's block-start margin from the
+                            // parent's collapsing strut.
+                            if slot.y > min_block_offset {
+                                item_moved_past_float = true;
+                            }
+
+                            *item = candidate;
+                            has_active_floats = slot.is_float_constrained();
+                            item_avoids_floats = true;
+                            break 'block (
+                                stretch_inline_size,
+                                logical_from_bfc_offset(
+                                    BfcOffset { line_offset: slot.x, block_offset: slot.y },
+                                    slot.border_width,
+                                    container_outer_inline_size,
+                                    direction,
+                                ),
+                                Some(item_layout),
+                            );
                         }
 
-                        has_active_floats = slot.segment_id.is_some();
-                        item_avoids_floats = true;
-                        let stretch_inline_size = slot.stretch_width.max(min_auto_inline_size);
-                        break 'block (
-                            stretch_inline_size,
-                            logical_from_bfc_offset(
-                                BfcOffset { line_offset: slot.x, block_offset: slot.y },
-                                slot.border_width,
-                                container_outer_inline_size,
-                                direction,
-                            ),
-                        );
+                        unreachable!("BFC opportunities always include unrestricted space below floats");
                     }
 
                     if !has_active_floats {
@@ -2006,71 +2156,12 @@ fn perform_final_layout_on_in_flow_children(
                                 inline_offset: content_box_inset.inline_start,
                                 block_offset: min_block_offset,
                             },
+                            None,
                         );
                     }
 
                     unreachable!("One of the above cases will always be hit");
                 }
-            };
-
-            // A block formatting context owns the used inline size of a child
-            // that participates in normal block stretch. Fit-content children
-            // (including orthogonal, floated, table, and replaced boxes) keep
-            // that axis unresolved and consume the same value only as
-            // available space in their own formatting algorithm. This is the
-            // important distinction for orthogonal fallback constraints: a
-            // 600px fallback may cap wrapping, but it must not become a fixed
-            // 600px child size.
-            let known_dimensions = if item.inline_auto_behavior == AutoSizeBehavior::FitContent {
-                item.size.maybe_clamp(item.min_size, item.max_size)
-            } else {
-                let mut logical_size = writing_mode.to_logical(item.size);
-                let logical_min_size = writing_mode.to_logical(item.min_size);
-                let logical_max_size = writing_mode.to_logical(item.max_size);
-                logical_size.inline_size = Some(
-                    logical_size
-                        .inline_size
-                        .unwrap_or(stretch_inline_size)
-                        .maybe_clamp(logical_min_size.inline_size, logical_max_size.inline_size),
-                );
-                writing_mode.to_physical(logical_size).maybe_clamp(item.min_size, item.max_size)
-            };
-
-            let child_constraint_inline_size = (stretch_inline_size + item_non_auto_inline_margin_sum).max(0.0);
-            let child_available_space = writing_mode.to_physical(LogicalSize {
-                inline_size: AvailableSpace::Definite(child_constraint_inline_size),
-                block_size: child_constraint_block_size,
-            });
-            let resolved_dimensions = resolve_block_item_known_dimensions(
-                tree,
-                item,
-                ChildLayoutInput::new(
-                    known_dimensions,
-                    parent_size,
-                    writing_mode,
-                    child_available_space,
-                    SizingMode::ContentSize,
-                    if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
-                )
-                .with_inline_auto_behavior(item.inline_auto_behavior)
-                .with_block_auto_behavior(AutoSizeBehavior::FitContent)
-                .with_ignored_margins_for_stretch(item_ignored_margins_for_stretch),
-            );
-            let inputs = LayoutInput {
-                run_mode,
-                sizing_mode: SizingMode::InherentSize,
-                sizing_purpose: SizingPurpose::Layout,
-                axis: RequestedAxis::Both,
-                inline_auto_behavior: item.inline_auto_behavior,
-                block_auto_behavior: crate::AutoSizeBehavior::FitContent,
-                orthogonal_fallback: OrthogonalFallback::UseInitialContainingBlock,
-                known_dimensions: resolved_dimensions.known_dimensions,
-                definite_dimensions: resolved_dimensions.percentage_resolution_dimensions,
-                parent_size,
-                parent_writing_mode: writing_mode,
-                available_space: child_available_space,
-                ignored_margins_for_stretch: item_ignored_margins_for_stretch,
-                vertical_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
             };
 
             #[cfg(feature = "float_layout")]
@@ -2081,12 +2172,17 @@ fn perform_final_layout_on_in_flow_children(
             let clear_pos = f32::NEG_INFINITY;
 
             let item_layout = if item.is_in_same_bfc {
+                let inputs = child_constraints.layout_input(
+                    tree,
+                    item,
+                    stretch_inline_size,
+                    item_non_auto_inline_margin_sum,
+                    Line::TRUE,
+                );
                 // Replaced elements may not have a known inline size; their
                 // measure function sizes them instead of stretch sizing.
-                let inline_size = writing_mode
-                    .to_logical(resolved_dimensions.known_dimensions)
-                    .inline_size
-                    .unwrap_or(stretch_inline_size);
+                let inline_size =
+                    writing_mode.to_logical(inputs.known_dimensions).inline_size.unwrap_or(stretch_inline_size);
 
                 // TODO: account for auto margins
                 let inset_start = item_non_auto_margin.inline_start + content_box_inset.inline_start;
@@ -2112,7 +2208,16 @@ fn perform_final_layout_on_in_flow_children(
                 }
 
                 output
+            } else if let Some(item_layout) = independent_layout {
+                item_layout
             } else {
+                let inputs = child_constraints.layout_input(
+                    tree,
+                    item,
+                    stretch_inline_size,
+                    item_non_auto_inline_margin_sum,
+                    Line::FALSE,
+                );
                 tree.compute_child_layout(item.node_id, inputs)
             };
             item.depends_on_block_constraints |= item_layout.block_constraint_dependency();

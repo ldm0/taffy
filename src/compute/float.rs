@@ -69,6 +69,50 @@ pub struct BfcSlot {
     pub stretch_width: f32,
 }
 
+/// A two-dimensional opportunity for a box that establishes an independent
+/// formatting context.
+///
+/// Unlike [`BfcSlot`], this records how far the inline geometry remains valid
+/// in the block axis. The child must be laid out before the caller can decide
+/// whether its final border box fits.
+#[derive(Debug, Clone, Copy)]
+pub struct BfcLayoutOpportunity {
+    /// Physical left edge of the border-box opportunity.
+    pub x: f32,
+    /// Physical block-start edge of the opportunity.
+    pub y: f32,
+    /// Maximum border-box width that does not overlap a float.
+    pub border_width: f32,
+    /// Width used to resolve an automatic inline size after margins.
+    pub stretch_width: f32,
+    /// The block-axis extent for which this inline opportunity remains free of
+    /// floats. Opportunities below every float have infinite extent.
+    pub block_size: f32,
+    /// Whether a float exclusion constrains this opportunity.
+    float_constrained: bool,
+}
+
+impl BfcLayoutOpportunity {
+    /// Whether the final border box must fit the opportunity's inline extent.
+    ///
+    /// In unobstructed space, an oversized box may overflow its containing
+    /// block. While floats are adjacent, its border box may not overlap them.
+    pub fn is_float_constrained(&self) -> bool {
+        self.float_constrained
+    }
+}
+
+/// Inline geometry shared by every vertical band in a BFC layout opportunity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BfcSlotGeometry {
+    /// Physical left edge of the border box opportunity.
+    x: f32,
+    /// Maximum border-box width that does not overlap a float.
+    border_width: f32,
+    /// Width used to resolve an automatic inline size after margins.
+    stretch_width: f32,
+}
+
 /// A floated box
 #[derive(Debug, Clone, Default)]
 pub struct PlacedFloatedBox {
@@ -637,6 +681,140 @@ impl FloatContext {
         }
     }
 
+    /// Resolve the inline geometry of an opportunity shared by one or more
+    /// adjacent float segments.
+    fn resolve_bfc_slot_geometry(
+        &self,
+        float_insets: [f32; 2],
+        has_float: [bool; 2],
+        containing_block_insets: [f32; 2],
+        margin_insets: [f32; 2],
+        direction: Direction,
+    ) -> BfcSlotGeometry {
+        let lead = match direction {
+            Direction::Ltr => 0,
+            Direction::Rtl => 1,
+        };
+        let trail = 1 - lead;
+        let mut fit_insets = [0.0; 2];
+        let mut stretch_insets = [0.0; 2];
+        fit_insets[lead] =
+            if has_float[lead] { float_insets[lead].max(margin_insets[lead]) } else { margin_insets[lead] };
+        stretch_insets[lead] = fit_insets[lead];
+        fit_insets[trail] = if has_float[trail] {
+            float_insets[trail].max(containing_block_insets[trail])
+        } else {
+            // A positive trailing margin may overflow the containing block edge (it does
+            // not affect fit), but a negative one widens the space for the border box.
+            margin_insets[trail].min(containing_block_insets[trail])
+        };
+        stretch_insets[trail] =
+            if has_float[trail] { float_insets[trail].max(margin_insets[trail]) } else { margin_insets[trail] };
+        BfcSlotGeometry {
+            x: fit_insets[0],
+            border_width: self.available_width - fit_insets[0] - fit_insets[1],
+            stretch_width: self.available_width - stretch_insets[0] - stretch_insets[1],
+        }
+    }
+
+    /// Enumerate two-dimensional opportunities for a box that establishes an
+    /// independent formatting context.
+    ///
+    /// Each result is a maximal rectangle in source order: first by block
+    /// start, then from wider/shorter to narrower/taller rectangles at the
+    /// same start. This lets the caller lay the child out against an
+    /// opportunity's inline size and reject it when the resulting block size
+    /// exceeds [`BfcSlot::block_size`], matching the exclusion-space protocol
+    /// used by browser layout engines.
+    ///
+    /// The box's margins are resolved against the containing block's content
+    /// edges. Margins may overlap adjacent floats, but the border box may not.
+    pub fn bfc_layout_opportunities(
+        &self,
+        min_y: f32,
+        containing_block_insets: [f32; 2],
+        margins: [f32; 2],
+        direction: Direction,
+        clear: Clear,
+    ) -> Vec<BfcLayoutOpportunity> {
+        let margin_insets = [containing_block_insets[0] + margins[0], containing_block_insets[1] + margins[1]];
+        let no_float_width = self.available_width - margin_insets[0] - margin_insets[1];
+        let no_float_opportunity = |y| BfcLayoutOpportunity {
+            x: margin_insets[0],
+            y,
+            border_width: no_float_width,
+            stretch_width: no_float_width,
+            block_size: f32::INFINITY,
+            float_constrained: false,
+        };
+
+        // Apply clearance before deciding whether any exclusion geometry is
+        // still active. This also covers zero-height floats, which contribute
+        // a clearance threshold without occupying a segment.
+        let min_y = min_y.max(self.cleared_threshold(clear).unwrap_or(f32::NEG_INFINITY));
+        if !self.has_active_floats(min_y) {
+            return core::iter::once(no_float_opportunity(min_y)).collect();
+        }
+
+        let first_segment =
+            self.segments.iter().position(|segment| segment.y.end > min_y).unwrap_or(self.segments.len());
+
+        let mut opportunities = Vec::new();
+        for start_idx in first_segment..self.segments.len() {
+            let start_y = self.segments[start_idx].y.start.max(min_y);
+            let mut float_insets = [0.0_f32; 2];
+            let mut has_float = [false; 2];
+            let mut geometry: Option<BfcSlotGeometry> = None;
+
+            for segment in &self.segments[start_idx..] {
+                float_insets[0] = float_insets[0].max(segment.insets[0]);
+                float_insets[1] = float_insets[1].max(segment.insets[1]);
+                has_float[0] |= segment.has_float[0];
+                has_float[1] |= segment.has_float[1];
+                let next_geometry = self.resolve_bfc_slot_geometry(
+                    float_insets,
+                    has_float,
+                    containing_block_insets,
+                    margin_insets,
+                    direction,
+                );
+
+                if let Some(previous_geometry) = geometry {
+                    if previous_geometry != next_geometry && previous_geometry.border_width >= -0.001 {
+                        opportunities.push(BfcLayoutOpportunity {
+                            x: previous_geometry.x,
+                            y: start_y,
+                            border_width: previous_geometry.border_width.max(0.0),
+                            stretch_width: previous_geometry.stretch_width,
+                            block_size: segment.y.start - start_y,
+                            float_constrained: true,
+                        });
+                    }
+                }
+                geometry = Some(next_geometry);
+            }
+
+            // The same narrow rectangle remains valid below the final float,
+            // even though a wider unrestricted opportunity starts there too.
+            if let Some(geometry) = geometry {
+                if geometry.border_width >= -0.001 {
+                    opportunities.push(BfcLayoutOpportunity {
+                        x: geometry.x,
+                        y: start_y,
+                        border_width: geometry.border_width.max(0.0),
+                        stretch_width: geometry.stretch_width,
+                        block_size: f32::INFINITY,
+                        float_constrained: true,
+                    });
+                }
+            }
+        }
+
+        let below_floats = self.segments.last().map(|segment| segment.y.end).unwrap_or(min_y).max(min_y);
+        opportunities.push(no_float_opportunity(below_floats));
+        opportunities
+    }
+
     /// Search for a space suitable for laying out a box that establishes an independent
     /// formatting context (whose border box must not overlap floats).
     ///
@@ -681,53 +859,35 @@ impl FloatContext {
         }
 
         // Clearance clears past the bottom of floats on the relevant side, including
-        // zero-sized floats which occupy no segment
+        // zero-sized floats which occupy no segment.
         let min_y = min_y.max(self.cleared_threshold(clear).unwrap_or(f32::NEG_INFINITY));
 
-        // The min starting segment index
         let at_least = after.map(|idx| idx + 1).unwrap_or(0);
         let hwm = at_least.max(self.cleared_segment(clear).map(|idx| idx + 1).unwrap_or(0));
-
         let start_idx = self
             .segments
             .get(hwm..)
             .and_then(|segments| segments.iter().position(|segment| segment.y.end > min_y).map(|idx| idx + hwm));
         let start_idx = start_idx.unwrap_or(self.segments.len());
+
         match self.segments.get(start_idx) {
             Some(segment) => {
-                let lead = match direction {
-                    Direction::Ltr => 0,
-                    Direction::Rtl => 1,
-                };
-                let trail = 1 - lead;
-                let has_lead_float = segment.has_float[lead];
-                let has_trail_float = segment.has_float[trail];
-                let mut fit_insets = [0.0; 2];
-                let mut stretch_insets = [0.0; 2];
-                fit_insets[lead] =
-                    if has_lead_float { segment.insets[lead].max(margin_insets[lead]) } else { margin_insets[lead] };
-                stretch_insets[lead] = fit_insets[lead];
-                fit_insets[trail] = if has_trail_float {
-                    segment.insets[trail].max(containing_block_insets[trail])
-                } else {
-                    // A positive trailing margin may overflow the containing block edge (it does
-                    // not affect fit), but a negative one widens the space for the border box
-                    margin_insets[trail].min(containing_block_insets[trail])
-                };
-                stretch_insets[trail] = if has_trail_float {
-                    segment.insets[trail].max(margin_insets[trail])
-                } else {
-                    margin_insets[trail]
-                };
+                let geometry = self.resolve_bfc_slot_geometry(
+                    segment.insets,
+                    segment.has_float,
+                    containing_block_insets,
+                    margin_insets,
+                    direction,
+                );
                 BfcSlot {
                     segment_id: Some(start_idx),
-                    x: fit_insets[0],
+                    x: geometry.x,
                     y: segment.y.start.max(min_y),
-                    border_width: self.available_width - fit_insets[0] - fit_insets[1],
-                    stretch_width: self.available_width - stretch_insets[0] - stretch_insets[1],
+                    border_width: geometry.border_width,
+                    stretch_width: geometry.stretch_width,
                 }
             }
-            // Below all floats
+            // Below all floats.
             None => BfcSlot {
                 y: self.segments.last().map(|segment| segment.y.end).unwrap_or(min_y).max(min_y),
                 ..no_float_slot

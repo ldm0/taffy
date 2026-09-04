@@ -55,7 +55,7 @@ pub use self::flexbox::compute_flexbox_layout;
 pub use self::grid::compute_grid_layout;
 
 #[cfg(feature = "float_layout")]
-pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
+pub use self::float::{BfcLayoutOpportunity, BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
 #[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 pub use self::common::absolute::InsetModifiedContainingBlock;
