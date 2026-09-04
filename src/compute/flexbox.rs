@@ -293,11 +293,11 @@ struct FlexItem {
     /// Resolved flex basis state. This retains whether resolution needed a
     /// content-based fallback, rather than inferring it from CSS syntax.
     used_flex_basis: UsedFlexBasis,
-    /// Whether the item's block-axis main size was initially indefinite.
+    /// Whether the item's initial block size was indefinite.
     ///
-    /// Flex layout can later assign an exact used main size while descendants
-    /// must still treat percentage block sizes as unresolved. This is the
-    /// semantic counterpart of Blink's
+    /// Flex layout can later assign an exact used main or cross size while
+    /// descendants must still treat percentage block sizes as unresolved.
+    /// This is the semantic counterpart of Blink's
     /// `FlexItem::is_initial_block_size_indefinite`.
     initial_block_size_is_indefinite: bool,
     /// Content block-size callback backed by initial inline geometry and the
@@ -314,8 +314,10 @@ struct FlexItem {
     /// Authored `stretch` sizing properties retained until the flex line owns
     /// the final cross-axis available size.
     stretch: StretchSizeProperties,
-    /// The cross-alignment of this item
-    align_self: AlignSelf,
+    /// Effective cross-alignment after cross-axis auto margins have suppressed
+    /// alignment. This mirrors Blink's `ResolvedAlignSelf`; consumers never
+    /// need to repeat the auto-margin exclusion.
+    alignment: AlignSelf,
     /// Writing mode that owns this item's baseline-sharing context.
     baseline_writing_mode: WritingMode,
     /// Baseline-sharing group used on the flex line's cross axis.
@@ -1107,6 +1109,25 @@ fn compute_constants(
     }
 }
 
+/// Resolve the alignment value that participates in flex sizing.
+///
+/// Cross-axis automatic margins absorb the alignment opportunity and suppress
+/// `align-self`, including its stretch and baseline effects. Normalize that
+/// rule once when the item is constructed, matching Blink's
+/// `FlexLayoutAlgorithm::ResolvedAlignSelf` boundary.
+#[inline(always)]
+fn resolve_flex_item_alignment(
+    alignment: AlignSelf,
+    margin_is_auto: Rect<bool>,
+    direction: FlexDirection,
+) -> AlignSelf {
+    if margin_is_auto.cross_start(direction) || margin_is_auto.cross_end(direction) {
+        AlignSelf::FLEX_START
+    } else {
+        alignment
+    }
+}
+
 /// Generate anonymous flex items.
 ///
 /// # [9.1. Initial Setup](https://www.w3.org/TR/css-flexbox-1/#box-manip)
@@ -1209,7 +1230,7 @@ fn generate_anonymous_flex_items(
                 p.maybe_resolve(s, |val, basis| tree.calc(val, basis))
             });
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = child_style
+            let alignment = child_style
                 .align_self()
                 .unwrap_or(constants.align_items)
                 .resolve_normal(AlignItems::STRETCH)
@@ -1220,6 +1241,7 @@ fn generate_anonymous_flex_items(
                     constants.inline_direction,
                     constants.dir.cross_axis(),
                 );
+            let alignment = resolve_flex_item_alignment(alignment, margin_is_auto, constants.dir);
             let baseline_writing_mode = determine_baseline_writing_mode(
                 constants.writing_direction(),
                 child_writing_mode,
@@ -1229,7 +1251,7 @@ fn generate_anonymous_flex_items(
                 constants.writing_direction(),
                 baseline_writing_mode,
                 constants.main_axis_is_inline,
-                align_self.is_last_baseline(),
+                alignment.is_last_baseline(),
                 constants.wrap_reverse,
             );
             let overflow = child_style.overflow();
@@ -1334,6 +1356,13 @@ fn generate_anonymous_flex_items(
                 ..constraint_input
             });
             size = constraints_with_transfer.size;
+            let block_axis = child_writing_mode.block_axis();
+            let computed_cross_size_is_auto = raw_size.cross(constants.dir).is_auto();
+            let cross_size_becomes_definite = block_axis == constants.dir.cross_axis()
+                && alignment == AlignSelf::STRETCH
+                && computed_cross_size_is_auto;
+            let initial_block_size_is_indefinite =
+                constraints_with_transfer.size.get_abs(block_axis).is_none() && !cross_size_becomes_definite;
 
             Some(FlexItem {
                 node: child,
@@ -1347,7 +1376,7 @@ fn generate_anonymous_flex_items(
                 max_size_with_transfer: constraints_with_transfer.max_size,
                 aspect_ratio,
                 used_flex_basis,
-                initial_block_size_is_indefinite: false,
+                initial_block_size_is_indefinite,
                 ratio_content_block_flex_basis,
                 depends_on_block_constraints,
                 is_replaced,
@@ -1359,7 +1388,7 @@ fn generate_anonymous_flex_items(
                 margin_is_auto,
                 padding,
                 border,
-                align_self,
+                alignment,
                 baseline_writing_mode,
                 baseline_group,
                 overflow,
@@ -1532,11 +1561,7 @@ fn flex_basis_cross_geometry(
             .cross(dir)
             .maybe_clamp(item.min_size_with_transfer.cross(dir), item.max_size_with_transfer.cross(dir)),
     );
-    if item.align_self == AlignSelf::STRETCH
-        && !item.margin_is_auto.cross_start(dir)
-        && !item.margin_is_auto.cross_end(dir)
-        && known_dimensions.cross(dir).is_none()
-    {
+    if item.alignment == AlignSelf::STRETCH && known_dimensions.cross(dir).is_none() {
         known_dimensions
             .set_cross(dir, cross_axis_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
     }
@@ -1750,15 +1775,12 @@ fn determine_flex_base_size(
             // base sizing is required to ignore. A column intrinsic pass is
             // the only parent-owned inline override at this stage.
             let known_dimensions = Size::from_cross(dir, child.column_intrinsic_cross_size);
-            let inline_auto_behavior = if child.align_self == AlignSelf::STRETCH
-                && !child.margin_is_auto.cross_start(dir)
-                && !child.margin_is_auto.cross_end(dir)
-                && constants.node_inner_size.cross(dir).is_some()
-            {
-                AutoSizeBehavior::StretchExplicit
-            } else {
-                AutoSizeBehavior::FitContent
-            };
+            let inline_auto_behavior =
+                if child.alignment == AlignSelf::STRETCH && constants.node_inner_size.cross(dir).is_some() {
+                    AutoSizeBehavior::StretchExplicit
+                } else {
+                    AutoSizeBehavior::FitContent
+                };
             child
                 .ratio_content_block_flex_basis
                 .map(|resolver| {
@@ -1801,11 +1823,11 @@ fn determine_flex_base_size(
         let child_writing_mode = tree.get_writing_mode(child.node);
         let aspect_ratio_provides_block_main_size =
             !child.is_replaced && (content_ratio_size.is_some() || ratio_content_block_size.applied_aspect_ratio);
-        child.initial_block_size_is_indefinite = constants.main_axis_is_block
-            && dir.main_axis() == child_writing_mode.block_axis()
-            && constants.node_definite_inner_size.main(dir).is_none()
-            && used_flex_basis_is_indefinite
-            && !aspect_ratio_provides_block_main_size;
+        if dir.main_axis() == child_writing_mode.block_axis() {
+            child.initial_block_size_is_indefinite = constants.node_definite_inner_size.main(dir).is_none()
+                && used_flex_basis_is_indefinite
+                && !aspect_ratio_provides_block_main_size;
+        }
 
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
@@ -2119,7 +2141,7 @@ fn flex_item_content_main_contribution(
         child_max_cross,
     );
     let mut child_known_dimensions = item.resolved_preferred_size.with_main(dir, None);
-    if item.align_self == AlignSelf::STRETCH && child_known_dimensions.cross(dir).is_none() {
+    if item.alignment == AlignSelf::STRETCH && child_known_dimensions.cross(dir).is_none() {
         child_known_dimensions
             .set_cross(dir, cross_axis_available_space.into_option().maybe_sub(item.margin.cross_axis_sum(dir)));
     }
@@ -2391,7 +2413,7 @@ fn determine_container_main_size(
                                     // Known dimensions for child sizing
                                     let child_known_dimensions = {
                                         let mut ckd = item.resolved_preferred_size.with_main(dir, None);
-                                        if item.align_self == AlignSelf::STRETCH && ckd.cross(dir).is_none() {
+                                        if item.alignment == AlignSelf::STRETCH && ckd.cross(dir).is_none() {
                                             ckd.set_cross(
                                                 dir,
                                                 cross_axis_available_space
@@ -2837,7 +2859,7 @@ fn flex_item_baseline_ascent(
 ) -> f32 {
     let baseline_writing_direction = crate::WritingDirection::new(item.baseline_writing_mode, Direction::Ltr);
     let baseline_block_size = item.baseline_writing_mode.to_logical(fragment_size).block_size;
-    let baseline_set = if item.align_self.is_last_baseline() { last_baselines } else { first_baselines };
+    let baseline_set = if item.alignment.is_last_baseline() { last_baselines } else { first_baselines };
     let font_baseline = FontBaseline::for_writing_mode(constants.writing_mode);
     // A physical baseline is meaningful only in the writing mode in which
     // the child produced it. This mirrors Blink's
@@ -2857,7 +2879,7 @@ fn flex_item_baseline_ascent(
     // Store distance from the sharing-group edge: first baseline uses
     // cross-start, last baseline uses cross-end, and wrap-reverse swaps those
     // group edges.
-    let baseline = if constants.wrap_reverse != item.align_self.is_last_baseline() {
+    let baseline = if constants.wrap_reverse != item.alignment.is_last_baseline() {
         baseline_block_size - baseline
     } else {
         baseline
@@ -2881,7 +2903,7 @@ fn calculate_children_base_lines(
 ) {
     for line in flex_lines {
         for child in line.items.iter_mut() {
-            if !child.align_self.is_baseline() {
+            if !child.alignment.is_baseline() {
                 continue;
             }
 
@@ -2954,15 +2976,9 @@ fn collect_baseline_metrics(
     group: BaselineGroup,
     direction: FlexDirection,
 ) -> Option<BaselineMetrics> {
-    items
-        .iter()
-        .filter(|child| {
-            child.align_self.is_baseline()
-                && child.baseline_group == group
-                && !child.margin_is_auto.cross_start(direction)
-                && !child.margin_is_auto.cross_end(direction)
-        })
-        .fold(None, |metrics, child| {
+    items.iter().filter(|child| child.alignment.is_baseline() && child.baseline_group == group).fold(
+        None,
+        |metrics, child| {
             let ascent = child.baseline_ascent;
             let descent = child.hypothetical_outer_size.cross(direction) - ascent;
             Some(match metrics {
@@ -2972,7 +2988,8 @@ fn collect_baseline_metrics(
                 },
                 None => BaselineMetrics { max_ascent: ascent, max_descent: descent },
             })
-        })
+        },
+    )
 }
 
 /// Calculate the cross size of each flex line.
@@ -3092,11 +3109,7 @@ fn determine_used_cross_size(
             let used_cross_size = stretch.preferred.cross(constants.dir).unwrap_or_else(|| {
                 if re_resolves_stretch_limit {
                     child.unclamped_hypothetical_cross_size
-                } else if child.align_self == AlignSelf::STRETCH
-                    && !child.margin_is_auto.cross_start(constants.dir)
-                    && !child.margin_is_auto.cross_end(constants.dir)
-                    && child_style.size().cross(constants.dir).is_auto()
-                {
+                } else if child.alignment == AlignSelf::STRETCH && child_style.size().cross(constants.dir).is_auto() {
                     // Flex stretch ignores min/max constraints transferred
                     // through aspect-ratio. `child.min_size` and
                     // `child.max_size` already retain exactly the authored
@@ -3269,11 +3282,8 @@ fn align_flex_items_along_cross_axis(
     // line cross size, fall back to logical Start to avoid data loss. See CSS Box Alignment 3
     // §4.3 <https://www.w3.org/TR/css-align-3/#overflow-values>. Otherwise, drop the safety
     // field so the match below operates on a bare keyword and stays exhaustive.
-    let align_keyword = if child.align_self.is_safe() && free_space < 0.0 {
-        AlignItemsKeyword::Start
-    } else {
-        child.align_self.keyword
-    };
+    let align_keyword =
+        if child.alignment.is_safe() && free_space < 0.0 { AlignItemsKeyword::Start } else { child.alignment.keyword };
 
     match align_keyword {
         AlignItemsKeyword::Start => {
@@ -3425,11 +3435,11 @@ fn calculate_flex_item(
     let direction = constants.dir;
     let horizontal_direction = constants.horizontal_direction;
     let final_dimensions = item.target_size.map(Some);
-    let percentage_resolution_dimensions = if item.initial_block_size_is_indefinite {
-        final_dimensions.with_main(direction, None)
-    } else {
-        final_dimensions
-    };
+    let child_writing_mode = tree.get_writing_mode(item.node);
+    let mut percentage_resolution_dimensions = final_dimensions;
+    if item.initial_block_size_is_indefinite {
+        percentage_resolution_dimensions.set_abs(child_writing_mode.block_axis(), None);
+    }
     let layout_output = tree.perform_child_layout(
         item.node,
         ChildLayoutInput::new(
@@ -3451,11 +3461,7 @@ fn calculate_flex_item(
         ..
     } = layout_output;
 
-    let child_writing_mode = tree.get_writing_mode(item.node);
-    if item.align_self.is_baseline()
-        && !item.margin_is_auto.cross_start(direction)
-        && !item.margin_is_auto.cross_end(direction)
-    {
+    if item.alignment.is_baseline() {
         // The line metric was collected during sizing, but placement must use
         // the baseline exposed by this final fragment. Final constraints can
         // change a descendant's line layout and therefore its baseline.
