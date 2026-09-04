@@ -10,7 +10,7 @@ use crate::{AutoSizeBehavior, AvailableSpace, Dimension, MaybeMath, Rect, Size, 
 /// margin-box constraint for every child and ensures ordinary auto and
 /// fit-content sizing continue to account for all margins.
 #[inline(always)]
-pub(crate) fn stretch_border_box_available_space(
+pub fn stretch_border_box_available_space(
     available_margin_box_space: Size<AvailableSpace>,
     margins: Rect<f32>,
     ignored_margins: Rect<bool>,

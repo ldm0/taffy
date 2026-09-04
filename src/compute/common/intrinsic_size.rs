@@ -7,8 +7,8 @@
 //! retained intrinsic-size state is required.
 
 use super::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, ResolvedSizeConstraints,
-    SizeConstraintInput, TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, PreferredAspectRatioInput, ResolvedAxisConstraints,
+    ResolvedSizeConstraints, SizeConstraintInput, TransferredSizesMode,
 };
 use super::used_size::{
     resolve_inline_auto_size, resolve_stretch_axis_value, resolve_used_size, stretch_border_box_available_space,
@@ -1308,6 +1308,7 @@ pub(crate) fn resolve_node_size_constraints(
         writing_mode,
         inline_auto_behavior: inputs.inline_auto_behavior,
         block_auto_behavior: inputs.block_auto_behavior,
+        auto_size_available_space: available_space,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border: padding_border_size,
@@ -1345,15 +1346,16 @@ pub(crate) fn resolve_node_size_constraints(
         resolved.max_size,
         padding_border_size,
     );
-    let size_after_fixed_ratio = apply_preferred_aspect_ratio(
-        size_before_fixed_ratio,
-        size_is_auto,
+    let size_after_fixed_ratio = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
+        size: size_before_fixed_ratio,
+        authored_auto: size_is_auto,
         writing_mode,
-        inputs.inline_auto_behavior,
-        inputs.block_auto_behavior,
+        inline_auto_behavior: inputs.inline_auto_behavior,
+        block_auto_behavior: inputs.block_auto_behavior,
+        auto_size_available_space: available_space,
         aspect_ratio,
-        padding_border_size,
-    );
+        padding_border: padding_border_size,
+    });
     let outer_size = resolve_used_size(
         inputs.known_dimensions,
         size_after_fixed_ratio,
@@ -1370,6 +1372,7 @@ pub(crate) fn resolve_node_size_constraints(
         writing_mode,
         inline_auto_behavior: inputs.inline_auto_behavior,
         block_auto_behavior: inputs.block_auto_behavior,
+        auto_size_available_space: available_space,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border: padding_border_size,

@@ -1346,6 +1346,7 @@ fn generate_anonymous_flex_items(
                 writing_mode: child_writing_mode,
                 inline_auto_behavior: AutoSizeBehavior::FitContent,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
+                auto_size_available_space: Size::MAX_CONTENT,
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border: pb_sum,
@@ -1514,6 +1515,7 @@ fn resolve_flex_item_intrinsic_block_constraints(
         writing_mode: child_writing_mode,
         inline_auto_behavior: AutoSizeBehavior::FitContent,
         block_auto_behavior: AutoSizeBehavior::FitContent,
+        auto_size_available_space: Size::MAX_CONTENT,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio: item.aspect_ratio,
         padding_border,
@@ -3852,6 +3854,7 @@ fn perform_absolute_layout_on_absolute_children(
             writing_mode: child_writing_mode,
             inline_auto_behavior,
             block_auto_behavior,
+            auto_size_available_space: implicit_auto_stretch_size.map(AvailableSpace::from),
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_sum,
@@ -3903,6 +3906,7 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         })
+        .size
         .maybe_clamp(min_size, max_size);
         // CSS 2.2 10.3.7 shrink-to-fit sizing applies to non-replaced absolute
         // boxes. A replaced leaf follows 10.3.8 and resolves against the IMCB.

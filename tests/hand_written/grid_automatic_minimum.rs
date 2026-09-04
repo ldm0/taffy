@@ -252,6 +252,75 @@ fn block_axis_uses_the_same_minimum_contribution_source_rules() {
 }
 
 #[test]
+fn replaced_width_transfers_to_an_automatic_row_minimum() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item_style = || Style {
+        item_is_replaced: true,
+        size: Size { width: length(50.0), height: auto() },
+        aspect_ratio: Some(0.5),
+        align_self: Some(AlignSelf::STRETCH),
+        justify_self: Some(AlignSelf::STRETCH),
+        ..Default::default()
+    };
+    let first = tree.new_leaf_with_context(item_style(), TestNodeContext::aspect_ratio(25.0, 2.0)).unwrap();
+    let second = tree.new_leaf_with_context(item_style(), TestNodeContext::aspect_ratio(25.0, 2.0)).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size::from_lengths(10.0, 10.0),
+                grid_template_columns: vec![auto(), auto()],
+                ..Default::default()
+            },
+            &[first, second],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    assert_eq!(info.columns.sizes, vec![50.0, 50.0]);
+    assert_eq!(info.rows.sizes, vec![100.0]);
+    assert_eq!(tree.layout(first).unwrap().size, Size { width: 50.0, height: 100.0 });
+    assert_eq!(tree.layout(second).unwrap().size, Size { width: 50.0, height: 100.0 });
+}
+
+#[test]
+fn replaced_height_transfers_to_an_automatic_column_minimum() {
+    let mut tree = new_test_tree();
+    tree.disable_rounding();
+    let item_style = || Style {
+        item_is_replaced: true,
+        size: Size { width: auto(), height: length(50.0) },
+        aspect_ratio: Some(2.0),
+        align_self: Some(AlignSelf::STRETCH),
+        justify_self: Some(AlignSelf::STRETCH),
+        ..Default::default()
+    };
+    let first = tree.new_leaf_with_context(item_style(), TestNodeContext::aspect_ratio(50.0, 0.5)).unwrap();
+    let second = tree.new_leaf_with_context(item_style(), TestNodeContext::aspect_ratio(50.0, 0.5)).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style { display: Display::Grid, size: Size::from_lengths(10.0, 10.0), ..Default::default() },
+            &[first, second],
+        )
+        .unwrap();
+
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+
+    let DetailedLayoutInfo::Grid(info) = tree.detailed_layout_info(grid) else {
+        panic!("grid layout must publish detailed track information");
+    };
+    assert_eq!(info.columns.sizes, vec![100.0]);
+    assert_eq!(info.rows.sizes, vec![50.0, 50.0]);
+    assert_eq!(tree.layout(first).unwrap().size, Size { width: 100.0, height: 50.0 });
+    assert_eq!(tree.layout(second).unwrap().size, Size { width: 100.0, height: 50.0 });
+}
+
+#[test]
 fn content_box_minimum_contribution_includes_padding_and_border() {
     let (track, item) = layout_single_auto_track(
         TrackAxis::Columns,

@@ -1,7 +1,8 @@
 //! Shared preferred-size and min/max transfer rules for `aspect-ratio`.
 
 use crate::{
-    AbsoluteAxis, AutoSizeBehavior, BoxSizing, LogicalSize, MaybeMath, ResolvedAspectRatio, Size, WritingMode,
+    AbsoluteAxis, AutoSizeBehavior, AvailableSpace, BoxSizing, LogicalSize, MaybeMath, ResolvedAspectRatio, Size,
+    WritingMode,
 };
 
 /// Preferred and limiting sizes after applying a preferred aspect ratio.
@@ -144,6 +145,10 @@ pub(crate) struct SizeConstraintInput {
     pub inline_auto_behavior: AutoSizeBehavior,
     /// How an authored logical block-size of `auto` resolves in this space.
     pub block_auto_behavior: AutoSizeBehavior,
+    /// Available border-box space for formatting-context-owned automatic
+    /// sizing. An explicit stretch precedes ratio transfer only when its axis
+    /// is definite; an intrinsic constraint falls back to content sizing.
+    pub auto_size_available_space: Size<AvailableSpace>,
     /// Whether opposite-axis min/max constraints transfer through the ratio.
     pub transferred_sizes_mode: TransferredSizesMode,
     /// Used preferred aspect ratio and its sizing box.
@@ -170,6 +175,7 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
         writing_mode,
         inline_auto_behavior,
         block_auto_behavior,
+        auto_size_available_space,
         transferred_sizes_mode,
         aspect_ratio,
         padding_border,
@@ -212,15 +218,16 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     let min_size = Size { width: min_width, height: min_height };
     let max_size = Size { width: max_width, height: max_height };
 
-    let resolved_size = apply_preferred_aspect_ratio(
+    let resolved_size = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
         size,
-        size_is_auto,
+        authored_auto: size_is_auto,
         writing_mode,
         inline_auto_behavior,
         block_auto_behavior,
+        auto_size_available_space,
         aspect_ratio,
         padding_border,
-    );
+    });
     let aspect_ratio_applied = Size {
         width: size.width.is_none() && resolved_size.width.is_some(),
         height: size.height.is_none() && resolved_size.height.is_some(),
@@ -229,36 +236,63 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size, constraint_sources }
 }
 
+/// Constraint-space state needed to order a preferred ratio against automatic
+/// sizing owned by the containing formatting context.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PreferredAspectRatioInput {
+    /// Resolved preferred border-box size before ratio transfer.
+    pub size: Size<Option<f32>>,
+    /// Axes whose preferred size was authored as `auto`.
+    pub authored_auto: Size<bool>,
+    /// Writing mode that defines the logical sizing axes.
+    pub writing_mode: WritingMode,
+    /// Automatic inline-size behavior selected by the formatting context.
+    pub inline_auto_behavior: AutoSizeBehavior,
+    /// Automatic block-size behavior selected by the formatting context.
+    pub block_auto_behavior: AutoSizeBehavior,
+    /// Available border-box space for automatic sizing in each physical axis.
+    pub auto_size_available_space: Size<AvailableSpace>,
+    /// Used preferred aspect ratio and its sizing box.
+    pub aspect_ratio: Option<ResolvedAspectRatio>,
+    /// Physical padding-and-border sums for ratio box conversion.
+    pub padding_border: Size<f32>,
+}
+
 /// Apply a preferred ratio while preserving the constraint space's auto-size
 /// ordering in both logical axes.
-pub(crate) fn apply_preferred_aspect_ratio(
-    size: Size<Option<f32>>,
-    size_is_auto: Size<bool>,
-    writing_mode: WritingMode,
-    inline_auto_behavior: AutoSizeBehavior,
-    block_auto_behavior: AutoSizeBehavior,
-    aspect_ratio: Option<ResolvedAspectRatio>,
-    padding_border: Size<f32>,
-) -> Size<Option<f32>> {
+pub(crate) fn apply_preferred_aspect_ratio(input: PreferredAspectRatioInput) -> Size<Option<f32>> {
+    let PreferredAspectRatioInput {
+        size,
+        authored_auto,
+        writing_mode,
+        inline_auto_behavior,
+        block_auto_behavior,
+        auto_size_available_space,
+        aspect_ratio,
+        padding_border,
+    } = input;
     let ratio_resolved_size =
         size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
     let source = writing_mode.to_logical(size);
-    let authored_auto = writing_mode.to_logical(size_is_auto);
+    let authored_auto = writing_mode.to_logical(authored_auto);
+    let available_space = writing_mode.to_logical(auto_size_available_space);
     let mut resolved = writing_mode.to_logical(ratio_resolved_size);
     if inline_auto_behavior == AutoSizeBehavior::StretchExplicit
+        && available_space.inline_size.is_definite()
         && authored_auto.inline_size
         && source.inline_size.is_none()
         && resolved.inline_size.is_some()
     {
-        // Explicit stretch resolves `auto` before preferred-ratio transfer.
-        // Keep the opposite-axis result and transferred constraints, but leave
-        // the preferred inline size to the containing formatting context.
+        // A definite explicit stretch resolves `auto` before preferred-ratio
+        // transfer. With an intrinsic constraint there is no stretch size to
+        // resolve, so the ratio remains the content-sized fallback.
         resolved.inline_size = None;
     }
     if authored_auto.block_size
         && source.block_size.is_none()
         && resolved.block_size.is_some()
         && block_auto_behavior == AutoSizeBehavior::StretchExplicit
+        && available_space.block_size.is_definite()
     {
         resolved.block_size = None;
     }
@@ -268,7 +302,7 @@ pub(crate) fn apply_preferred_aspect_ratio(
 /// Inputs for resolving formatting-context-owned automatic sizes after
 /// authored preferred sizes and ratio transfers have been resolved.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FormattingContextSizeInput {
+pub struct FormattingContextSizeInput {
     /// Resolved preferred border-box size. Explicit-stretch axes may still be
     /// unresolved because their available size belongs to the formatting
     /// context.
@@ -290,16 +324,30 @@ pub(crate) struct FormattingContextSizeInput {
     pub padding_border: Size<f32>,
 }
 
-/// Resolve stretch and preferred-ratio sizing in CSS logical-axis order.
+/// Automatic-size resolution together with the axes supplied through the
+/// preferred aspect ratio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormattingContextSizeResult {
+    /// Resolved physical border-box size.
+    pub size: Size<Option<f32>>,
+    /// Physical axes whose size was synthesized from the opposite axis by the
+    /// preferred aspect ratio.
+    pub aspect_ratio_applied: Size<bool>,
+}
+
+/// Resolve stretch and preferred-ratio sizing in CSS logical-axis order while
+/// retaining ratio provenance for intrinsic-size caches and parent formatting
+/// algorithms.
 ///
-/// Explicit stretch owns an automatic axis before ratio transfer. An implicit
-/// inline stretch happens only after a ratio has had a chance to use an
-/// authored opposite-axis size, and then supplies the inline basis from which
-/// an automatic block size may be transferred. Implicit block stretch is the
-/// final fallback. Keeping this ordering in one resolver prevents individual
-/// formatting contexts from replaying the ratio over an already-stretched
-/// axis.
-pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput) -> Size<Option<f32>> {
+/// A definite explicit stretch owns an automatic axis before ratio transfer;
+/// without a definite opportunity it falls back to ratio/content sizing. An
+/// implicit inline stretch happens only after a ratio has had a chance to use
+/// an authored opposite-axis size, and then supplies the inline basis from
+/// which an automatic block size may be transferred. Implicit block stretch
+/// is the final fallback. Keeping this ordering in one resolver prevents
+/// individual formatting contexts from replaying the ratio over an
+/// already-stretched axis.
+pub fn resolve_formatting_context_size(input: FormattingContextSizeInput) -> FormattingContextSizeResult {
     let FormattingContextSizeInput {
         size,
         size_is_auto,
@@ -314,13 +362,6 @@ pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput)
     let authored_auto = writing_mode.to_logical(size_is_auto);
     let stretch = writing_mode.to_logical(stretch_size);
 
-    let unresolved_explicit_inline = authored_auto.inline_size
-        && inline_auto_behavior == AutoSizeBehavior::StretchExplicit
-        && stretch.inline_size.is_none();
-    let unresolved_explicit_block = authored_auto.block_size
-        && block_auto_behavior == AutoSizeBehavior::StretchExplicit
-        && stretch.block_size.is_none();
-
     if authored_auto.inline_size && inline_auto_behavior == AutoSizeBehavior::StretchExplicit {
         if let Some(size) = stretch.inline_size {
             resolved.inline_size = Some(size);
@@ -332,17 +373,15 @@ pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput)
         }
     }
 
-    let apply_ratio = |logical_size: LogicalSize<Option<f32>>| {
+    let mut ratio_applied = LogicalSize { inline_size: false, block_size: false };
+    let mut apply_ratio = |logical_size: LogicalSize<Option<f32>>| {
+        let source = logical_size;
         let physical_size = writing_mode.to_physical(logical_size);
         let ratio_size =
             physical_size.maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border);
-        let mut logical_size = writing_mode.to_logical(ratio_size);
-        if unresolved_explicit_inline {
-            logical_size.inline_size = None;
-        }
-        if unresolved_explicit_block {
-            logical_size.block_size = None;
-        }
+        let logical_size = writing_mode.to_logical(ratio_size);
+        ratio_applied.inline_size |= source.inline_size.is_none() && logical_size.inline_size.is_some();
+        ratio_applied.block_size |= source.block_size.is_none() && logical_size.block_size.is_some();
         logical_size
     };
 
@@ -365,7 +404,10 @@ pub(crate) fn resolve_formatting_context_size(input: FormattingContextSizeInput)
     // opportunity as an authored or explicitly stretched block size.
     resolved = apply_ratio(resolved);
 
-    writing_mode.to_physical(resolved)
+    FormattingContextSizeResult {
+        size: writing_mode.to_physical(resolved),
+        aspect_ratio_applied: writing_mode.to_physical(ratio_applied),
+    }
 }
 
 /// Transfer one pair of axis constraints through the preferred ratio.
@@ -442,6 +484,7 @@ fn minimum_constraint(lhs: Option<f32>, rhs: Option<f32>) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style_helpers::TaffyMaxContent;
 
     #[test]
     fn border_box_floor_precedes_preferred_ratio_transfer() {
@@ -453,6 +496,7 @@ mod tests {
             writing_mode: WritingMode::HorizontalTb,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             padding_border: Size { width: 40.0, height: 40.0 },
@@ -471,6 +515,7 @@ mod tests {
             writing_mode: WritingMode::HorizontalTb,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             padding_border: Size { width: 40.0, height: 40.0 },
@@ -486,27 +531,46 @@ mod tests {
         let auto_width = Size { width: true, height: false };
         let source = Size { width: None, height: Some(50.0) };
 
-        let implicit = apply_preferred_aspect_ratio(
-            source,
-            auto_width,
-            WritingMode::HorizontalTb,
-            AutoSizeBehavior::StretchImplicit,
-            AutoSizeBehavior::FitContent,
-            ratio,
-            Size::ZERO,
-        );
-        let explicit = apply_preferred_aspect_ratio(
-            source,
-            auto_width,
-            WritingMode::HorizontalTb,
-            AutoSizeBehavior::StretchExplicit,
-            AutoSizeBehavior::FitContent,
-            ratio,
-            Size::ZERO,
-        );
+        let implicit = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
+            size: source,
+            authored_auto: auto_width,
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::StretchImplicit,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size {
+                width: AvailableSpace::Definite(300.0),
+                height: AvailableSpace::MaxContent,
+            },
+            aspect_ratio: ratio,
+            padding_border: Size::ZERO,
+        });
+        let explicit = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
+            size: source,
+            authored_auto: auto_width,
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::StretchExplicit,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size {
+                width: AvailableSpace::Definite(300.0),
+                height: AvailableSpace::MaxContent,
+            },
+            aspect_ratio: ratio,
+            padding_border: Size::ZERO,
+        });
+        let indefinite_explicit = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
+            size: source,
+            authored_auto: auto_width,
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::StretchExplicit,
+            block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
+            aspect_ratio: ratio,
+            padding_border: Size::ZERO,
+        });
 
         assert_eq!(implicit, Size { width: Some(100.0), height: Some(50.0) });
         assert_eq!(explicit, Size { width: None, height: Some(50.0) });
+        assert_eq!(indefinite_explicit, Size { width: Some(100.0), height: Some(50.0) });
     }
 
     #[test]
@@ -522,7 +586,49 @@ mod tests {
             padding_border: Size::ZERO,
         });
 
-        assert_eq!(resolved, Size { width: Some(180.0), height: Some(60.0) });
+        assert_eq!(resolved.size, Size { width: Some(180.0), height: Some(60.0) });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: true, height: false });
+    }
+
+    #[test]
+    fn explicit_block_stretch_reports_the_ratio_derived_inline_axis() {
+        let resolved = resolve_formatting_context_size(FormattingContextSizeInput {
+            size: Size::NONE,
+            size_is_auto: Size { width: true, height: true },
+            writing_mode: WritingMode::HorizontalTb,
+            inline_auto_behavior: AutoSizeBehavior::FitContent,
+            block_auto_behavior: AutoSizeBehavior::StretchExplicit,
+            stretch_size: Size { width: None, height: Some(60.0) },
+            aspect_ratio: ResolvedAspectRatio::new(3.0, BoxSizing::BorderBox),
+            padding_border: Size::ZERO,
+        });
+
+        assert_eq!(resolved.size, Size { width: Some(180.0), height: Some(60.0) });
+        assert_eq!(resolved.aspect_ratio_applied, Size { width: true, height: false });
+    }
+
+    #[test]
+    fn explicit_stretch_precedes_ratio_only_with_a_definite_opportunity() {
+        let resolve = |stretch_width| {
+            resolve_formatting_context_size(FormattingContextSizeInput {
+                size: Size { width: None, height: Some(50.0) },
+                size_is_auto: Size { width: true, height: false },
+                writing_mode: WritingMode::HorizontalTb,
+                inline_auto_behavior: AutoSizeBehavior::StretchExplicit,
+                block_auto_behavior: AutoSizeBehavior::FitContent,
+                stretch_size: Size { width: stretch_width, height: None },
+                aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
+                padding_border: Size::ZERO,
+            })
+        };
+
+        let definite = resolve(Some(300.0));
+        assert_eq!(definite.size, Size { width: Some(300.0), height: Some(50.0) });
+        assert_eq!(definite.aspect_ratio_applied, Size { width: false, height: false });
+
+        let indefinite = resolve(None);
+        assert_eq!(indefinite.size, Size { width: Some(100.0), height: Some(50.0) });
+        assert_eq!(indefinite.aspect_ratio_applied, Size { width: true, height: false });
     }
 
     #[test]
@@ -535,6 +641,7 @@ mod tests {
             writing_mode: WritingMode::HorizontalTb,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(0.5, BoxSizing::BorderBox),
             padding_border: Size::ZERO,
@@ -556,6 +663,7 @@ mod tests {
             writing_mode: WritingMode::HorizontalTb,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             padding_border: Size::ZERO,
@@ -575,6 +683,7 @@ mod tests {
             writing_mode: WritingMode::HorizontalTb,
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size::MAX_CONTENT,
             transferred_sizes_mode: TransferredSizesMode::Ignore,
             aspect_ratio: ResolvedAspectRatio::new(2.0, BoxSizing::BorderBox),
             padding_border: Size::ZERO,

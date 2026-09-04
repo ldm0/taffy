@@ -59,7 +59,11 @@ pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCal
 
 #[cfg(any(feature = "block_layout", feature = "flexbox", feature = "grid"))]
 pub use self::common::absolute::InsetModifiedContainingBlock;
+pub use self::common::aspect_ratio::{
+    resolve_formatting_context_size, FormattingContextSizeInput, FormattingContextSizeResult,
+};
 pub use self::common::intrinsic_size::{resolve_leaf_node_sizing, ResolvedNodeSizing};
+pub use self::common::used_size::stretch_border_box_available_space;
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AvailableSpace, CoreStyle};
 use crate::tree::{

@@ -96,11 +96,16 @@ enum MinimumContributionClamp {
     /// The contribution comes from an authored size or an ordinary zero
     /// minimum and is not limited by the spanned tracks.
     None,
-    /// Clamp the content-based automatic minimum to the definite maximum of
-    /// the spanned tracks, without crossing the item's outer inset floor.
+    /// Clamp the content-based automatic part to the definite maximum of the
+    /// spanned tracks, without crossing a non-automatic minimum constraint.
+    ///
+    /// This floor includes the item's structural border/padding minimum and
+    /// any authored or ratio-transferred minimum that must remain independent
+    /// of Grid's automatic-minimum clamp.
     FixedTrackMaximum {
-        /// The item's padding and border sum in the measured axis.
-        border_padding_floor: f32,
+        /// Border-box minimum that is not supplied by the content-based
+        /// automatic minimum.
+        unclamped_floor: f32,
     },
 }
 
@@ -113,8 +118,8 @@ impl GridItemMinimumContribution {
 
     /// Construct a content-based automatic minimum with its inset floor.
     #[inline(always)]
-    fn content_based(border_box_size: f32, border_padding_floor: f32) -> Self {
-        Self { border_box_size, clamp: MinimumContributionClamp::FixedTrackMaximum { border_padding_floor } }
+    fn content_based(border_box_size: f32, unclamped_floor: f32) -> Self {
+        Self { border_box_size, clamp: MinimumContributionClamp::FixedTrackMaximum { unclamped_floor } }
     }
 
     /// Resolve the complete outer contribution after margins, baseline shims,
@@ -123,8 +128,8 @@ impl GridItemMinimumContribution {
     pub fn outer_size(self, margin_axis_sum: f32, fixed_track_maximum: impl FnOnce() -> Option<f32>) -> f32 {
         let outer_size = self.border_box_size + margin_axis_sum;
         let clamped_size = match self.clamp {
-            MinimumContributionClamp::FixedTrackMaximum { border_padding_floor } => fixed_track_maximum()
-                .map(|maximum| outer_size.min(maximum.max(margin_axis_sum + border_padding_floor)))
+            MinimumContributionClamp::FixedTrackMaximum { unclamped_floor } => fixed_track_maximum()
+                .map(|maximum| outer_size.min(maximum.max(margin_axis_sum + unclamped_floor)))
                 .unwrap_or(outer_size),
             MinimumContributionClamp::None => outer_size,
         };
@@ -953,25 +958,36 @@ impl GridItem {
             writing_mode: tree.get_writing_mode(self.node),
             inline_auto_behavior: AutoSizeBehavior::FitContent,
             block_auto_behavior: AutoSizeBehavior::FitContent,
+            auto_size_available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent },
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio: self.aspect_ratio,
             padding_border: padding_border_size,
         });
-        if let Some(minimum) = resolved.min_size.get_abs(physical_axis) {
-            return GridItemMinimumContribution::unclamped(minimum);
+        let authored_minimum_is_auto = self.min_size.get_abs(physical_axis).is_auto();
+        let axis_constraints = resolved.axis_constraints(physical_axis);
+        let non_automatic_minimum =
+            resolved.min_size.get_abs(physical_axis).unwrap_or(padding_border_size.get_abs(physical_axis));
+
+        // A non-auto min-size replaces the automatic minimum altogether. Its
+        // resolved value may still include an opposite-axis constraint
+        // transferred through the preferred ratio.
+        if !authored_minimum_is_auto {
+            return GridItemMinimumContribution::unclamped(non_automatic_minimum);
         }
 
         let overflow = self.overflow.get(axis);
         if let Some(minimum) = overflow.maybe_into_automatic_min_size() {
+            let minimum = axis_constraints.resolve(None, None, Some(minimum)).0.unwrap_or(minimum);
             return GridItemMinimumContribution::unclamped(minimum);
         }
 
         // Automatic minimum size. See https://www.w3.org/TR/css-grid-1/#min-size-auto
         if !self.uses_content_based_automatic_minimum(axis, axis_tracks) {
-            return GridItemMinimumContribution::unclamped(0.0);
+            let minimum = axis_constraints.resolve(None, None, Some(0.0)).0.unwrap_or(0.0);
+            return GridItemMinimumContribution::unclamped(minimum);
         }
 
-        let mut minimum_contribution = self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
+        let mut automatic_minimum = self.min_content_contribution_cached(axis, tree, grid_area_size, grid_area_size);
 
         // If the item is a compressible replaced element, and has a definite preferred size or maximum size in the
         // relevant axis, the size suggestion is capped by those sizes; for this purpose, any indefinite percentages
@@ -980,14 +996,24 @@ impl GridItem {
             let size = self.size.get_abs(physical_axis).maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis));
             let max_size =
                 self.max_size.get_abs(physical_axis).maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis));
-            minimum_contribution = minimum_contribution.maybe_min(size).maybe_min(max_size);
+            automatic_minimum = automatic_minimum.maybe_min(size).maybe_min(max_size);
         }
+
+        // Merge the automatic minimum only after it has been measured. In
+        // particular, the structural border-box floor may have transferred
+        // through the preferred ratio and produced a numeric constraint even
+        // though the authored min-size in this axis is still `auto`; treating
+        // that number as an early result would discard the content size
+        // suggestion entirely.
+        let minimum_contribution =
+            axis_constraints.resolve(None, None, Some(automatic_minimum)).0.unwrap_or(automatic_minimum);
 
         // The content-based automatic minimum is the only contribution that
         // may be clamped by a fixed maximum on the spanned tracks. The clamp
         // is resolved later, once the outer margins and baseline shim are
-        // available; its floor is this border and padding sum.
-        GridItemMinimumContribution::content_based(minimum_contribution, padding_border_size.get_abs(physical_axis))
+        // available. Authored and ratio-transferred constraints form an
+        // unclamped floor rather than becoming part of that clamp.
+        GridItemMinimumContribution::content_based(minimum_contribution, non_automatic_minimum)
     }
 
     /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters

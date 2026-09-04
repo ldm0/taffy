@@ -1134,6 +1134,10 @@ fn generate_item_list(
                 writing_mode: child_writing_mode,
                 inline_auto_behavior,
                 block_auto_behavior: AutoSizeBehavior::FitContent,
+                auto_size_available_space: Size {
+                    width: AvailableSpace::MaxContent,
+                    height: AvailableSpace::MaxContent,
+                },
                 transferred_sizes_mode: TransferredSizesMode::Normal,
                 aspect_ratio,
                 padding_border: pb_sum,
@@ -1397,6 +1401,7 @@ fn resolve_block_item_final_style(
         writing_mode,
         inline_auto_behavior: item.inline_auto_behavior,
         block_auto_behavior: AutoSizeBehavior::FitContent,
+        auto_size_available_space: child_available_space,
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border: padding_border_sum,
@@ -2593,6 +2598,7 @@ fn perform_absolute_layout_on_absolute_children(
             writing_mode: child_writing_mode,
             inline_auto_behavior,
             block_auto_behavior,
+            auto_size_available_space: implicit_auto_stretch_size.map(AvailableSpace::from),
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_sum,
@@ -2644,6 +2650,7 @@ fn perform_absolute_layout_on_absolute_children(
             aspect_ratio,
             padding_border: padding_border_sum,
         })
+        .size
         .maybe_clamp(min_size, max_size);
 
         // If width is still auto then one or both horizontal insets are also auto. CSS 2.2

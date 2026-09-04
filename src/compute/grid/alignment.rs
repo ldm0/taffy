@@ -367,6 +367,11 @@ pub(super) fn align_and_position_item(
         crate::AbsoluteAxis::Horizontal => (auto_size.horizontal, auto_size.vertical),
         crate::AbsoluteAxis::Vertical => (auto_size.vertical, auto_size.horizontal),
     };
+    let stretch_size = if let Some(imcb) = absolute_imcb {
+        imcb.implicit_auto_stretch_size()
+    } else {
+        grid_area_minus_item_margins_size.map(Some)
+    };
 
     let resolved = resolve_size_constraints(SizeConstraintInput {
         size: inherent_size,
@@ -376,6 +381,7 @@ pub(super) fn align_and_position_item(
         writing_mode: item_writing_mode,
         inline_auto_behavior,
         block_auto_behavior,
+        auto_size_available_space: stretch_size.map(AvailableSpace::from),
         transferred_sizes_mode: TransferredSizesMode::Normal,
         aspect_ratio,
         padding_border: padding_border_size,
@@ -409,11 +415,6 @@ pub(super) fn align_and_position_item(
     min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
     max_size = resolved.max_size;
 
-    let stretch_size = if let Some(imcb) = absolute_imcb {
-        imcb.implicit_auto_stretch_size()
-    } else {
-        grid_area_minus_item_margins_size.map(Some)
-    };
     let Size { width, height } = resolve_formatting_context_size(FormattingContextSizeInput {
         size: inherent_size,
         size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
@@ -423,7 +424,8 @@ pub(super) fn align_and_position_item(
         stretch_size,
         aspect_ratio,
         padding_border: padding_border_size,
-    });
+    })
+    .size;
 
     // Clamp size by min and max width/height. Content-dependent block-axis
     // constraints are resolved only now, once the absolute inline size and

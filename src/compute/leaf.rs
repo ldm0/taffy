@@ -13,7 +13,8 @@ use core::unreachable;
 
 use super::common::aspect_ratio::ResolvedAxisConstraints;
 use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, PreferredAspectRatioInput, SizeConstraintInput,
+    TransferredSizesMode,
 };
 use super::common::intrinsic_size::{BlockSizeProperties, ContentBasedBlockSize, ResolvedNodeSizing};
 use super::common::used_size::{resolve_inline_auto_size, resolve_used_axis, resolve_used_size};
@@ -216,6 +217,7 @@ where
                     writing_mode,
                     inline_auto_behavior: inputs.inline_auto_behavior,
                     block_auto_behavior: inputs.block_auto_behavior,
+                    auto_size_available_space: available_space.maybe_sub(margin.sum_axes()),
                     transferred_sizes_mode: TransferredSizesMode::Normal,
                     aspect_ratio: resolved_aspect_ratio,
                     padding_border: pb_sum,
@@ -230,15 +232,16 @@ where
                 // other axis through the preferred ratio at the leaf boundary just
                 // like an authored one-axis size.
                 let size_before_ratio = known_dimensions.or(style_size);
-                let size_after_ratio = apply_preferred_aspect_ratio(
-                    size_before_ratio,
-                    raw_size.map(|dimension| dimension.is_auto()),
+                let size_after_ratio = apply_preferred_aspect_ratio(PreferredAspectRatioInput {
+                    size: size_before_ratio,
+                    authored_auto: raw_size.map(|dimension| dimension.is_auto()),
                     writing_mode,
-                    inputs.inline_auto_behavior,
-                    inputs.block_auto_behavior,
-                    resolved_aspect_ratio,
-                    pb_sum,
-                );
+                    inline_auto_behavior: inputs.inline_auto_behavior,
+                    block_auto_behavior: inputs.block_auto_behavior,
+                    auto_size_available_space: available_space.maybe_sub(margin.sum_axes()),
+                    aspect_ratio: resolved_aspect_ratio,
+                    padding_border: pb_sum,
+                });
                 let node_size = resolve_inline_auto_size(
                     size_after_ratio,
                     raw_size.map(|dimension| dimension.is_auto()),
