@@ -2,7 +2,7 @@ use taffy::prelude::*;
 use taffy::{
     compute_block_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout_with_context,
     compute_root_layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput,
-    LeafLayoutContext, ResolvedAspectRatio,
+    LeafLayoutContext, ResolvedAspectRatio, WritingMode,
 };
 
 #[derive(Clone)]
@@ -11,6 +11,7 @@ pub(super) struct TestNode {
     pub(super) scrollbar_insets: Rect<f32>,
     pub(super) resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     pub(super) anonymous_block: bool,
+    pub(super) writing_mode: WritingMode,
     pub(super) children: Vec<usize>,
     leaf: bool,
     measured_size: Size<f32>,
@@ -24,6 +25,7 @@ impl TestNode {
             scrollbar_insets,
             resolved_aspect_ratio: None,
             anonymous_block: false,
+            writing_mode: WritingMode::HorizontalTb,
             children: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
@@ -37,6 +39,7 @@ impl TestNode {
             scrollbar_insets: Rect::ZERO,
             resolved_aspect_ratio: None,
             anonymous_block: false,
+            writing_mode: WritingMode::HorizontalTb,
             children: Vec::new(),
             leaf: true,
             measured_size,
@@ -104,6 +107,10 @@ impl LayoutPartialTree for TestTree {
 
     fn get_scrollbar_insets(&self, node_id: NodeId) -> Rect<f32> {
         self.nodes[usize::from(node_id)].scrollbar_insets
+    }
+
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.nodes[usize::from(node_id)].writing_mode
     }
 
     fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> Option<ResolvedAspectRatio> {

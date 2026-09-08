@@ -198,7 +198,7 @@ where
             let style_size = resolved.size;
             let style_min_size = resolved.min_size;
             let style_max_size = resolved.max_size;
-            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
+            let preferred_inline_from_aspect_ratio = writing_mode.to_logical(resolved.aspect_ratio_applied).inline_size;
 
             // A parent formatting context may make exactly one border-box axis
             // definite (for example a stretched flex cross size). Resolve the
@@ -214,25 +214,29 @@ where
                 pb_sum,
             );
             let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-                && known_dimensions.width.is_none()
+                && writing_mode.to_logical(known_dimensions).inline_size.is_none()
                 && (preferred_inline_from_aspect_ratio
-                    || (size_before_ratio.width.is_none() && node_size.width.is_some()));
+                    || (writing_mode.to_logical(size_before_ratio).inline_size.is_none()
+                        && writing_mode.to_logical(node_size).inline_size.is_some()));
             (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
         }
     };
 
     let content_box_inset = padding_border + scrollbar_insets;
+    let writing_direction = crate::WritingDirection::new(writing_mode, style.direction());
+    let logical_padding = writing_direction.to_logical_box_strut(padding);
+    let logical_border = writing_direction.to_logical_box_strut(border);
 
     let has_styles_preventing_being_collapsed_through = !style.is_block()
         || style.overflow().x.is_scroll_container()
         || style.overflow().y.is_scroll_container()
         || style.position() == Position::Absolute
-        || padding.top > 0.0
-        || padding.bottom > 0.0
-        || border.top > 0.0
-        || border.bottom > 0.0
-        || matches!(node_size.height, Some(h) if h > 0.0)
-        || matches!(node_min_size.height, Some(h) if h > 0.0);
+        || logical_padding.block_start > 0.0
+        || logical_padding.block_end > 0.0
+        || logical_border.block_start > 0.0
+        || logical_border.block_end > 0.0
+        || matches!(writing_mode.to_logical(node_size).block_size, Some(size) if size > 0.0)
+        || matches!(writing_mode.to_logical(node_min_size).block_size, Some(size) if size > 0.0);
 
     debug_log!("LEAF");
     debug_log!("node_size", dbg:node_size);
@@ -308,21 +312,23 @@ where
         pb_sum,
     )
     .unwrap_or(measured_outer_size);
-    let ratio_height = Size { width: Some(used_size.width), height: None }
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
-        .height
-        .unwrap_or(0.0);
-    let size = Size {
-        width: used_size.width,
-        height: if known_dimensions.height.is_some() {
-            used_size.height
+    let used_logical_size = writing_mode.to_logical(used_size);
+    let ratio_size = writing_mode
+        .to_physical(crate::LogicalSize { inline_size: Some(used_logical_size.inline_size), block_size: None })
+        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
+    let ratio_block_size = writing_mode.to_logical(ratio_size).block_size.unwrap_or(0.0);
+    let size = writing_mode.to_physical(crate::LogicalSize {
+        inline_size: used_logical_size.inline_size,
+        block_size: if writing_mode.to_logical(known_dimensions).block_size.is_some() {
+            used_logical_size.block_size
         } else {
-            f32_max(used_size.height, ratio_height)
+            f32_max(used_logical_size.block_size, ratio_block_size)
         },
-    };
+    });
 
     let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
-    output.margins_can_collapse_through =
-        !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
+    output.margins_can_collapse_through = !has_styles_preventing_being_collapsed_through
+        && writing_mode.to_logical(size).block_size == 0.0
+        && writing_mode.to_logical(measured_size).block_size == 0.0;
     output.with_applied_aspect_ratio(applied_aspect_ratio)
 }

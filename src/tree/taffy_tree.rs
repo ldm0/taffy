@@ -309,7 +309,7 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_inline_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -368,7 +368,7 @@ where
     /// result internally; only its measurement projection crosses this seam.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_intrinsic_inline_inputs_with_provenance(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -1232,7 +1232,7 @@ mod tests {
             parent_size: Size { width: Some(200.0), height: Some(100.0) },
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
 
         let mut layout_tree = taffy.as_layout_tree();
@@ -1268,7 +1268,7 @@ mod tests {
             parent_size: Size::NONE,
             parent_writing_mode: crate::WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         };
 
         let mut layout_tree = taffy.as_layout_tree();

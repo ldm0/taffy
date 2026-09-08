@@ -45,6 +45,9 @@ pub use leaf::{
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};
 
+#[cfg(all(feature = "block_layout", feature = "float_layout"))]
+pub use self::block::BfcOffset;
+
 #[cfg(feature = "flexbox")]
 pub use self::flexbox::compute_flexbox_layout;
 
@@ -54,7 +57,7 @@ pub use self::grid::compute_grid_layout;
 #[cfg(feature = "float_layout")]
 pub use self::float::{BfcSlot, ContentSlot, FloatContext, FloatIntrinsicWidthCalculator};
 
-use crate::geometry::{Line, Point, Size};
+use crate::geometry::{Line, Size};
 use crate::style::{AvailableSpace, CoreStyle};
 use crate::tree::{
     ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt,
@@ -67,16 +70,16 @@ use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
 use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 pub use self::common::intrinsic_size::{
-    resolve_intrinsic_width_inputs, resolve_intrinsic_width_inputs_with_provenance, ResolvedIntrinsicWidthInputs,
+    resolve_intrinsic_inline_inputs, resolve_intrinsic_inline_inputs_with_provenance, ResolvedIntrinsicInlineInputs,
 };
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
     let root_writing_mode = tree.get_writing_mode(root);
     // A block root only falls back to filling definite available space when
-    // its preferred width is auto. Resolve intrinsic sizing keywords before
+    // its preferred inline size is auto. Resolve intrinsic sizing keywords before
     // that fallback so they remain explicit used sizes at the root seam.
-    let root_inputs = resolve_intrinsic_width_inputs(
+    let root_inputs = resolve_intrinsic_inline_inputs(
         tree,
         root,
         LayoutInput {
@@ -90,7 +93,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             parent_size: available_space.into_options(),
             parent_writing_mode: root_writing_mode,
             available_space,
-            vertical_margins_are_collapsible: Line::FALSE,
+            block_margins_are_collapsible: Line::FALSE,
         },
     );
     let mut known_dimensions = root_inputs.known_dimensions;
@@ -144,11 +147,16 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 _ => None,
             });
 
-            // Block nodes automatically stretch fit their width to fit available space if available space is definite
-            let available_space_based_size = Size {
-                width: available_space.width.into_option().maybe_sub(margin.horizontal_axis_sum()),
-                height: None,
-            };
+            // Automatic block roots fill definite inline space, never the
+            // content-dependent block axis.
+            let available_space_based_size = root_writing_mode.to_physical(crate::LogicalSize {
+                inline_size: root_writing_mode
+                    .to_logical(available_space)
+                    .inline_size
+                    .into_option()
+                    .maybe_sub(root_writing_mode.to_logical(margin.sum_axes()).inline_size),
+                block_size: None,
+            });
 
             let styled_based_known_dimensions = known_dimensions
                 .or(min_max_definite_size)
@@ -177,14 +185,10 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     let padding = style.padding().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let border = style.border().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
     let margin = style.margin().resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
-    let location = Point {
-        x: if style.direction().is_rtl() {
-            available_space.width.into_option().map_or(0.0, |available_width| available_width - output.size.width)
-        } else {
-            0.0
-        },
-        y: 0.0,
-    };
+    let outer_size = available_space.into_options().unwrap_or(output.size);
+    let location = crate::WritingDirection::new(root_writing_mode, style.direction())
+        .converter(outer_size)
+        .to_physical_point(crate::LogicalOffset::ZERO, output.size);
     drop(style);
 
     tree.set_unrounded_layout(

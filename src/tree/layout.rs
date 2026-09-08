@@ -207,8 +207,9 @@ pub struct LayoutInput {
     /// Available space represents an amount of space to layout into, and is used as a soft constraint
     /// for the purpose of wrapping.
     pub available_space: Size<AvailableSpace>,
-    /// Specific to CSS Block layout. Used for correctly computing margin collapsing. You probably want to set this to `Line::FALSE`.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    /// Whether block-start/end margins may collapse through this boundary.
+    /// Uses this node's block direction and is false at an independent BFC root.
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl LayoutInput {
@@ -226,7 +227,7 @@ impl LayoutInput {
         sizing_purpose: SizingPurpose::Layout,
         axis: RequestedAxis::Both,
         block_auto_behavior: AutoSizeBehavior::FitContent,
-        vertical_margins_are_collapsible: Line::FALSE,
+        block_margins_are_collapsible: Line::FALSE,
     };
 
     /// Project the physical tree-boundary inputs into `writing_mode`'s logical
@@ -245,7 +246,7 @@ impl LayoutInput {
             percentage_resolution_size: writing_mode.to_logical(self.parent_size),
             available_size: writing_mode.to_logical(self.available_space),
             requested_axis: self.axis,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 }
@@ -270,8 +271,8 @@ pub(crate) struct ChildLayoutInput {
     pub sizing_mode: SizingMode,
     /// Resolution behavior for an authored logical `block-size: auto`.
     pub block_auto_behavior: AutoSizeBehavior,
-    /// Whether the child's physical vertical margins may collapse through the boundary.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    /// Whether the child's block-start/end margins may collapse through the boundary.
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl ChildLayoutInput {
@@ -283,7 +284,7 @@ impl ChildLayoutInput {
         parent_writing_mode: WritingMode,
         available_space: Size<AvailableSpace>,
         sizing_mode: SizingMode,
-        vertical_margins_are_collapsible: Line<bool>,
+        block_margins_are_collapsible: Line<bool>,
     ) -> Self {
         Self {
             known_dimensions,
@@ -292,7 +293,7 @@ impl ChildLayoutInput {
             available_space,
             sizing_mode,
             block_auto_behavior: AutoSizeBehavior::FitContent,
-            vertical_margins_are_collapsible,
+            block_margins_are_collapsible,
         }
     }
 
@@ -317,7 +318,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 
@@ -335,7 +336,7 @@ impl ChildLayoutInput {
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 }
@@ -372,7 +373,7 @@ pub struct ConstraintSpace {
     /// Physical-axis request retained for compatibility with current callers.
     requested_axis: RequestedAxis,
     /// Block-start/end margin-collapse permissions for block layout.
-    pub vertical_margins_are_collapsible: Line<bool>,
+    pub block_margins_are_collapsible: Line<bool>,
 }
 
 impl ConstraintSpace {
@@ -391,7 +392,7 @@ impl ConstraintSpace {
             parent_size: self.writing_mode.to_physical(self.percentage_resolution_size),
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.writing_mode.to_physical(self.available_size),
-            vertical_margins_are_collapsible: self.vertical_margins_are_collapsible,
+            block_margins_are_collapsible: self.block_margins_are_collapsible,
         }
     }
 
@@ -443,7 +444,7 @@ mod constraint_space_tests {
             parent_size: Size { width: Some(100.0), height: Some(200.0) },
             parent_writing_mode: WritingMode::VerticalRl,
             available_space: Size { width: AvailableSpace::MinContent, height: AvailableSpace::MaxContent },
-            vertical_margins_are_collapsible: Line { start: true, end: false },
+            block_margins_are_collapsible: Line { start: true, end: false },
         };
 
         let space = input.constraint_space(WritingMode::HorizontalTb);
@@ -530,12 +531,14 @@ pub struct LayoutOutput {
     pub first_baselines: Point<Option<f32>>,
     /// The last baseline of the node in each dimension, if any
     pub last_baselines: Point<Option<f32>>,
-    /// Top margin that can be collapsed with. This is used for CSS block layout and can be set to
+    /// Block-start margin that can be collapsed with, in this node's writing mode.
+    /// This is used for CSS block layout and can be set to
     /// `CollapsibleMarginSet::ZERO` for other layout modes that don't support margin collapsing
-    pub top_margin: CollapsibleMarginSet,
-    /// Bottom margin that can be collapsed with. This is used for CSS block layout and can be set to
+    pub block_start_margin: CollapsibleMarginSet,
+    /// Block-end margin that can be collapsed with, in this node's writing mode.
+    /// This is used for CSS block layout and can be set to
     /// `CollapsibleMarginSet::ZERO` for other layout modes that don't support margin collapsing
-    pub bottom_margin: CollapsibleMarginSet,
+    pub block_end_margin: CollapsibleMarginSet,
     /// Whether margins can be collapsed through this node. This is used for CSS block layout and can
     /// be set to `false` for other layout modes that don't support margin collapsing
     pub margins_can_collapse_through: bool,
@@ -551,8 +554,8 @@ impl LayoutOutput {
         content_size: Size::ZERO,
         first_baselines: Point::NONE,
         last_baselines: Point::NONE,
-        top_margin: CollapsibleMarginSet::ZERO,
-        bottom_margin: CollapsibleMarginSet::ZERO,
+        block_start_margin: CollapsibleMarginSet::ZERO,
+        block_end_margin: CollapsibleMarginSet::ZERO,
         margins_can_collapse_through: false,
     };
 
@@ -583,8 +586,8 @@ impl LayoutOutput {
             content_size,
             first_baselines,
             last_baselines,
-            top_margin: CollapsibleMarginSet::ZERO,
-            bottom_margin: CollapsibleMarginSet::ZERO,
+            block_start_margin: CollapsibleMarginSet::ZERO,
+            block_end_margin: CollapsibleMarginSet::ZERO,
             margins_can_collapse_through: false,
         }
     }
