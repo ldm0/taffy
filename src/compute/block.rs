@@ -549,7 +549,11 @@ fn compute_inner(
             .maybe_clamp(min_size, max_size);
         Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
     };
-    let container_content_box_size = known_dimensions.maybe_sub(content_box_inset.sum_axes());
+    let forward_parent_block_size = tree.use_parent_percentage_resolution_block_size_for_children(node_id);
+    let mut child_percentage_size = known_dimensions.maybe_sub(content_box_inset.sum_axes());
+    if forward_parent_block_size {
+        child_percentage_size.height = parent_size.height;
+    }
 
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
@@ -584,7 +588,7 @@ fn compute_inner(
     drop(style);
 
     // 1. Generate items
-    let mut items = generate_item_list(tree, node_id, writing_mode, container_content_box_size, available_space);
+    let mut items = generate_item_list(tree, node_id, writing_mode, child_percentage_size, available_space);
 
     // 2. Compute container width
     let (container_outer_width, content_width_depends_on_block_constraints) = match known_dimensions.width {
@@ -602,24 +606,39 @@ fn compute_inner(
         }
     };
 
+    // Forwarded percentages can change an anonymous wrapper's content height
+    // even without an aspect ratio. Keep those measurements constraint-keyed.
+    let depends_on_block_constraints = content_width_depends_on_block_constraints || forward_parent_block_size;
+
     // Short-circuit if computing size and both dimensions known
     if let (RunMode::ComputeSize, Some(container_outer_height)) = (run_mode, known_dimensions.height) {
         return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: container_outer_height })
-            .with_block_constraint_dependency(content_width_depends_on_block_constraints);
+            .with_block_constraint_dependency(depends_on_block_constraints);
     }
 
     // We can also short-circuit if the width is known and only the width has been requested.
     if run_mode == RunMode::ComputeSize && inputs.axis == RequestedAxis::Horizontal {
         return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: 0.0 })
-            .with_block_constraint_dependency(content_width_depends_on_block_constraints);
+            .with_block_constraint_dependency(depends_on_block_constraints);
     }
 
-    let container_percentage_resolution_height =
-        known_dimensions.height.or(size.height.maybe_max(min_size.height)).or(min_size.height);
+    let container_percentage_resolution_height = if forward_parent_block_size {
+        parent_size.height
+    } else {
+        known_dimensions
+            .height
+            .or(size.height.maybe_max(min_size.height))
+            .or(min_size.height)
+            .maybe_sub(content_box_inset.vertical_axis_sum())
+    };
     // Relative block-axis percentage insets only resolve against a definite
     // containing-block height. A min-height may determine the eventual used
     // height, but it does not make an otherwise-auto height definite.
-    let relative_inset_percentage_resolution_height = definite_dimensions.height.or(size.height);
+    let relative_inset_percentage_resolution_height = if forward_parent_block_size {
+        parent_size.height
+    } else {
+        definite_dimensions.height.or(size.height).maybe_sub(content_box_inset.vertical_axis_sum())
+    };
 
     // 3. Perform final item layout and return content height
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
@@ -737,7 +756,7 @@ fn compute_inner(
         Point { x: None, y: last_baseline },
     )
     .with_block_constraint_dependency(
-        content_width_depends_on_block_constraints || items.iter().any(|item| item.depends_on_block_constraints),
+        depends_on_block_constraints || items.iter().any(|item| item.depends_on_block_constraints),
     );
     output.top_margin = if own_margins_collapse_with_children.start {
         first_child_top_margin_set
@@ -1195,9 +1214,9 @@ struct BlockContainerLayoutContext {
     run_mode: RunMode,
     /// Used physical border-box width of the container.
     outer_width: f32,
-    /// Definite physical height available for descendant percentages.
+    /// Content-box physical height available for descendant percentages.
     percentage_resolution_height: Option<f32>,
-    /// Definite physical height available for relative percentage insets.
+    /// Definite content-box physical height available for relative percentage insets.
     relative_inset_percentage_resolution_height: Option<f32>,
     /// Padding, border, and scrollbar inset around the content box.
     content_box_inset: Rect<f32>,
@@ -1237,14 +1256,10 @@ fn perform_final_layout_on_in_flow_children(
         own_margins_collapse_with_children,
     } = context;
     let container_inner_width = container_outer_width - content_box_inset.horizontal_axis_sum();
-    let container_percentage_resolution_height =
-        container_percentage_resolution_height.maybe_sub(content_box_inset.vertical_axis_sum());
     let parent_size = Size { width: Some(container_inner_width), height: container_percentage_resolution_height };
     let margin_percentage_basis = writing_mode.to_logical(parent_size).inline_size.unwrap_or(0.0);
-    let relative_inset_parent_size = Size {
-        width: Some(container_inner_width),
-        height: relative_inset_percentage_resolution_height.maybe_sub(content_box_inset.vertical_axis_sum()),
-    };
+    let relative_inset_parent_size =
+        Size { width: Some(container_inner_width), height: relative_inset_percentage_resolution_height };
     // Vertical available space in block flow is indefinite, NOT a min-content
     // constraint: MaxContent is taffy's representation of "indefinite".
     // Passing MinContent here made every descendant grid believe it was being

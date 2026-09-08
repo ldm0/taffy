@@ -357,6 +357,17 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
     /// Get the child's styles
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
 
+    /// Whether this implementation-only block forwards its parent's percentage
+    /// block-size to its children instead of establishing a new basis.
+    ///
+    /// CSS anonymous block wrappers must not interrupt percentage resolution.
+    /// Their own used size is still content-based; this does not make the
+    /// wrapper stretch to its parent's height. Ordinary auto-sized blocks and
+    /// anonymous table cells must retain the default behavior.
+    fn use_parent_percentage_resolution_block_size_for_children(&self, _node_id: NodeId) -> bool {
+        false
+    }
+
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
     fn compute_block_child_layout(
