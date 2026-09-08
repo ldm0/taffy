@@ -3,7 +3,7 @@ use crate::style::{AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyw
 
 /// Resolve the `safe`/`unsafe` overflow-position fallback for a self-level alignment value
 /// (used by `align-self` / `justify-self`-style sites and by absolutely-positioned items in
-/// flex/grid). If the alignment subject overflows its alignment container and the requested
+/// grid). If the alignment subject overflows its alignment container and the requested
 /// alignment is `safe`, fall back to logical `Start` per CSS Box Alignment
 /// <https://www.w3.org/TR/css-align-3/#overflow-values>. Otherwise drop the safety modifier
 /// and return the bare keyword.

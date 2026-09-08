@@ -1,6 +1,6 @@
 //! Computes the [flexbox](https://css-tricks.com/snippets/css/a-guide-to-flexbox/) layout algorithm on [`TaffyTree`](crate::TaffyTree) according to the [spec](https://www.w3.org/TR/css-flexbox-1/)
-use crate::compute::common::alignment::{compute_alignment_offset, resolve_self_alignment_safety};
-use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingMode};
+use crate::compute::common::alignment::compute_alignment_offset;
+use crate::geometry::{AbsoluteAxis, Line, LogicalSize, Point, Rect, Size, WritingDirection, WritingMode};
 use crate::style::{
     AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, FlexWrap,
     JustifyContent, LengthPercentageAuto, Overflow, Position, ResolvedAspectRatio,
@@ -15,7 +15,7 @@ use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{AutoSizeBehavior, BoxGenerationMode, BoxSizing, Direction, RequestedAxis};
 
-use super::common::absolute::fit_content_width;
+use super::common::absolute::{fit_content_width, resolve_absolute_margins, StaticPositionAxis, StaticPositionEdge};
 use super::common::alignment::apply_alignment_fallback;
 use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 #[cfg(feature = "content_size")]
@@ -2671,6 +2671,7 @@ fn perform_absolute_layout_on_absolute_children(
         }
 
         let overflow = child_style.overflow();
+        let static_cross_safety = child_style.align_self().map_or(crate::AlignmentSafety::Unsafe, |value| value.safety);
         let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
             child_writing_mode,
             child_style.direction(),
@@ -2846,44 +2847,13 @@ fn perform_absolute_layout_on_absolute_children(
             ),
         );
 
-        let non_auto_margin = margin.map(|m| m.unwrap_or(0.0));
-
-        let free_space = Size {
-            width: constants.container_size.width - final_size.width - non_auto_margin.horizontal_axis_sum(),
-            height: constants.container_size.height - final_size.height - non_auto_margin.vertical_axis_sum(),
-        }
-        .f32_max(Size::ZERO);
-
-        // Expand auto margins to fill available space. Auto margins only absorb free space
-        // when the box is inset-constrained in that axis (both insets set); otherwise they
-        // resolve to zero and the box is statically positioned (CSS2 §10.3.7 / §10.6.4).
-        let resolved_margin = {
-            let auto_margin_size = Size {
-                width: {
-                    let auto_margin_count = margin.left.is_none() as u8 + margin.right.is_none() as u8;
-                    if auto_margin_count > 0 && left.is_some() && right.is_some() {
-                        free_space.width / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-                height: {
-                    let auto_margin_count = margin.top.is_none() as u8 + margin.bottom.is_none() as u8;
-                    if auto_margin_count > 0 && top.is_some() && bottom.is_some() {
-                        free_space.height / auto_margin_count as f32
-                    } else {
-                        0.0
-                    }
-                },
-            };
-
-            Rect {
-                left: margin.left.unwrap_or(auto_margin_size.width),
-                right: margin.right.unwrap_or(auto_margin_size.width),
-                top: margin.top.unwrap_or(auto_margin_size.height),
-                bottom: margin.bottom.unwrap_or(auto_margin_size.height),
-            }
-        };
+        let resolved_margin = resolve_absolute_margins(
+            margin,
+            Rect { left, right, top, bottom },
+            inset_relative_size,
+            final_size,
+            WritingDirection { mode: constants.writing_mode, direction: constants.inline_direction },
+        );
 
         // Determine flex-relative insets
         let (start_main, end_main) = if constants.is_row { (left, right) } else { (top, bottom) };
@@ -2916,7 +2886,6 @@ fn perform_absolute_layout_on_absolute_children(
         };
 
         // Apply main-axis alignment
-        // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
         let offset_main = if start_main.is_some() || end_main.is_some() {
             if main_is_rtl && end_main.is_some() {
                 constants.container_size.main(constants.dir)
@@ -2945,8 +2914,8 @@ fn perform_absolute_layout_on_absolute_children(
             // The `safe` overflow-position keyword is intentionally NOT applied here, even when
             // the abs-positioned item would overflow the main axis: Chrome does not apply safe
             // fallback to `justify-content` on absolutely-positioned flex items (only the
-            // cross-axis `align-self` does so). Matching the layout authority over a strict
-            // spec read keeps gentest fixtures green; reconsider if Chromium changes behavior.
+            // cross-axis `align-self` does so). Overflow safety is applied during
+            // absolute positioning, separately from the flex container's static edge.
             // `start`/`end` are writing-mode relative (they flip for RTL but not for
             // reversed flex-directions), whereas `flex-start`/`flex-end` and the
             // distributed keywords' fallbacks are flex-relative.
@@ -3000,7 +2969,6 @@ fn perform_absolute_layout_on_absolute_children(
         };
 
         // Apply cross-axis alignment
-        // let free_cross_space = free_space.cross(constants.dir) - resolved_margin.cross_axis_sum(constants.dir);
         let offset_cross = if start_cross.is_some() || end_cross.is_some() {
             if cross_is_rtl && end_cross.is_some() {
                 constants.container_size.cross(constants.dir)
@@ -3023,10 +2991,7 @@ fn perform_absolute_layout_on_absolute_children(
                     - resolved_margin.cross_end(constants.dir)
             }
         } else {
-            let cross_overflows = final_size.cross(constants.dir) + resolved_margin.cross_axis_sum(constants.dir)
-                > constants.container_size.cross(constants.dir)
-                    - constants.content_box_inset.cross_axis_sum(constants.dir);
-            let cross_keyword = resolve_self_alignment_safety(align_self, cross_overflows);
+            let cross_keyword = align_self.keyword();
             // `start`/`end` (and `baseline`, whose static-position fallback is `start`) are
             // writing-mode relative: they flip for RTL but not for `wrap-reverse`.
             // `flex-start`/`flex-end` and the `stretch` fallback are flex-relative.
@@ -3035,45 +3000,52 @@ fn perform_absolute_layout_on_absolute_children(
                 AlignItemsKeyword::End => constants.cross_axis_start_reversed,
                 _ => true,
             };
-            match (cross_keyword, cross_axis_flex_start_reversed) {
+            let edge = match (cross_keyword, cross_axis_flex_start_reversed) {
                 // Stretch alignment does not apply to absolutely positioned items
                 // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
                 // Note: Stretch should be FlexStart not Start when we support both
                 (AlignItemsKeyword::Start | AlignItemsKeyword::End | AlignItemsKeyword::Baseline, _) => {
                     if start_position {
-                        constants.content_box_inset.cross_start(constants.dir)
-                            + resolved_margin.cross_start(constants.dir)
+                        StaticPositionEdge::Min
                     } else {
-                        constants.container_size.cross(constants.dir)
-                            - constants.content_box_inset.cross_end(constants.dir)
-                            - final_size.cross(constants.dir)
-                            - resolved_margin.cross_end(constants.dir)
+                        StaticPositionEdge::Max
                     }
                 }
                 (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
-                | (AlignItemsKeyword::FlexEnd, true) => {
-                    constants.content_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
-                }
+                | (AlignItemsKeyword::FlexEnd, true) => StaticPositionEdge::Min,
                 (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
-                | (AlignItemsKeyword::FlexEnd, false) => {
-                    constants.container_size.cross(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        - resolved_margin.cross_end(constants.dir)
-                }
-                (AlignItemsKeyword::Center, _) => {
-                    (constants.container_size.cross(constants.dir)
-                        + constants.content_box_inset.cross_start(constants.dir)
-                        - constants.content_box_inset.cross_end(constants.dir)
-                        - final_size.cross(constants.dir)
-                        + resolved_margin.cross_start(constants.dir)
-                        - resolved_margin.cross_end(constants.dir))
-                        / 2.0
-                }
+                | (AlignItemsKeyword::FlexEnd, false) => StaticPositionEdge::Max,
+                (AlignItemsKeyword::Center, _) => StaticPositionEdge::Center,
                 // SelfStart/SelfEnd are resolved to Start/End against the item's own direction
                 // where `align_self` is read above.
                 (AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd, _) => unreachable!(),
-            }
+            };
+            let content_start = constants.content_box_inset.cross_start(constants.dir);
+            let content_end =
+                constants.container_size.cross(constants.dir) - constants.content_box_inset.cross_end(constants.dir);
+            let containing_start =
+                constants.border.cross_start(constants.dir) + constants.scrollbar_insets.cross_start(constants.dir);
+            let offset = match edge {
+                StaticPositionEdge::Min => content_start,
+                StaticPositionEdge::Center => (content_start + content_end) / 2.0,
+                StaticPositionEdge::Max => content_end,
+            };
+            // Flex only contributes an alignment edge. Overflow safety belongs
+            // to the child's alignment in the actual padding-box containing
+            // block, after its margin box has been sized.
+            containing_start
+                + StaticPositionAxis { offset: offset - containing_start, edge, safety: static_cross_safety }
+                    .border_box_start(
+                        inset_relative_size.cross(constants.dir),
+                        final_size.cross(constants.dir),
+                        Line {
+                            start: resolved_margin.cross_start(constants.dir),
+                            end: resolved_margin.cross_end(constants.dir),
+                        },
+                        constants
+                            .writing_mode
+                            .is_axis_flow_reversed(constants.dir.cross_axis(), constants.inline_direction),
+                    )
         };
 
         let location = match constants.is_row {

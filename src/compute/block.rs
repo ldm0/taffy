@@ -18,7 +18,7 @@ use crate::{
     LayoutBlockContainer, RequestedAxis, TextAlign, WritingMode,
 };
 
-use super::common::absolute::fit_content_width;
+use super::common::absolute::{fit_content_width, resolve_absolute_margins};
 use super::common::aspect_ratio::{
     resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
 };
@@ -2109,45 +2109,6 @@ fn perform_final_layout_on_in_flow_children(
     )
 }
 
-/// Resolve auto margins in one axis of an absolutely positioned box.
-///
-/// Auto margins only participate when both insets in the axis are definite.
-/// In the inline axis, negative free space is assigned to the non-dominant
-/// side so the direction's start edge remains visible. In the block axis it
-/// is shared equally, matching CSS Positioned Layout and browser behavior.
-#[inline]
-fn resolve_absolute_axis_margins(
-    margin: Line<Option<f32>>,
-    inset: Line<Option<f32>>,
-    area_size: f32,
-    box_size: f32,
-    share_negative_space: bool,
-    start_is_dominant: bool,
-) -> Line<f32> {
-    if inset.start.is_none() || inset.end.is_none() {
-        return Line { start: margin.start.unwrap_or(0.0), end: margin.end.unwrap_or(0.0) };
-    }
-
-    let free_space = area_size
-        - inset.start.unwrap()
-        - inset.end.unwrap()
-        - box_size
-        - margin.start.unwrap_or(0.0)
-        - margin.end.unwrap_or(0.0);
-
-    match (margin.start, margin.end) {
-        (Some(start), Some(end)) => Line { start, end },
-        (None, Some(end)) => Line { start: free_space, end },
-        (Some(start), None) => Line { start, end: free_space },
-        (None, None) if free_space > 0.0 || share_negative_space => {
-            let start = free_space / 2.0;
-            Line { start, end: free_space - start }
-        }
-        (None, None) if start_is_dominant => Line { start: 0.0, end: free_space },
-        (None, None) => Line { start: free_space, end: 0.0 },
-    }
-}
-
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
 fn perform_absolute_layout_on_absolute_children(
@@ -2355,28 +2316,13 @@ fn perform_absolute_layout_on_absolute_children(
             },
         );
 
-        let horizontal_margin = resolve_absolute_axis_margins(
-            Line { start: margin.left, end: margin.right },
-            Line { start: left, end: right },
-            area_width,
-            final_size.width,
-            false,
-            !direction.is_rtl(),
+        let resolved_margin = resolve_absolute_margins(
+            margin,
+            Rect { left, right, top, bottom },
+            area_size,
+            final_size,
+            writing_direction,
         );
-        let vertical_margin = resolve_absolute_axis_margins(
-            Line { start: margin.top, end: margin.bottom },
-            Line { start: top, end: bottom },
-            area_height,
-            final_size.height,
-            true,
-            true,
-        );
-        let resolved_margin = Rect {
-            left: horizontal_margin.start,
-            right: horizontal_margin.end,
-            top: vertical_margin.start,
-            bottom: vertical_margin.end,
-        };
 
         let x_offset = match (left, right) {
             (Some(left), Some(right)) => {

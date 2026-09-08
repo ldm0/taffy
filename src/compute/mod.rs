@@ -25,6 +25,9 @@
 pub(crate) mod common;
 pub(crate) mod leaf;
 
+#[cfg(any(feature = "block_layout", feature = "flexbox"))]
+pub use self::common::absolute::{resolve_absolute_margins, StaticPositionAxis, StaticPositionEdge};
+
 #[cfg(feature = "block_layout")]
 pub(crate) mod block;
 
