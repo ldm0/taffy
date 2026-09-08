@@ -72,6 +72,8 @@ use crate::util::ResolveOrZero;
 use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
 use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+#[cfg(any(feature = "flexbox", feature = "grid"))]
+pub use self::common::baseline::BaselineContext;
 pub use self::common::intrinsic_size::{
     resolve_intrinsic_inline_inputs, resolve_intrinsic_inline_inputs_with_provenance, ResolvedIntrinsicInlineInputs,
 };

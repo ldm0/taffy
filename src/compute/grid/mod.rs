@@ -2,7 +2,7 @@
 //! <https://www.w3.org/TR/css-grid-1>
 use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
-use crate::style::{AlignItems, AlignSelf, AvailableSpace, Position};
+use crate::style::{AlignItems, AvailableSpace, Position};
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
 };
@@ -14,7 +14,7 @@ use crate::{
     style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle, GridItemStyle,
     JustifyContent, LayoutGridContainer, RequestedAxis,
 };
-use alignment::{align_and_position_item, align_tracks};
+use alignment::{align_tracks, layout_item};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
 use implicit_grid::compute_grid_size_estimate;
 use placement::place_grid_items;
@@ -32,6 +32,7 @@ use types::GridTrackKind;
 pub(crate) use types::{GridCoordinate, GridLine, OriginZeroLine, MAX_GRID_TRACKS, MAX_OZ_LINE, MIN_OZ_LINE};
 
 mod alignment;
+mod baseline;
 mod explicit_grid;
 mod implicit_grid;
 mod placement;
@@ -306,7 +307,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
 
     // Determine if the grid has any baseline aligned items
-    let has_baseline_aligned_item = items.iter().any(|item| item.align_self == AlignSelf::BASELINE);
+    let baseline_context = items
+        .iter()
+        .any(|item| {
+            item.align_self.baseline_preference().is_some() || item.justify_self.baseline_preference().is_some()
+        })
+        .then(|| baseline::GridBaselineContext::new(tree, node));
 
     // Run track sizing algorithm for Inline axis
     track_sizing_algorithm(
@@ -324,7 +330,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         |track: &GridTrack, parent_size: Option<f32>, tree: &Tree| {
             track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
         },
-        has_baseline_aligned_item,
+        baseline_context,
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.width = inner_node_size.width.or_else(|| initial_column_sum.into());
@@ -345,7 +351,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut columns,
         &mut items,
         |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
+        baseline_context,
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
@@ -472,7 +478,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut rows,
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
-            has_baseline_aligned_item,
+            baseline_context,
         );
 
         // Row sizing must be re-run (once) if:
@@ -534,7 +540,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 &mut columns,
                 &mut items,
                 |track: &GridTrack, _, _| Some(track.base_size),
-                false, // TODO: Support baseline alignment in the vertical axis
+                baseline_context,
             );
         }
     }
@@ -631,28 +637,26 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     let container_alignment_styles = InBothAbsAxis { horizontal: justify_items, vertical: align_items };
 
-    // Position in-flow children (stored in items vector)
-    for (index, item) in items.iter_mut().enumerate() {
-        let grid_area = Rect {
-            top: rows[item.row_indexes.start as usize + 1].offset,
-            bottom: rows[item.row_indexes.end as usize].offset,
-            left: columns[item.column_indexes.start as usize + 1].offset,
-            right: columns[item.column_indexes.end as usize].offset,
-        };
-        #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-        let placement = align_and_position_item(
-            tree,
-            item.node,
-            index as u32,
-            grid_area,
-            container_alignment_styles,
-            item.baseline_shim,
-            direction,
-            writing_mode,
-            container_border_box.width,
-            border,
-            scrollbar_insets,
-        );
+    // Finish child layout before collecting the grid's final baseline groups.
+    // Intrinsic sizing shims must not escape into used author margins.
+    let mut item_layouts: Vec<_> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let grid_area = Rect {
+                top: rows[item.row_indexes.start as usize + 1].offset,
+                bottom: rows[item.row_indexes.end as usize].offset,
+                left: columns[item.column_indexes.start as usize + 1].offset,
+                right: columns[item.column_indexes.end as usize].offset,
+            };
+            layout_item(tree, item.node, index as u32, grid_area, container_alignment_styles, direction, writing_mode)
+        })
+        .collect();
+    if let Some(context) = baseline_context {
+        baseline::align_final_baselines(tree, context, &mut items, &mut item_layouts);
+    }
+    for (item, layout) in items.iter_mut().zip(item_layouts) {
+        let placement = layout.place(tree, item.node, container_border_box.width, border, scrollbar_insets, direction);
         item.y_position = placement.block_start;
         item.height = placement.block_size;
         item.first_baseline = placement.first_baseline;
@@ -762,21 +766,17 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             };
             drop(child_style);
 
-            // TODO: Baseline alignment support for absolutely positioned items (should check if is actually specified)
+            // Out-of-flow items do not participate in grid baseline groups.
             #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-            let placement = align_and_position_item(
-                tree,
-                child,
-                order,
-                grid_area,
-                container_alignment_styles,
-                0.0,
-                direction,
-                writing_mode,
-                container_border_box.width,
-                border,
-                scrollbar_insets,
-            );
+            let placement =
+                layout_item(tree, child, order, grid_area, container_alignment_styles, direction, writing_mode).place(
+                    tree,
+                    child,
+                    container_border_box.width,
+                    border,
+                    scrollbar_insets,
+                    direction,
+                );
             #[cfg(feature = "content_size")]
             {
                 absolute_content_size = absolute_content_size.f32_max(placement.content_size_contribution);
@@ -834,50 +834,11 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
 /// Select the grid container's baselines from final item fragments.
 ///
-/// This is the horizontal-writing-mode subset of Blink's
-/// `GridBaselineAccumulator`: a baseline-sharing group in the first/last
-/// occupied row wins, otherwise selection falls back to the first/last item in
-/// grid order. Fallback selection uses the child's corresponding baseline and
-/// synthesizes one at its block-end border edge only when that baseline is
-/// absent.
+/// Grid currently stores its track axes in horizontal coordinates. Within
+/// those axes, export follows the final participating group in the edge row,
+/// then a real baseline in grid order, and only then a synthesized baseline.
 fn grid_container_baselines(items: &[GridItem]) -> (f32, f32) {
-    debug_assert!(!items.is_empty());
-
-    let first_occupied_row = items.iter().map(|item| item.row_indexes.start).min().unwrap();
-    let first_item = items
-        .iter()
-        .filter(|item| item.row_indexes.start == first_occupied_row && item.align_self == AlignSelf::BASELINE)
-        .min_by_key(|item| (item.column_indexes.start, item.source_order))
-        .or_else(|| {
-            items
-                .iter()
-                .filter(|item| item.row_indexes.start == first_occupied_row)
-                .min_by_key(|item| (item.column_indexes.start, item.source_order))
-        })
-        .unwrap();
-    let first_baseline = first_item.y_position + first_item.first_baseline.unwrap_or(first_item.height);
-
-    // GridTrackVec stores one line/gutter slot on each side of a row track, so
-    // the start index of an item's last occupied row is two slots before its
-    // end index.
-    let last_occupied_row = items.iter().map(|item| item.row_indexes.end.saturating_sub(2)).max().unwrap();
-    let last_item = items
-        .iter()
-        .filter(|item| item.row_indexes.start == last_occupied_row && item.align_self == AlignSelf::BASELINE)
-        .max_by_key(|item| (item.column_indexes.end, item.source_order))
-        .or_else(|| items.iter().max_by_key(|item| (item.row_indexes.end, item.column_indexes.end, item.source_order)))
-        .unwrap();
-    let last_baseline =
-        if last_item.align_self == AlignSelf::BASELINE && last_item.row_indexes.start == last_occupied_row {
-            // Taffy currently supports first-baseline sharing groups. When such a
-            // group exists in the last occupied row, its shared major baseline is
-            // also the grid container's last baseline.
-            last_item.first_baseline.unwrap_or(last_item.height)
-        } else {
-            last_item.last_baseline.unwrap_or(last_item.height)
-        };
-
-    (first_baseline, last_item.y_position + last_baseline)
+    baseline::container_baselines(items)
 }
 
 /// Reverses only non-gutter column tracks in-place while preserving line/gutter slots.
@@ -1046,7 +1007,7 @@ impl DetailedGridItemsInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Style;
+    use crate::{AlignSelf, Style};
 
     #[allow(clippy::too_many_arguments)]
     fn baseline_item(
@@ -1078,6 +1039,19 @@ mod tests {
         item.height = height;
         item.first_baseline = first_baseline;
         item.last_baseline = last_baseline;
+        if participates_in_baseline_alignment {
+            // These selector tests provide the result of group collection,
+            // not just a requested align-self value (which might be ineligible).
+            let position = first_baseline.unwrap_or(height);
+            item.alignment_baselines.vertical = Some(baseline::GridItemBaseline {
+                position,
+                metrics: crate::compute::common::baseline::BaselineMetrics {
+                    side: crate::compute::common::baseline::BaselineSide::Min,
+                    ascent: position,
+                    descent: height - position,
+                },
+            });
+        }
         item
     }
 

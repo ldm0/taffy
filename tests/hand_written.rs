@@ -2,6 +2,7 @@ mod hand_written {
     mod absolute_position;
     mod adversarial_styles;
     mod aspect_ratio;
+    mod baseline_preference;
     mod block_anonymous_percentages;
     mod block_intrinsic_percentage;
     mod block_replaced;

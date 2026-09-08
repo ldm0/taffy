@@ -25,8 +25,7 @@ use super::common::content_size::{compute_content_size_contribution, content_siz
 use super::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use super::common::used_size::resolve_used_size;
 
-mod baseline;
-use baseline::{BaselineAlignment, BaselineContext, BaselineGroups, BaselineMetrics, BaselineSide};
+use super::common::baseline::{BaselineAlignment, BaselineContext, BaselineGroups, BaselineMetrics};
 
 /// The result of resolving `flex-basis`, including the `auto` indirection
 /// through the preferred main size.
@@ -1932,11 +1931,11 @@ fn calculate_children_base_lines(
 ) {
     for line in flex_lines {
         for child in line.items.iter_mut() {
+            let Some(preference) = child.align_self.baseline_preference() else {
+                continue;
+            };
             // Auto cross margins take precedence over baseline alignment.
-            if child.align_self.keyword() != AlignItemsKeyword::Baseline
-                || child.margin_is_auto.cross_start(constants.dir)
-                || child.margin_is_auto.cross_end(constants.dir)
-            {
+            if child.margin_is_auto.cross_start(constants.dir) || child.margin_is_auto.cross_end(constants.dir) {
                 continue;
             }
 
@@ -1977,29 +1976,24 @@ fn calculate_children_base_lines(
             let alignment = BaselineAlignment::new(
                 WritingDirection::new(constants.writing_mode, constants.inline_direction),
                 child.writing_mode,
-                constants.main_axis_is_inline,
-                constants.authored_wrap_reverse,
-                constants.cross_axis_start_reversed,
+                constants.dir.cross_axis(),
                 constants.baseline_type,
+                preference,
+                constants.authored_wrap_reverse,
             );
             let baseline = alignment.context.resolve(
-                measured_size_and_baselines.first_baselines,
+                preference
+                    .select(measured_size_and_baselines.first_baselines, measured_size_and_baselines.last_baselines),
                 child.writing_mode,
                 measured_size_and_baselines.size,
                 child.is_scroll_container(),
             );
             let extent = measured_size_and_baselines.size.cross(constants.dir);
-            let baseline_ascent = if alignment.ascent_reversed { extent - baseline } else { baseline };
-            let ascent = baseline_ascent
-                + match alignment.side {
-                    BaselineSide::Min => child.margin.cross_start(constants.dir),
-                    BaselineSide::Max => child.margin.cross_end(constants.dir),
-                };
-            child.alignment_baseline = Some(BaselineMetrics {
-                side: alignment.side,
-                ascent,
-                descent: extent + child.margin.cross_axis_sum(constants.dir) - ascent,
-            });
+            child.alignment_baseline = Some(alignment.metrics(
+                baseline,
+                extent,
+                Line { start: child.margin.cross_start(constants.dir), end: child.margin.cross_end(constants.dir) },
+            ));
         }
     }
 }
@@ -2336,7 +2330,7 @@ fn align_flex_items_along_cross_axis(
             }
         }
         AlignItemsKeyword::Center => free_space / 2.0,
-        AlignItemsKeyword::Baseline => baselines.alignment_offset(
+        AlignItemsKeyword::Baseline | AlignItemsKeyword::LastBaseline => baselines.alignment_offset(
             child.alignment_baseline.expect("baseline-aligned items must have sharing metrics"),
             free_space,
         ),
@@ -2969,14 +2963,20 @@ fn perform_absolute_layout_on_absolute_children(
             // `flex-start`/`flex-end` and the `stretch` fallback are flex-relative.
             let start_position = match cross_keyword {
                 AlignItemsKeyword::Start | AlignItemsKeyword::Baseline => !constants.cross_axis_start_reversed,
-                AlignItemsKeyword::End => constants.cross_axis_start_reversed,
+                AlignItemsKeyword::End | AlignItemsKeyword::LastBaseline => constants.cross_axis_start_reversed,
                 _ => true,
             };
             let edge = match (cross_keyword, cross_axis_flex_start_reversed) {
                 // Stretch alignment does not apply to absolutely positioned items
                 // See "Example 3" at https://www.w3.org/TR/css-flexbox-1/#abspos-items
                 // Note: Stretch should be FlexStart not Start when we support both
-                (AlignItemsKeyword::Start | AlignItemsKeyword::End | AlignItemsKeyword::Baseline, _) => {
+                (
+                    AlignItemsKeyword::Start
+                    | AlignItemsKeyword::End
+                    | AlignItemsKeyword::Baseline
+                    | AlignItemsKeyword::LastBaseline,
+                    _,
+                ) => {
                     if start_position {
                         StaticPositionEdge::Min
                     } else {

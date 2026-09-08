@@ -7,6 +7,9 @@ pub(crate) mod absolute;
 
 pub(crate) mod alignment;
 
+#[cfg(any(feature = "flexbox", feature = "grid"))]
+pub(crate) mod baseline;
+
 pub(crate) mod intrinsic_size;
 
 pub(crate) mod used_size;

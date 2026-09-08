@@ -7,7 +7,8 @@ use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstra
 use crate::compute::common::intrinsic_size::resolve_intrinsic_width_constraints;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
 use crate::style::{
-    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Position,
+    AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
+    Position,
 };
 use crate::tree::{
     ChildLayoutInput, Layout, LayoutInput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode, SizingPurpose,
@@ -36,6 +37,65 @@ pub(super) struct GridItemPlacement {
     pub(super) first_baseline: Option<f32>,
     /// Last baseline relative to the item's border box.
     pub(super) last_baseline: Option<f32>,
+}
+
+/// Final child fragment awaiting alignment with the other items in its grid.
+/// Only after all sharing groups have been resolved is its layout published.
+pub(super) struct GridItemLayout {
+    /// Physical border-box layout, not yet published to the tree.
+    pub(super) layout: Layout,
+    /// Physical edges of the containing grid area in container coordinates.
+    pub(super) grid_area: Rect<f32>,
+    /// First baseline coordinates relative to the item's border-box origin.
+    pub(super) first_baselines: Point<Option<f32>>,
+    /// Last baseline coordinates relative to the item's border-box origin.
+    pub(super) last_baselines: Point<Option<f32>>,
+    /// Relative positioning moves paint, but not a parent's shared baseline.
+    pub(super) relative_offset: Point<f32>,
+    /// Overflow styles used when computing the item's scrollable contribution.
+    overflow: Point<Overflow>,
+}
+
+impl GridItemLayout {
+    /// Publish the aligned fragment and return its contribution to its parent.
+    pub(super) fn place(
+        self,
+        tree: &mut impl LayoutGridContainer,
+        node: NodeId,
+        container_border_box_width: f32,
+        container_border: Rect<f32>,
+        container_scrollbar_insets: Rect<f32>,
+        direction: Direction,
+    ) -> GridItemPlacement {
+        tree.set_unrounded_layout(node, &self.layout);
+        #[cfg(feature = "content_size")]
+        let contribution = compute_content_size_contribution(
+            content_size_contribution_location(
+                self.layout.location,
+                self.layout.size,
+                container_border_box_width,
+                container_border,
+                container_scrollbar_insets,
+                direction,
+            ),
+            self.layout.size,
+            self.layout.content_size,
+            self.overflow,
+        );
+        #[cfg(not(feature = "content_size"))]
+        let contribution = {
+            let _ =
+                (container_border_box_width, container_border, container_scrollbar_insets, direction, self.overflow);
+            Size::ZERO
+        };
+        GridItemPlacement {
+            content_size_contribution: contribution,
+            block_start: self.layout.location.y - self.relative_offset.y,
+            block_size: self.layout.size.height,
+            first_baseline: self.first_baselines.y,
+            last_baseline: self.last_baselines.y,
+        }
+    }
 }
 
 /// Align the grid tracks within the grid according to the align-content (rows) or
@@ -97,21 +157,17 @@ pub(super) fn align_tracks(
     });
 }
 
-/// Align and size a grid item into it's final position
-#[allow(clippy::too_many_arguments)]
-pub(super) fn align_and_position_item(
+/// Lay out a grid item at its final used size. Baseline group alignment occurs
+/// after all the sibling fragments exist, before `GridItemLayout::place`.
+pub(super) fn layout_item(
     tree: &mut impl LayoutGridContainer,
     node: NodeId,
     order: u32,
     grid_area: Rect<f32>,
     container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
-    baseline_shim: f32,
     direction: Direction,
     parent_writing_mode: WritingMode,
-    container_border_box_width: f32,
-    container_border: Rect<f32>,
-    container_scrollbar_insets: Rect<f32>,
-) -> GridItemPlacement {
+) -> GridItemLayout {
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
     let percentage_basis = parent_writing_mode.to_logical(grid_area_size).inline_size;
 
@@ -195,7 +251,7 @@ pub(super) fn align_and_position_item(
 
     let grid_area_minus_item_margins_size = Size {
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
-        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
+        height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom),
     };
     let intrinsic_available_width = if position == Position::Absolute {
         grid_area_minus_item_margins_size.width
@@ -373,7 +429,6 @@ pub(super) fn align_and_position_item(
         position,
         inset_horizontal,
         margin.horizontal_components(),
-        0.0,
         direction,
     );
     let (y, y_margin) = align_item_within_area(
@@ -383,15 +438,13 @@ pub(super) fn align_and_position_item(
         position,
         inset_vertical,
         margin.vertical_components(),
-        baseline_shim,
         Direction::Ltr,
     );
 
     let resolved_margin = Rect { left: x_margin.start, right: x_margin.end, top: y_margin.start, bottom: y_margin.end };
 
-    tree.set_unrounded_layout(
-        node,
-        &Layout {
+    GridItemLayout {
+        layout: Layout {
             order,
             location: Point { x, y },
             size: Size { width, height },
@@ -402,34 +455,23 @@ pub(super) fn align_and_position_item(
             border,
             margin: resolved_margin,
         },
-    );
-
-    #[cfg(feature = "content_size")]
-    let contribution = {
-        let contribution_location = content_size_contribution_location(
-            Point { x, y },
-            Size { width, height },
-            container_border_box_width,
-            container_border,
-            container_scrollbar_insets,
-            direction,
-        );
-        compute_content_size_contribution(
-            contribution_location,
-            Size { width, height },
-            layout_output.content_size,
-            overflow,
-        )
-    };
-    #[cfg(not(feature = "content_size"))]
-    let contribution = Size::ZERO;
-
-    GridItemPlacement {
-        content_size_contribution: contribution,
-        block_start: y,
-        block_size: height,
-        first_baseline: layout_output.first_baselines.y,
-        last_baseline: layout_output.last_baselines.y,
+        grid_area,
+        first_baselines: layout_output.first_baselines,
+        last_baselines: layout_output.last_baselines,
+        relative_offset: if position == Position::Relative {
+            Point {
+                x: if direction.is_rtl() {
+                    inset_horizontal.end.map(|value| -value).or(inset_horizontal.start)
+                } else {
+                    inset_horizontal.start.or(inset_horizontal.end.map(|value| -value))
+                }
+                .unwrap_or(0.0),
+                y: inset_vertical.start.or(inset_vertical.end.map(|value| -value)).unwrap_or(0.0),
+            }
+        } else {
+            Point::ZERO
+        },
+        overflow,
     }
 }
 
@@ -442,28 +484,26 @@ pub(super) fn align_item_within_area(
     position: Position,
     inset: Line<Option<f32>>,
     margin: Line<Option<f32>>,
-    baseline_shim: f32,
     direction: Direction,
 ) -> (f32, Line<f32>) {
     // Calculate grid area dimension in the axis
-    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0) + baseline_shim, end: margin.end.unwrap_or(0.0) };
+    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0), end: margin.end.unwrap_or(0.0) };
     let grid_area_size = f32_max(grid_area.end - grid_area.start, 0.0);
     let free_space = f32_max(grid_area_size - resolved_size - non_auto_margin.sum(), 0.0);
 
     // Expand auto margins to fill available space
     let auto_margin_count = margin.start.is_none() as u8 + margin.end.is_none() as u8;
     let auto_margin_size = if auto_margin_count > 0 { free_space / auto_margin_count as f32 } else { 0.0 };
-    let resolved_margin = Line {
-        start: margin.start.unwrap_or(auto_margin_size) + baseline_shim,
-        end: margin.end.unwrap_or(auto_margin_size),
-    };
+    let resolved_margin =
+        Line { start: margin.start.unwrap_or(auto_margin_size), end: margin.end.unwrap_or(auto_margin_size) };
 
     let overflows = resolved_size + non_auto_margin.sum() > grid_area_size;
     let alignment_keyword = resolve_self_alignment_safety(alignment_style, overflows);
 
     // Compute offset in the axis
     let alignment_based_offset = match alignment_keyword {
-        // TODO: Add support for baseline alignment. For now we treat it as "start".
+        // Baseline group alignment is resolved from the final sibling
+        // fragments. This is the fallback used by nonparticipating items.
         AlignItemsKeyword::Start
         | AlignItemsKeyword::FlexStart
         | AlignItemsKeyword::Baseline
@@ -474,7 +514,7 @@ pub(super) fn align_item_within_area(
                 resolved_margin.start
             }
         }
-        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => {
+        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd | AlignItemsKeyword::LastBaseline => {
             if direction.is_rtl() {
                 resolved_margin.start
             } else {
@@ -485,7 +525,7 @@ pub(super) fn align_item_within_area(
             (grid_area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0
         }
         // SelfStart/SelfEnd are resolved to Start/End against the item's own direction in
-        // `align_and_position_item`.
+        // `layout_item`.
         AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!(),
     };
 

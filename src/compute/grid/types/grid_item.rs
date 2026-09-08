@@ -1,6 +1,7 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::grid::baseline::GridItemBaseline;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
@@ -60,12 +61,12 @@ pub(in super::super) struct GridItem {
     pub align_self: AlignSelf,
     /// The item's justify_self property, or the parent's justify_items property is not set
     pub justify_self: AlignSelf,
-    /// The item's first baseline measured for baseline-sharing-group shims.
-    /// This is separate from the baselines retained from final item layout.
-    pub alignment_baseline: Option<f32>,
-    /// Shim for baseline alignment that acts like an extra top margin
-    /// TODO: Support last baseline and vertical text baselines
-    pub baseline_shim: f32,
+    /// Participation and sharing metrics on each physical layout axis.
+    /// Intrinsic measurement and final layout collect independent sets.
+    pub alignment_baselines: InBothAbsAxis<Option<GridItemBaseline>>,
+    /// Additional intrinsic contribution on each group's packing side.
+    /// These are not author margins and must never enter `Layout::margin`.
+    pub baseline_shims: Rect<f32>,
 
     /// The item's definite row-start and row-end (same as `row` field, except in a different coordinate system)
     /// (as indexes into the Vec<GridTrack> stored in a grid's AbstractAxisTracks)
@@ -134,8 +135,8 @@ impl GridItem {
             margin: style.margin(),
             align_self: style.align_self().unwrap_or(parent_alignment.vertical),
             justify_self: style.justify_self().unwrap_or(parent_alignment.horizontal),
-            alignment_baseline: None,
-            baseline_shim: 0.0,
+            alignment_baselines: InBothAbsAxis { horizontal: None, vertical: None },
+            baseline_shims: Rect::ZERO,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             column_indexes: Line { start: 0, end: 0 }, // Properly initialised later
             crosses_flexible_row: false,            // Properly initialised later
@@ -259,7 +260,7 @@ impl GridItem {
     /// Compute the known_dimensions to be passed to the child sizing functions
     /// The key thing that is being done here is applying stretch alignment, which is necessary to
     /// allow percentage sizes further down the tree to resolve properly in some cases
-    fn known_dimensions(
+    pub(in crate::compute::grid) fn known_dimensions(
         &self,
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
@@ -437,11 +438,14 @@ impl GridItem {
         tree: &impl LayoutPartialTree,
     ) -> Size<f32> {
         Rect {
-            left: self.margin.left.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
-            right: self.margin.right.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+            left: self.margin.left.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis))
+                + self.baseline_shims.left,
+            right: self.margin.right.resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis))
+                + self.baseline_shims.right,
             top: self.margin.top.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis))
-                + self.baseline_shim,
-            bottom: self.margin.bottom.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+                + self.baseline_shims.top,
+            bottom: self.margin.bottom.resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis))
+                + self.baseline_shims.bottom,
         }
         .sum_axes()
     }

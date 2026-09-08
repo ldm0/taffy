@@ -4,6 +4,14 @@ use taffy::{BaselineType, Direction, LayoutInput, Point, RunMode, WritingMode};
 
 #[test]
 fn empty_flex_item_baselines_match_chromium_across_logical_flows() {
+    // These filled lines have the same geometry for first and last baseline;
+    // the independent Chromium matrix was checked with both preferences.
+    for alignment in [AlignItems::BASELINE, AlignItems::LAST_BASELINE] {
+        assert_empty_flex_item_baselines(alignment);
+    }
+}
+
+fn assert_empty_flex_item_baselines(alignment: AlignItems) {
     // Chromium 145 geometry: fixed 100x100 flex container, four empty items,
     // align-items:baseline, no font metrics or rounding-dependent text widths.
     // Literal expectations are deliberately independent of Taffy's axis mapping.
@@ -33,7 +41,7 @@ fn empty_flex_item_baselines_match_chromium_across_logical_flows() {
                     _ => panic!("unknown flex direction: {id}"),
                 },
                 flex_wrap: if parts[3] == "wrap-reverse" { FlexWrap::WrapReverse } else { FlexWrap::Wrap },
-                align_items: Some(AlignItems::BASELINE),
+                align_items: Some(alignment),
                 ..Style::default()
             },
             Rect::ZERO,
@@ -56,7 +64,11 @@ fn empty_flex_item_baselines_match_chromium_across_logical_flows() {
             for (axis, actual) in
                 [layout.location.x, layout.location.y, layout.size.width, layout.size.height].into_iter().enumerate()
             {
-                assert_eq!(actual as f64, expected[axis].as_f64().unwrap(), "{id} child {index} component {axis}");
+                assert_eq!(
+                    actual as f64,
+                    expected[axis].as_f64().unwrap(),
+                    "{alignment:?}/{id} child {index} component {axis}"
+                );
             }
         }
     }

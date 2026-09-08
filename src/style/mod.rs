@@ -14,8 +14,8 @@ mod float;
 mod grid;
 
 pub use self::alignment::{
-    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AlignmentSafety, JustifyContent,
-    JustifyItems, JustifySelf,
+    AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AlignmentSafety, BaselinePreference,
+    JustifyContent, JustifyItems, JustifySelf,
 };
 pub use self::available_space::AvailableSpace;
 pub use self::compact_length::CompactLength;
