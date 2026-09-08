@@ -1,6 +1,88 @@
 use super::test_tree::{TestNode, TestTree};
 use taffy::prelude::*;
-use taffy::{Direction, Point};
+use taffy::{Direction, Point, WritingMode};
+
+#[test]
+fn absolute_insets_do_not_reverse_physical_scrollbar_edges_with_flex_axes() {
+    // Border and gutters delimit the physical padding-box containing block.
+    // Flex direction/wrapping only affects static positions, not left/top or
+    // right/bottom. Unequal gutters expose accidental edge swaps on either axis.
+    let gutters = Rect { left: 7.0, right: 11.0, top: 13.0, bottom: 17.0 };
+    let border = Rect { left: length(3.0), right: length(5.0), top: length(2.0), bottom: length(4.0) };
+    let margin = Rect { left: length(4.0), right: length(8.0), top: length(2.0), bottom: length(6.0) };
+    let fixed_size = Size { width: length(40.0), height: length(20.0) };
+    let cases = [
+        (
+            Rect { left: length(11.0), right: auto(), top: length(7.0), bottom: auto() },
+            fixed_size,
+            margin,
+            Point { x: 25.0, y: 24.0 },
+            Size { width: 40.0, height: 20.0 },
+        ),
+        (
+            Rect { left: auto(), right: length(13.0), top: auto(), bottom: length(9.0) },
+            fixed_size,
+            margin,
+            Point { x: 123.0, y: 104.0 },
+            Size { width: 40.0, height: 20.0 },
+        ),
+        (
+            Rect { left: percent(0.25), right: auto(), top: percent(0.25), bottom: auto() },
+            fixed_size,
+            margin,
+            Point { x: 57.5, y: 48.0 },
+            Size { width: 40.0, height: 20.0 },
+        ),
+        (
+            Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+            Size { width: percent(1.0), height: percent(1.0) },
+            Rect::zero(),
+            Point { x: 10.0, y: 15.0 },
+            Size { width: 174.0, height: 124.0 },
+        ),
+    ];
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in
+                [FlexDirection::Row, FlexDirection::RowReverse, FlexDirection::Column, FlexDirection::ColumnReverse]
+            {
+                for flex_wrap in [FlexWrap::Wrap, FlexWrap::WrapReverse] {
+                    for (inset, size, margin, expected_location, expected_size) in cases {
+                        let mut root = TestNode::container(
+                            Display::Flex,
+                            Style {
+                                direction,
+                                flex_direction,
+                                flex_wrap,
+                                size: Size { width: length(200.0), height: length(160.0) },
+                                border,
+                                padding: Rect {
+                                    left: length(9.0),
+                                    right: length(5.0),
+                                    top: length(3.0),
+                                    bottom: length(7.0),
+                                },
+                                ..Style::default()
+                            },
+                            gutters,
+                        );
+                        root.writing_mode = mode;
+                        let mut child = TestNode::leaf(
+                            Style { position: Position::Absolute, direction, inset, size, margin, ..Style::default() },
+                            Size::ZERO,
+                        );
+                        child.writing_mode = mode;
+                        let mut tree = TestTree::new(root, child);
+                        tree.compute(Size::MAX_CONTENT);
+                        let context = format!("{mode:?} {direction:?} {flex_direction:?} {flex_wrap:?} {inset:?}");
+                        assert_eq!(tree.layout(1).location, expected_location, "{context}");
+                        assert_eq!(tree.layout(1).size, expected_size, "{context}");
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn percentage_child() -> TestNode {
     TestNode::leaf(Style { size: Size { width: percent(1.0), height: percent(1.0) }, ..Style::default() }, Size::ZERO)

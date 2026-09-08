@@ -2650,8 +2650,10 @@ fn perform_absolute_layout_on_absolute_children(
 ) -> Size<f32> {
     let container_width = constants.container_size.width;
     let container_height = constants.container_size.height;
-    let inset_relative_size =
-        constants.container_size - constants.border.sum_axes() - constants.scrollbar_insets.sum_axes();
+    // One physical padding-box boundary owns both percentage resolution and
+    // explicit inset origins. Flex-axis reversal cannot change this rectangle.
+    let containing_box_inset = constants.border + constants.scrollbar_insets;
+    let inset_relative_size = constants.container_size - containing_box_inset.sum_axes();
     let percentage_basis = constants.writing_mode.to_logical(inset_relative_size).inline_size;
 
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
@@ -2855,7 +2857,9 @@ fn perform_absolute_layout_on_absolute_children(
             WritingDirection { mode: constants.writing_mode, direction: constants.inline_direction },
         );
 
-        // Determine flex-relative insets
+        // These projections select the physical x/y axis, not flex start/end.
+        // A specified inset is relative to the physical padding-box edge;
+        // reversing flex direction or wrapping must not swap scrollbar edges.
         let (start_main, end_main) = if constants.is_row { (left, right) } else { (top, bottom) };
         let (start_cross, end_cross) = if constants.is_row { (top, bottom) } else { (left, right) };
         let main_axis_is_horizontal = constants.is_row;
@@ -2864,45 +2868,20 @@ fn perform_absolute_layout_on_absolute_children(
         let cross_is_rtl = cross_axis_is_horizontal && constants.horizontal_direction.is_rtl();
         let main_axis_flex_start_reversed = constants.main_axis_flex_start_reversed;
         let cross_axis_flex_start_reversed = constants.cross_axis_flex_start_reversed;
-        let main_start_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_start(constants.dir)
-        };
-        let cross_start_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        };
-        let main_end_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_end(constants.dir)
-        };
-        let cross_end_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        };
 
         // Apply main-axis alignment
         let offset_main = if start_main.is_some() || end_main.is_some() {
             if main_is_rtl && end_main.is_some() {
                 constants.container_size.main(constants.dir)
-                    - constants.border.main_end(constants.dir)
-                    - main_end_scrollbar_offset
+                    - containing_box_inset.main_end(constants.dir)
                     - final_size.main(constants.dir)
                     - end_main.unwrap_or(0.0)
                     - resolved_margin.main_end(constants.dir)
             } else if let Some(start) = start_main {
-                start
-                    + constants.border.main_start(constants.dir)
-                    + main_start_scrollbar_offset
-                    + resolved_margin.main_start(constants.dir)
+                start + containing_box_inset.main_start(constants.dir) + resolved_margin.main_start(constants.dir)
             } else {
                 constants.container_size.main(constants.dir)
-                    - constants.border.main_end(constants.dir)
-                    - main_end_scrollbar_offset
+                    - containing_box_inset.main_end(constants.dir)
                     - final_size.main(constants.dir)
                     - end_main.unwrap_or(0.0)
                     - resolved_margin.main_end(constants.dir)
@@ -2972,20 +2951,15 @@ fn perform_absolute_layout_on_absolute_children(
         let offset_cross = if start_cross.is_some() || end_cross.is_some() {
             if cross_is_rtl && end_cross.is_some() {
                 constants.container_size.cross(constants.dir)
-                    - constants.border.cross_end(constants.dir)
-                    - cross_end_scrollbar_offset
+                    - containing_box_inset.cross_end(constants.dir)
                     - final_size.cross(constants.dir)
                     - end_cross.unwrap_or(0.0)
                     - resolved_margin.cross_end(constants.dir)
             } else if let Some(start) = start_cross {
-                start
-                    + constants.border.cross_start(constants.dir)
-                    + cross_start_scrollbar_offset
-                    + resolved_margin.cross_start(constants.dir)
+                start + containing_box_inset.cross_start(constants.dir) + resolved_margin.cross_start(constants.dir)
             } else {
                 constants.container_size.cross(constants.dir)
-                    - constants.border.cross_end(constants.dir)
-                    - cross_end_scrollbar_offset
+                    - containing_box_inset.cross_end(constants.dir)
                     - final_size.cross(constants.dir)
                     - end_cross.unwrap_or(0.0)
                     - resolved_margin.cross_end(constants.dir)
@@ -3023,8 +2997,7 @@ fn perform_absolute_layout_on_absolute_children(
             let content_start = constants.content_box_inset.cross_start(constants.dir);
             let content_end =
                 constants.container_size.cross(constants.dir) - constants.content_box_inset.cross_end(constants.dir);
-            let containing_start =
-                constants.border.cross_start(constants.dir) + constants.scrollbar_insets.cross_start(constants.dir);
+            let containing_start = containing_box_inset.cross_start(constants.dir);
             let offset = match edge {
                 StaticPositionEdge::Min => content_start,
                 StaticPositionEdge::Center => (content_start + content_end) / 2.0,
@@ -3080,10 +3053,7 @@ fn perform_absolute_layout_on_absolute_children(
                 },
             };
             if size_content_size_contribution.has_non_zero_area() {
-                let absolute_area_offset = Point {
-                    x: constants.border.left + constants.scrollbar_insets.left,
-                    y: constants.border.top + constants.scrollbar_insets.top,
-                };
+                let absolute_area_offset = Point { x: containing_box_inset.left, y: containing_box_inset.top };
                 let relative_location =
                     Point { x: location.x - absolute_area_offset.x, y: location.y - absolute_area_offset.y };
                 let content_size_contribution = Size {
