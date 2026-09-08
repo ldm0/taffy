@@ -30,12 +30,14 @@ pub(crate) fn apply_alignment_fallback(
     let mut is_safe = matches!(alignment_mode.safety, AlignmentSafety::Safe);
 
     // 1. If there is only a single item being aligned or the items overflow the container, the
-    //    distributed alignment keywords (`stretch`, `space-*`) fall back to a positional keyword
-    //    and gain implicit `safe` semantics so step 2 can flip them to `Start` on overflow.
+    //    distributed alignment keywords fall back to a positional keyword.
+    //    Only space-* gains implicit safety; stretch falls back to flex-start
+    //    even when reversed lines overflow their container.
     //    https://www.w3.org/TR/css-align-3/#distribution-values
     if num_items <= 1 || free_space <= 0.0 {
         (keyword, is_safe) = match keyword {
-            AlignContentKeyword::Stretch | AlignContentKeyword::SpaceBetween => (AlignContentKeyword::FlexStart, true),
+            AlignContentKeyword::Stretch => (AlignContentKeyword::FlexStart, is_safe),
+            AlignContentKeyword::SpaceBetween => (AlignContentKeyword::FlexStart, true),
             AlignContentKeyword::SpaceAround | AlignContentKeyword::SpaceEvenly => (AlignContentKeyword::Center, true),
             other => (other, is_safe),
         };
@@ -48,6 +50,20 @@ pub(crate) fn apply_alignment_fallback(
     }
 
     keyword
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stretch_overflow_keeps_flex_start_without_inventing_safe_alignment() {
+        let keyword = apply_alignment_fallback(-20.0, 2, AlignContent::STRETCH);
+        assert_eq!(keyword, AlignContentKeyword::FlexStart);
+        assert_eq!(compute_alignment_offset(-20.0, 2, 0.0, keyword, true, true), -20.0);
+        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SPACE_AROUND), AlignContentKeyword::Start);
+        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SAFE_CENTER), AlignContentKeyword::Start);
+    }
 }
 
 /// Generic alignment function that is used:

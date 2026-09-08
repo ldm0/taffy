@@ -129,7 +129,7 @@
 use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Rect, Size, WritingMode};
+use crate::geometry::{AbsoluteAxis, BaselineType, Rect, Size, WritingMode};
 use crate::style::{resolve_scrollbar_insets, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
@@ -205,6 +205,12 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// provided every leaf-layout call receives the same value.
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.get_core_container_style(node_id).writing_mode()
+    }
+
+    /// Dominant baseline of a formatting context. The default follows writing
+    /// mode; text embeddings may override it for `text-orientation: sideways`.
+    fn get_baseline_type(&self, node_id: NodeId) -> BaselineType {
+        BaselineType::for_writing_mode(self.get_writing_mode(node_id))
     }
 
     /// Returns the node's used aspect ratio and the sizing box whose dimensions

@@ -41,6 +41,27 @@ pub enum WritingMode {
     SidewaysLr,
 }
 
+/// The dominant baseline used when a layout context synthesizes a baseline
+/// for a fragment without a compatible baseline set.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BaselineType {
+    /// The line-under border edge (the ordinary horizontal text baseline).
+    Alphabetic,
+    /// The midpoint between the two block-axis border edges.
+    Central,
+}
+
+impl BaselineType {
+    /// Default for the writing mode. Embeddings can override this for text
+    /// orientation without teaching the numeric layout engine about fonts.
+    pub const fn for_writing_mode(mode: WritingMode) -> Self {
+        match mode {
+            WritingMode::VerticalRl | WritingMode::VerticalLr => Self::Central,
+            _ => Self::Alphabetic,
+        }
+    }
+}
+
 /// The CSS writing mode and inline text direction of a formatting context.
 ///
 /// These values jointly determine the physical location of all four logical

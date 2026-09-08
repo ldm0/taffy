@@ -10,6 +10,7 @@ mod hand_written {
     mod caching;
     mod flex_aspect_ratio;
     mod flex_auto_margins;
+    mod flex_baseline;
     mod flex_basis_content;
     mod flex_writing_modes;
     mod floats;

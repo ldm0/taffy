@@ -1,8 +1,8 @@
 use taffy::prelude::*;
 use taffy::{
     compute_block_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout_with_context,
-    compute_root_layout, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput,
-    LeafLayoutContext, ResolvedAspectRatio, WritingMode,
+    compute_root_layout, BaselineType, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput,
+    LayoutOutput, LeafLayoutContext, Point, ResolvedAspectRatio, WritingMode,
 };
 
 #[derive(Clone)]
@@ -12,6 +12,9 @@ pub(super) struct TestNode {
     pub(super) resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     pub(super) anonymous_block: bool,
     pub(super) writing_mode: WritingMode,
+    pub(super) baseline_type: Option<BaselineType>,
+    pub(super) first_baselines: Point<Option<f32>>,
+    pub(super) last_baselines: Point<Option<f32>>,
     pub(super) children: Vec<usize>,
     leaf: bool,
     measured_size: Size<f32>,
@@ -26,6 +29,9 @@ impl TestNode {
             resolved_aspect_ratio: None,
             anonymous_block: false,
             writing_mode: WritingMode::HorizontalTb,
+            baseline_type: None,
+            first_baselines: Point::NONE,
+            last_baselines: Point::NONE,
             children: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
@@ -40,6 +46,9 @@ impl TestNode {
             resolved_aspect_ratio: None,
             anonymous_block: false,
             writing_mode: WritingMode::HorizontalTb,
+            baseline_type: None,
+            first_baselines: Point::NONE,
+            last_baselines: Point::NONE,
             children: Vec::new(),
             leaf: true,
             measured_size,
@@ -113,6 +122,12 @@ impl LayoutPartialTree for TestTree {
         self.nodes[usize::from(node_id)].writing_mode
     }
 
+    fn get_baseline_type(&self, node_id: NodeId) -> BaselineType {
+        self.nodes[usize::from(node_id)]
+            .baseline_type
+            .unwrap_or_else(|| BaselineType::for_writing_mode(self.get_writing_mode(node_id)))
+    }
+
     fn get_resolved_aspect_ratio(&self, node_id: NodeId) -> Option<ResolvedAspectRatio> {
         let node = &self.nodes[usize::from(node_id)];
         node.resolved_aspect_ratio.or_else(|| {
@@ -134,7 +149,7 @@ impl LayoutPartialTree for TestTree {
         let style = self.nodes[index].style.clone();
         if self.nodes[index].leaf {
             let measured_size = self.nodes[index].measured_size;
-            return compute_leaf_layout_with_context(
+            let mut output = compute_leaf_layout_with_context(
                 inputs,
                 &style,
                 context,
@@ -144,6 +159,9 @@ impl LayoutPartialTree for TestTree {
                     height: known.height.unwrap_or(measured_size.height),
                 },
             );
+            output.first_baselines = self.nodes[index].first_baselines;
+            output.last_baselines = self.nodes[index].last_baselines;
+            return output;
         }
 
         match style.display {
