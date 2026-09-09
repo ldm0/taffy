@@ -129,7 +129,7 @@
 use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
 #[cfg(feature = "detailed_layout_info")]
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, BaselineType, Rect, Size, WritingMode};
+use crate::geometry::{BaselineType, Rect, WritingMode};
 use crate::style::{resolve_scrollbar_insets, CoreStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
@@ -401,18 +401,6 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
         axis: RequestedAxis,
     ) -> IntrinsicSizeResult {
         self.compute_child_size(node_id, inputs.into_measurement(axis))
-    }
-
-    /// Compute the size of the node given the specified constraints
-    #[inline(always)]
-    fn measure_child_size(&mut self, node_id: NodeId, inputs: ChildLayoutInput, axis: AbsoluteAxis) -> f32 {
-        self.measure_child_size_with_metadata(node_id, inputs, axis.into()).size.get_abs(axis)
-    }
-
-    /// Compute the size of the node given the specified constraints
-    #[inline(always)]
-    fn measure_child_size_both(&mut self, node_id: NodeId, inputs: ChildLayoutInput) -> Size<f32> {
-        self.measure_child_size_with_metadata(node_id, inputs, RequestedAxis::Both).size
     }
 
     /// Perform a full layout on the node given the specified constraints

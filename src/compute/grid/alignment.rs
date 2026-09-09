@@ -1,6 +1,6 @@
 //! Alignment of tracks and final positioning of items
 use super::types::GridTrack;
-use crate::compute::common::absolute::resolve_absolute_margins;
+use crate::compute::common::absolute::{compute_absolute_layout, AbsoluteConstraintSpace};
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
@@ -187,6 +187,17 @@ pub(super) fn layout_item(
     direction: Direction,
     parent_writing_mode: WritingMode,
 ) -> GridItemLayout {
+    if tree.get_grid_child_style(node).position() == Position::Absolute {
+        return layout_absolute_item(
+            tree,
+            node,
+            order,
+            grid_area,
+            container_alignment_styles,
+            direction,
+            parent_writing_mode,
+        );
+    }
     let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
     let percentage_basis = parent_writing_mode.to_logical(grid_area_size).inline_size;
 
@@ -275,14 +286,7 @@ pub(super) fn layout_item(
     // Resolve intrinsic keywords on the item's physical axes. A vertical
     // child's inline-size is height; its grid area remains the percentage basis.
     for axis in [item_writing_mode.inline_axis(), item_writing_mode.block_axis()] {
-        let insets = match axis {
-            crate::AbsoluteAxis::Horizontal => inset_horizontal,
-            crate::AbsoluteAxis::Vertical => inset_vertical,
-        };
-        let mut available = grid_area_minus_item_margins_size.get_abs(axis);
-        if position == Position::Absolute {
-            available -= insets.start.unwrap_or(0.0) + insets.end.unwrap_or(0.0);
-        }
+        let available = grid_area_minus_item_margins_size.get_abs(axis);
         let intrinsic = resolve_intrinsic_axis_constraints(
             tree,
             node,
@@ -354,16 +358,10 @@ pub(super) fn layout_item(
     let available_logical_size = parent_writing_mode.to_logical(grid_area_minus_item_margins_size);
     let axis_size = |axis| {
         let physical_axis = parent_writing_mode.physical_axis(axis);
-        let (inset, margin) = match physical_axis {
-            crate::AbsoluteAxis::Horizontal => (inset_horizontal, margin.horizontal_components()),
-            crate::AbsoluteAxis::Vertical => (inset_vertical, margin.vertical_components()),
+        let margin = match physical_axis {
+            crate::AbsoluteAxis::Horizontal => margin.horizontal_components(),
+            crate::AbsoluteAxis::Vertical => margin.vertical_components(),
         };
-        if position == Position::Absolute {
-            return match (inset.start, inset.end) {
-                (Some(start), Some(end)) => Some((available_logical_size.get(axis) - start - end).max(0.0)),
-                _ => None,
-            };
-        }
         (margin.start.is_some() && margin.end.is_some() && alignment_styles.get(axis) == AlignSelf::STRETCH)
             .then_some(available_logical_size.get(axis))
     };
@@ -384,22 +382,7 @@ pub(super) fn layout_item(
         .maybe_clamp(min_size, max_size);
 
     // Layout node
-    let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
-        tree.measure_child_size_both(
-            node,
-            ChildLayoutInput::new(
-                Size { width, height },
-                grid_area_size.map(Option::Some),
-                parent_writing_mode,
-                grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
-                SizingMode::InherentSize,
-                Line::FALSE,
-            ),
-        )
-        .map(Some)
-    } else {
-        Size { width, height }
-    };
+    let size = Size { width, height };
 
     let layout_output = tree.perform_child_layout(
         node,
@@ -417,26 +400,6 @@ pub(super) fn layout_item(
     // Its result may include a custom formatter's structural minimum; use it
     // for area alignment, baselines, overflow, and fragment publication alike.
     let Size { width, height } = layout_output.size;
-    let margin = if position == Position::Absolute {
-        // Absolute auto margins consume space left by both definite insets;
-        // they are zero on a static-position axis. Reuse the same physical
-        // axis contract as block/flex instead of ordinary grid-item margins.
-        resolve_absolute_margins(
-            margin,
-            Rect {
-                left: inset_horizontal.start,
-                right: inset_horizontal.end,
-                top: inset_vertical.start,
-                bottom: inset_vertical.end,
-            },
-            grid_area_size,
-            layout_output.size,
-            WritingDirection { mode: parent_writing_mode, direction },
-        )
-        .map(Some)
-    } else {
-        margin
-    };
 
     let physical_alignment = parent_writing_mode
         .to_physical(LogicalSize { inline_size: alignment_styles.inline, block_size: alignment_styles.block });
@@ -467,8 +430,7 @@ pub(super) fn layout_item(
         layout: Layout {
             order,
             location: Point { x, y },
-            in_flow: (position != Position::Absolute)
-                .then_some(crate::InFlowLayout { location: Point::ZERO, margin: resolved_margin }),
+            in_flow: Some(crate::InFlowLayout { location: Point::ZERO, margin: resolved_margin }),
             size: Size { width, height },
             #[cfg(feature = "content_size")]
             content_size: layout_output.content_size,
@@ -498,6 +460,93 @@ pub(super) fn layout_item(
         } else {
             Point::ZERO
         },
+        overflow,
+    }
+}
+
+/// Absolute sizing is independent of the grid's in-flow stretch and track
+/// contributions. The grid still owns its static-position rectangle and
+/// publishes the child in the selected grid area.
+fn layout_absolute_item(
+    tree: &mut impl LayoutGridContainer,
+    node: NodeId,
+    order: u32,
+    grid_area: Rect<f32>,
+    container_alignment: InBothLogicalAxes<Option<AlignItems>>,
+    direction: Direction,
+    parent_writing_mode: WritingMode,
+) -> GridItemLayout {
+    let area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
+    let child_mode = tree.get_writing_mode(node);
+    let style = tree.get_grid_child_style(node);
+    let overflow = style.overflow();
+    let child_direction = style.direction();
+    let alignment = InBothLogicalAxes {
+        inline: style.justify_self().or(container_alignment.inline).unwrap_or(AlignSelf::START),
+        block: style.align_self().or(container_alignment.block).unwrap_or(AlignSelf::START),
+    };
+    drop(style);
+    let alignment = parent_writing_mode.to_physical(LogicalSize {
+        inline_size: alignment.inline.resolve_self_relative(
+            child_mode,
+            child_direction,
+            parent_writing_mode,
+            direction,
+            parent_writing_mode.inline_axis(),
+        ),
+        block_size: alignment.block.resolve_self_relative(
+            child_mode,
+            child_direction,
+            parent_writing_mode,
+            direction,
+            parent_writing_mode.block_axis(),
+        ),
+    });
+    let computed = compute_absolute_layout(
+        tree,
+        node,
+        AbsoluteConstraintSpace {
+            containing_block_size: area_size,
+            writing_direction: WritingDirection { mode: parent_writing_mode, direction },
+            static_available_space: area_size,
+        },
+    );
+    let output = computed.output;
+    let (x, _) = align_item_within_area(
+        Line { start: grid_area.left, end: grid_area.right },
+        alignment.width,
+        output.size.width,
+        Position::Absolute,
+        computed.inset.horizontal_components(),
+        computed.margin.horizontal_components().map(Some),
+        parent_writing_mode.is_axis_flow_reversed(crate::AbsoluteAxis::Horizontal, direction),
+    );
+    let (y, _) = align_item_within_area(
+        Line { start: grid_area.top, end: grid_area.bottom },
+        alignment.height,
+        output.size.height,
+        Position::Absolute,
+        computed.inset.vertical_components(),
+        computed.margin.vertical_components().map(Some),
+        parent_writing_mode.is_axis_flow_reversed(crate::AbsoluteAxis::Vertical, direction),
+    );
+    GridItemLayout {
+        layout: Layout {
+            order,
+            location: Point { x, y },
+            in_flow: None,
+            size: output.size,
+            #[cfg(feature = "content_size")]
+            content_size: output.content_size,
+            scrollbar_size: tree.get_scrollbar_insets(node).sum_axes(),
+            padding: computed.padding,
+            border: computed.border,
+            margin: computed.margin,
+        },
+        grid_area,
+        first_baselines: output.first_baselines,
+        last_baselines: output.last_baselines,
+        relative_offset: Point::ZERO,
         overflow,
     }
 }

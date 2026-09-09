@@ -15,7 +15,7 @@ mod grid;
 
 pub use self::alignment::{
     AlignContent, AlignContentKeyword, AlignItems, AlignItemsKeyword, AlignSelf, AlignmentSafety, BaselinePreference,
-    JustifyContent, JustifyItems, JustifySelf,
+    JustifyContent, JustifyItems, JustifySelf, PositionedAlignment,
 };
 pub use self::available_space::AvailableSpace;
 pub use self::compact_length::CompactLength;
@@ -155,6 +155,20 @@ pub trait CoreStyle {
     #[inline(always)]
     fn inset(&self) -> Rect<LengthPercentageAuto> {
         Style::<Self::CustomIdent>::DEFAULT.inset
+    }
+
+    /// Authored self-alignment for absolute positioning, in the containing
+    /// block's logical axes. `None` resolves to normal; it does not inherit
+    /// the flex/grid container's item-alignment defaults.
+    #[inline(always)]
+    fn positioned_alignment(&self) -> PositionedAlignment {
+        PositionedAlignment::default()
+    }
+
+    /// Table wrappers shrink to fit unless explicitly stretched.
+    #[inline(always)]
+    fn is_table_wrapper(&self) -> bool {
+        false
     }
 
     // Size properies
@@ -588,15 +602,15 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     #[cfg(any(feature = "flexbox", feature = "grid"))]
     pub align_items: Option<AlignItems>,
     /// How this node should be aligned in the cross/block axis
-    /// Falls back to the parents [`AlignItems`] if not set
-    #[cfg(any(feature = "flexbox", feature = "grid"))]
+    /// In-flow items fall back to the parent's [`AlignItems`]. Absolute boxes
+    /// use normal alignment when this is not set.
     pub align_self: Option<AlignSelf>,
     /// How this node's children should be aligned in the inline axis
     #[cfg(feature = "grid")]
     pub justify_items: Option<AlignItems>,
     /// How this node should be aligned in the inline axis
-    /// Falls back to the parents [`JustifyItems`] if not set
-    #[cfg(feature = "grid")]
+    /// In-flow items fall back to the parent's [`JustifyItems`]. Absolute boxes
+    /// use normal alignment when this is not set.
     pub justify_self: Option<AlignSelf>,
     /// How should content contained within this item be aligned in the cross/block axis
     #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
@@ -703,11 +717,9 @@ impl<S: CheapCloneStr> Style<S> {
         // Alignment
         #[cfg(any(feature = "flexbox", feature = "grid"))]
         align_items: None,
-        #[cfg(any(feature = "flexbox", feature = "grid"))]
         align_self: None,
         #[cfg(feature = "grid")]
         justify_items: None,
-        #[cfg(feature = "grid")]
         justify_self: None,
         #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
         align_content: None,
@@ -806,6 +818,14 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
         self.inset
     }
     #[inline(always)]
+    fn positioned_alignment(&self) -> PositionedAlignment {
+        PositionedAlignment { inline: self.justify_self, block: self.align_self }
+    }
+    #[inline(always)]
+    fn is_table_wrapper(&self) -> bool {
+        self.item_is_table
+    }
+    #[inline(always)]
     fn size(&self) -> Size<Dimension> {
         self.size
     }
@@ -881,6 +901,14 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
     #[inline(always)]
     fn inset(&self) -> Rect<LengthPercentageAuto> {
         (*self).inset()
+    }
+    #[inline(always)]
+    fn positioned_alignment(&self) -> PositionedAlignment {
+        (*self).positioned_alignment()
+    }
+    #[inline(always)]
+    fn is_table_wrapper(&self) -> bool {
+        (*self).is_table_wrapper()
     }
     #[inline(always)]
     fn size(&self) -> Size<Dimension> {
@@ -1344,11 +1372,9 @@ mod tests {
             flex_wrap: Default::default(),
             #[cfg(any(feature = "flexbox", feature = "grid"))]
             align_items: Default::default(),
-            #[cfg(any(feature = "flexbox", feature = "grid"))]
             align_self: Default::default(),
             #[cfg(feature = "grid")]
             justify_items: Default::default(),
-            #[cfg(feature = "grid")]
             justify_self: Default::default(),
             #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
             align_content: Default::default(),

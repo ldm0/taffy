@@ -82,6 +82,17 @@ pub enum AlignItemsKeyword {
     Stretch,
 }
 
+/// Authored self-alignment of a positioned box in its containing block's axes.
+/// Unlike normal-flow item alignment, absent values resolve to normal without
+/// inheriting the container's align-items or justify-items.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PositionedAlignment {
+    /// Justify-self in the containing block's inline axis.
+    pub inline: Option<AlignSelf>,
+    /// Align-self in the containing block's block axis.
+    pub block: Option<AlignSelf>,
+}
+
 /// The position-keyword half of [`AlignContent`] (and its alias `JustifyContent`).
 ///
 /// Compute paths match on this enum directly so every match is exhaustive and

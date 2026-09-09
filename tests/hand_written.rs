@@ -2,6 +2,7 @@
 #[allow(clippy::module_inception)]
 mod hand_written {
     mod absolute_position;
+    mod absolute_sizing;
     mod adversarial_styles;
     mod aspect_ratio;
     mod baseline_preference;

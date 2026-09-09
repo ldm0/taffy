@@ -12,8 +12,10 @@ use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
 use core::unreachable;
 
 use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+    apply_preferred_aspect_ratio, resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput,
+    TransferredSizesMode,
 };
+use super::common::intrinsic_size::{BlockSizeProperties, ContentBasedBlockSize};
 use super::common::used_size::{resolve_used_axis, resolve_used_size};
 
 /// Node-level values resolved by the embedding before leaf layout begins.
@@ -169,12 +171,13 @@ where
 
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match sizing_mode {
+    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio, block_limits) = match sizing_mode
+    {
         SizingMode::ContentSize => {
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, None, false)
+            (node_size, node_min_size, node_max_size, None, false, ResolvedAxisConstraints::default())
         }
         SizingMode::InherentSize => {
             let raw_size = style.size();
@@ -218,9 +221,40 @@ where
                 && (preferred_inline_from_aspect_ratio
                     || (writing_mode.to_logical(size_before_ratio).inline_size.is_none()
                         && writing_mode.to_logical(node_size).inline_size.is_some()));
-            (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
+            (
+                node_size,
+                style_min_size,
+                style_max_size,
+                resolved_aspect_ratio,
+                applied_aspect_ratio,
+                resolved.block_axis_constraints(writing_mode),
+            )
         }
     };
+
+    // Measured block content (including an embedding's inline formatting
+    // context) owns the same automatic minimum as a block subtree. Opaque
+    // non-block leaves and replaced elements retain their own sizing rules.
+    let block_property = writing_mode.to_logical(style.size()).block_size;
+    let block_resolver = (style.is_block()
+        && !style.is_compressible_replaced()
+        && aspect_ratio.is_some()
+        && writing_mode.to_logical(known_dimensions).block_size.is_none()
+        && (block_property.is_auto() || block_property.is_intrinsic()))
+    .then(|| {
+        let overflow = style.overflow();
+        ContentBasedBlockSize::new(
+            BlockSizeProperties::new(
+                block_property,
+                writing_mode.to_logical(style.min_size()).block_size,
+                writing_mode.to_logical(style.max_size()).block_size,
+            ),
+            aspect_ratio,
+            pb_sum,
+            inputs.block_auto_behavior.is_content_based(aspect_ratio.is_some()),
+            overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+        )
+    });
 
     let content_box_inset = padding_border + scrollbar_insets;
     let writing_direction = crate::WritingDirection::new(writing_mode, style.direction());
@@ -244,7 +278,10 @@ where
     debug_log!("max_size ", dbg:node_max_size);
 
     // Return early if both width and height are known
-    if run_mode == RunMode::ComputeSize && has_styles_preventing_being_collapsed_through {
+    if run_mode == RunMode::ComputeSize
+        && has_styles_preventing_being_collapsed_through
+        && !block_resolver.is_some_and(|resolver| resolver.requires_intrinsic_measurement())
+    {
         let used_size = resolve_used_size(known_dimensions, node_size, node_min_size, node_max_size, pb_sum);
         if let Size { width: Some(width), height: Some(height) } = used_size {
             let size = Size { width, height };
@@ -319,7 +356,20 @@ where
     let ratio_block_size = writing_mode.to_logical(ratio_size).block_size.unwrap_or(0.0);
     let size = writing_mode.to_physical(crate::LogicalSize {
         inline_size: used_logical_size.inline_size,
-        block_size: if writing_mode.to_logical(known_dimensions).block_size.is_some() {
+        block_size: if let Some(resolver) = block_resolver {
+            let constraints = resolver
+                .resolve(
+                    writing_mode,
+                    Some(used_logical_size.inline_size),
+                    writing_mode.to_logical(measured_outer_size).block_size,
+                )
+                .resolve_against(None, block_limits);
+            constraints
+                .preferred
+                .unwrap_or(used_logical_size.block_size)
+                .maybe_clamp(constraints.min, constraints.max)
+                .max(writing_mode.to_logical(pb_sum).block_size)
+        } else if writing_mode.to_logical(known_dimensions).block_size.is_some() {
             used_logical_size.block_size
         } else {
             f32_max(used_logical_size.block_size, ratio_block_size)
