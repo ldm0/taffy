@@ -2834,12 +2834,12 @@ fn perform_absolute_layout_on_absolute_children(
                 Line::FALSE,
             ),
         );
-        let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
+        let proposed_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
 
         let layout_output = tree.perform_child_layout(
             child,
             ChildLayoutInput::new(
-                final_size.map(Some),
+                proposed_size.map(Some),
                 constants.node_inner_size,
                 constants.writing_mode,
                 Size {
@@ -2851,6 +2851,10 @@ fn perform_absolute_layout_on_absolute_children(
             ),
         );
 
+        // The formatter owns any structural minimum beyond the sizing
+        // proposal. Insets, auto margins, and safe alignment all use that
+        // final fragment, as they do for in-flow flex items.
+        let final_size = layout_output.size;
         let resolved_margin = resolve_absolute_margins(
             margin,
             Rect { left, right, top, bottom },

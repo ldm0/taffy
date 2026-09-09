@@ -2305,13 +2305,12 @@ fn perform_absolute_layout_on_absolute_children(
             ),
         );
 
-        let final_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
-        let static_position = converter.to_physical_point(item.static_position, final_size);
+        let proposed_size = known_dimensions.unwrap_or(measured_size).maybe_clamp(min_size, max_size);
 
         let layout_output = tree.compute_child_layout(
             item.node_id,
             LayoutInput {
-                known_dimensions: final_size.map(Some),
+                known_dimensions: proposed_size.map(Some),
                 definite_dimensions: known_dimensions,
                 parent_size: area_size.map(Some),
                 parent_writing_mode: writing_mode,
@@ -2328,6 +2327,11 @@ fn perform_absolute_layout_on_absolute_children(
             },
         );
 
+        // A custom formatting context may enforce a structural minimum that
+        // cannot be represented by CSS min-size. Position the actual fragment,
+        // just as the normal-flow block path does, not the parent's proposal.
+        let final_size = layout_output.size;
+        let static_position = converter.to_physical_point(item.static_position, final_size);
         let resolved_margin = resolve_absolute_margins(
             margin,
             Rect { left, right, top, bottom },

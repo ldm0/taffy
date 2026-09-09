@@ -52,20 +52,6 @@ pub(crate) fn apply_alignment_fallback(
     keyword
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stretch_overflow_keeps_flex_start_without_inventing_safe_alignment() {
-        let keyword = apply_alignment_fallback(-20.0, 2, AlignContent::STRETCH);
-        assert_eq!(keyword, AlignContentKeyword::FlexStart);
-        assert_eq!(compute_alignment_offset(-20.0, 2, 0.0, keyword, true, true), -20.0);
-        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SPACE_AROUND), AlignContentKeyword::Start);
-        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SAFE_CENTER), AlignContentKeyword::Start);
-    }
-}
-
 /// Generic alignment function that is used:
 ///   - For both align-content and justify-content alignment
 ///   - For both the Flexbox and CSS Grid algorithms
@@ -129,5 +115,19 @@ pub(crate) fn compute_alignment_offset(
             AlignContentKeyword::SpaceAround => free_space / num_items as f32,
             AlignContentKeyword::SpaceEvenly => free_space / (num_items + 1) as f32,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stretch_overflow_keeps_flex_start_without_inventing_safe_alignment() {
+        let keyword = apply_alignment_fallback(-20.0, 2, AlignContent::STRETCH);
+        assert_eq!(keyword, AlignContentKeyword::FlexStart);
+        assert_eq!(compute_alignment_offset(-20.0, 2, 0.0, keyword, true, true), -20.0);
+        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SPACE_AROUND), AlignContentKeyword::Start);
+        assert_eq!(apply_alignment_fallback(-20.0, 2, AlignContent::SAFE_CENTER), AlignContentKeyword::Start);
     }
 }

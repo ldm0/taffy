@@ -1,3 +1,5 @@
+// Preserve upstream's nested test module paths, which are also nextest IDs.
+#[allow(clippy::module_inception)]
 mod hand_written {
     mod absolute_position;
     mod adversarial_styles;
@@ -9,6 +11,7 @@ mod hand_written {
     mod block_writing_modes;
     mod border_and_padding;
     mod caching;
+    mod child_fragment_size;
     mod flex_aspect_ratio;
     mod flex_auto_margins;
     mod flex_baseline;

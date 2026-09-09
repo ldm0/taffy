@@ -1,5 +1,6 @@
 //! Alignment of tracks and final positioning of items
 use super::types::GridTrack;
+use crate::compute::common::absolute::resolve_absolute_margins;
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
@@ -412,8 +413,30 @@ pub(super) fn layout_item(
         ),
     );
 
-    // Resolve final size
-    let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
+    // Sizing proposals have already been constrained before child layout.
+    // Its result may include a custom formatter's structural minimum; use it
+    // for area alignment, baselines, overflow, and fragment publication alike.
+    let Size { width, height } = layout_output.size;
+    let margin = if position == Position::Absolute {
+        // Absolute auto margins consume space left by both definite insets;
+        // they are zero on a static-position axis. Reuse the same physical
+        // axis contract as block/flex instead of ordinary grid-item margins.
+        resolve_absolute_margins(
+            margin,
+            Rect {
+                left: inset_horizontal.start,
+                right: inset_horizontal.end,
+                top: inset_vertical.start,
+                bottom: inset_vertical.end,
+            },
+            grid_area_size,
+            layout_output.size,
+            WritingDirection { mode: parent_writing_mode, direction },
+        )
+        .map(Some)
+    } else {
+        margin
+    };
 
     let physical_alignment = parent_writing_mode
         .to_physical(LogicalSize { inline_size: alignment_styles.inline, block_size: alignment_styles.block });

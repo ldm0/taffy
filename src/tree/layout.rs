@@ -187,6 +187,9 @@ pub struct LayoutInput {
     ///
     ///   "The exact size of this node is WIDTHxHEIGHT. Please lay out your children"
     ///
+    /// Custom formatting contexts can enforce structural minimums not expressible
+    /// by style constraints. In that case, [`LayoutOutput::size`] is authoritative:
+    /// parents align and publish the returned fragment, not the sizing proposal.
     pub known_dimensions: Size<Option<f32>>,
     /// Definite dimensions of this node which descendants may use as a percentage basis.
     ///
@@ -514,7 +517,8 @@ impl IntrinsicSizeResult {
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct LayoutOutput {
-    /// The size of the node
+    /// The final border-box size of the node. Parents must use this result for
+    /// positioning and publication rather than reapplying input size constraints.
     pub size: Size<f32>,
     /// Transitional transport for the combined low-level dispatcher. Public
     /// layout consumers exchange this state through [`IntrinsicSizeResult`],

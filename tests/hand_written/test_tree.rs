@@ -15,6 +15,8 @@ pub(super) struct TestNode {
     pub(super) baseline_type: Option<BaselineType>,
     pub(super) first_baselines: Point<Option<f32>>,
     pub(super) last_baselines: Point<Option<f32>>,
+    /// A custom formatter's structural minimum, not a CSS min-size property.
+    pub(super) fragment_size_floor: Option<Size<f32>>,
     pub(super) children: Vec<usize>,
     leaf: bool,
     measured_size: Size<f32>,
@@ -32,6 +34,7 @@ impl TestNode {
             baseline_type: None,
             first_baselines: Point::NONE,
             last_baselines: Point::NONE,
+            fragment_size_floor: None,
             children: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
@@ -49,6 +52,7 @@ impl TestNode {
             baseline_type: None,
             first_baselines: Point::NONE,
             last_baselines: Point::NONE,
+            fragment_size_floor: None,
             children: Vec::new(),
             leaf: true,
             measured_size,
@@ -161,6 +165,9 @@ impl LayoutPartialTree for TestTree {
             );
             output.first_baselines = self.nodes[index].first_baselines;
             output.last_baselines = self.nodes[index].last_baselines;
+            if let Some(floor) = self.nodes[index].fragment_size_floor {
+                output.size = output.size.f32_max(floor);
+            }
             return output;
         }
 
