@@ -23,8 +23,8 @@ use super::common::aspect_ratio::{
     resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
 };
 use super::common::intrinsic_size::{
-    measure_content_based_block_size, resolve_intrinsic_axis_constraints, resolve_ratio_dependent_inline_minimum,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
+    measure_content_based_block_size, resolve_content_based_block_constraints, resolve_intrinsic_axis_constraints,
+    resolve_ratio_dependent_inline_minimum, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
 };
 use super::common::used_size::resolve_used_size;
 
@@ -479,66 +479,8 @@ pub fn compute_block_layout(
                     &mut resolved,
                 );
             }
-            // A parent fixes the inline constraint, but an automatic block
-            // size still belongs to this block formatting context. Resolve
-            // its content minimum before a provisional ratio size becomes a
-            // fixed input to the final block flow.
-            let logical_known = writing_mode.to_logical(known_dimensions);
-            let logical_preferred = writing_mode.to_logical(raw_size);
-            let auto_is_content_based = inputs.block_auto_behavior.is_content_based(aspect_ratio.is_some());
-            let resolver = ContentBasedBlockSize::new(
-                BlockSizeProperties::new(
-                    logical_preferred.block_size,
-                    writing_mode.to_logical(raw_min_size).block_size,
-                    writing_mode.to_logical(raw_max_size).block_size,
-                ),
-                aspect_ratio,
-                padding_border_size,
-                auto_is_content_based,
-                is_scroll_container,
-            );
-            let inline_size = logical_known.inline_size.or(writing_mode
-                .to_logical(resolved.size.maybe_clamp(resolved.min_size, resolved.max_size))
-                .inline_size);
-            if logical_known.block_size.is_none()
-                && inline_size.is_some()
-                && aspect_ratio.is_some()
-                && resolver.requires_intrinsic_measurement()
-            {
-                let intrinsic = measure_content_based_block_size(
-                    tree,
-                    node_id,
-                    ChildLayoutInput::new(
-                        writing_mode.to_physical(LogicalSize { inline_size, block_size: None }),
-                        parent_size,
-                        inputs.parent_writing_mode,
-                        inputs.available_space,
-                        SizingMode::ContentSize,
-                        inputs.block_margins_are_collapsible,
-                    )
-                    .with_block_auto_behavior(inputs.block_auto_behavior),
-                    resolver,
-                );
-                intrinsic_dependency |= intrinsic.depends_on_block_constraints;
-                let preferred_block = (!logical_preferred.block_size.is_auto())
-                    .then_some(writing_mode.to_logical(resolved.size).block_size)
-                    .flatten();
-                let block = intrinsic.resolve_against(preferred_block, resolved.block_axis_constraints(writing_mode));
-                let mut size = writing_mode.to_logical(resolved.size);
-                size.block_size = block.preferred.maybe_clamp(block.min, block.max);
-                resolved.size = writing_mode.to_physical(size);
-                // A ratio-derived used block size is a definite percentage
-                // basis, including a content minimum that enlarges it.
-                let mut definite = writing_mode.to_logical(inputs.definite_dimensions);
-                definite.block_size = size.block_size;
-                inputs.definite_dimensions = writing_mode.to_physical(definite);
-                let mut minimum = writing_mode.to_logical(resolved.min_size);
-                let mut maximum = writing_mode.to_logical(resolved.max_size);
-                minimum.block_size = block.min;
-                maximum.block_size = block.max;
-                resolved.min_size = writing_mode.to_physical(minimum);
-                resolved.max_size = writing_mode.to_physical(maximum);
-            }
+            intrinsic_dependency |=
+                resolve_content_based_block_constraints(tree, node_id, &mut inputs, &mut resolved, padding_border_size);
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let preferred_size = resolved.size.maybe_clamp(min_size, max_size);

@@ -359,6 +359,76 @@ pub(crate) fn measure_content_based_block_size(
     constraints
 }
 
+/// Complete ratio-dependent block constraints using the node's own formatter.
+/// This runs before its provisional block size becomes an exact layout input.
+pub(crate) fn resolve_content_based_block_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node: crate::NodeId,
+    inputs: &mut LayoutInput,
+    sizing: &mut ResolvedSizeConstraints,
+    padding_border: Size<f32>,
+) -> bool {
+    let mode = tree.get_writing_mode(node);
+    let known = mode.to_logical(inputs.known_dimensions);
+    let inline_size =
+        known.inline_size.or(mode.to_logical(sizing.size.maybe_clamp(sizing.min_size, sizing.max_size)).inline_size);
+    let ratio = tree.get_resolved_aspect_ratio(node);
+    if known.block_size.is_some() || inline_size.is_none() || ratio.is_none() {
+        return false;
+    }
+    let style = tree.get_core_container_style(node);
+    let preferred = mode.to_logical(style.size()).block_size;
+    let overflow = style.overflow();
+    let resolver = ContentBasedBlockSize::new(
+        BlockSizeProperties::new(
+            preferred,
+            mode.to_logical(style.min_size()).block_size,
+            mode.to_logical(style.max_size()).block_size,
+        ),
+        ratio,
+        padding_border,
+        inputs.block_auto_behavior.is_content_based(true),
+        overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+    );
+    drop(style);
+    if !resolver.requires_intrinsic_measurement() {
+        return false;
+    }
+    // Re-enter the node's actual formatter in content mode: a flex or grid
+    // container's intrinsic block contribution is not its raw text measure.
+    let intrinsic = measure_content_based_block_size(
+        tree,
+        node,
+        ChildLayoutInput::new(
+            mode.to_physical(LogicalSize { inline_size, block_size: None }),
+            inputs.parent_size,
+            inputs.parent_writing_mode,
+            inputs.available_space,
+            SizingMode::ContentSize,
+            inputs.block_margins_are_collapsible,
+        )
+        .with_block_auto_behavior(inputs.block_auto_behavior),
+        resolver,
+    );
+    let preferred_block = (!preferred.is_auto()).then_some(mode.to_logical(sizing.size).block_size).flatten();
+    let block = intrinsic.resolve_against(preferred_block, sizing.block_axis_constraints(mode));
+    let mut size = mode.to_logical(sizing.size);
+    size.block_size = block.preferred.maybe_clamp(block.min, block.max);
+    sizing.size = mode.to_physical(size);
+    let mut minimum = mode.to_logical(sizing.min_size);
+    let mut maximum = mode.to_logical(sizing.max_size);
+    minimum.block_size = block.min;
+    maximum.block_size = block.max;
+    sizing.min_size = mode.to_physical(minimum);
+    sizing.max_size = mode.to_physical(maximum);
+    // A ratio-derived block size remains definite for percentage descendants,
+    // including when its actual content minimum enlarges the preferred size.
+    let mut definite = mode.to_logical(inputs.definite_dimensions);
+    definite.block_size = size.block_size;
+    inputs.definite_dimensions = mode.to_physical(definite);
+    intrinsic.depends_on_block_constraints
+}
+
 /// Resolve all three horizontal intrinsic sizing properties at one ownership
 /// seam.
 ///

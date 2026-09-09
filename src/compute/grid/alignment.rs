@@ -1,12 +1,15 @@
 //! Alignment of tracks and final positioning of items
+use super::item_sizing::{auto_size_behavior, resolve_item_sizing};
 use super::types::GridTrack;
 use crate::compute::common::absolute::{compute_absolute_layout, AbsoluteConstraintSpace};
 use crate::compute::common::alignment::{
     apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety,
 };
-use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::common::aspect_ratio::{SizeConstraintInput, TransferredSizesMode};
 use crate::compute::common::baseline::BaselineContext;
-use crate::compute::common::intrinsic_size::{resolve_intrinsic_axis_constraints, IntrinsicAxisInput};
+use crate::compute::common::intrinsic_size::{
+    resolve_intrinsic_axis_constraints, resolve_ratio_dependent_inline_minimum, IntrinsicAxisInput,
+};
 use crate::geometry::{InBothLogicalAxes, Line, LogicalSize, Point, Rect, Size};
 use crate::style::{
     AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, AvailableSpace, CoreStyle, GridItemStyle, Overflow,
@@ -262,6 +265,7 @@ pub(super) fn layout_item(
     let padding_border_size = (padding + border).sum_axes();
 
     let box_sizing = style.box_sizing();
+    let is_replaced = style.is_compressible_replaced();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
     let raw_size = style.size();
@@ -283,6 +287,40 @@ pub(super) fn layout_item(
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
         height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom),
     };
+    let alignment_styles = InBothLogicalAxes {
+        inline: justify_self.or(container_alignment_styles.inline).unwrap_or(AlignSelf::NORMAL),
+        block: align_self.or(container_alignment_styles.block).unwrap_or(AlignSelf::NORMAL),
+    };
+    let physical_alignment = parent_writing_mode
+        .to_physical(LogicalSize { inline_size: alignment_styles.inline, block_size: alignment_styles.block });
+    let behavior = Size {
+        width: auto_size_behavior(
+            physical_alignment.width,
+            margin.left.is_none() || margin.right.is_none(),
+            is_replaced,
+        ),
+        height: auto_size_behavior(
+            physical_alignment.height,
+            margin.top.is_none() || margin.bottom.is_none(),
+            is_replaced,
+        ),
+    };
+    let sizing_input = |size, min_size, max_size| SizeConstraintInput {
+        size,
+        min_size,
+        max_size,
+        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+        writing_mode: item_writing_mode,
+        block_auto_behavior: AutoSizeBehavior::FitContent,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
+        aspect_ratio,
+        padding_border: padding_border_size,
+    };
+    let initial_sizing = resolve_item_sizing(
+        sizing_input(inherent_size, min_size, max_size),
+        grid_area_minus_item_margins_size.map(Some),
+        behavior,
+    );
     // Resolve intrinsic keywords on the item's physical axes. A vertical
     // child's inline-size is height; its grid area remains the percentage basis.
     for axis in [item_writing_mode.inline_axis(), item_writing_mode.block_axis()] {
@@ -291,13 +329,14 @@ pub(super) fn layout_item(
             tree,
             node,
             ChildLayoutInput::new(
-                Size::NONE,
+                initial_sizing.known_dimensions,
                 grid_area_size.map(Some),
                 parent_writing_mode,
                 grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_block_auto_behavior(initial_sizing.block_auto_behavior),
             IntrinsicAxisInput {
                 preferred: raw_size.get_abs(axis),
                 min: raw_min_size.get_abs(axis),
@@ -308,93 +347,76 @@ pub(super) fn layout_item(
         );
         match axis {
             crate::AbsoluteAxis::Horizontal => {
-                inherent_size.width = inherent_size.width.or(intrinsic.preferred);
+                if !initial_sizing.constraints.aspect_ratio_applied.width
+                    || intrinsic.preferred > initial_sizing.constraints.size.width
+                {
+                    inherent_size.width = inherent_size.width.or(intrinsic.preferred);
+                }
                 min_size.width = min_size.width.or(intrinsic.min);
                 max_size.width = max_size.width.or(intrinsic.max);
             }
             crate::AbsoluteAxis::Vertical => {
-                inherent_size.height = inherent_size.height.or(intrinsic.preferred);
+                if !initial_sizing.constraints.aspect_ratio_applied.height
+                    || intrinsic.preferred > initial_sizing.constraints.size.height
+                {
+                    inherent_size.height = inherent_size.height.or(intrinsic.preferred);
+                }
                 min_size.height = min_size.height.or(intrinsic.min);
                 max_size.height = max_size.height.or(intrinsic.max);
             }
         }
     }
-    let resolved = resolve_size_constraints(SizeConstraintInput {
-        size: inherent_size,
-        min_size,
-        max_size,
-        size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-        writing_mode: item_writing_mode,
-        block_auto_behavior: AutoSizeBehavior::FitContent,
-        transferred_sizes_mode: TransferredSizesMode::Normal,
-        aspect_ratio,
-        padding_border: padding_border_size,
-    });
-    inherent_size = resolved.size;
-    min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
-    max_size = resolved.max_size;
-
-    // Resolve default alignment styles if they are set on neither the parent or the node itself
-    // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
-    // and the then height is calculated from the width according the aspect ratio
-    // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
-    let alignment_styles = InBothLogicalAxes {
-        inline: justify_self.or(container_alignment_styles.inline).unwrap_or_else(|| {
-            if parent_writing_mode.to_logical(inherent_size).inline_size.is_some() {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
-        block: align_self.or(container_alignment_styles.block).unwrap_or_else(|| {
-            if parent_writing_mode.to_logical(inherent_size).block_size.is_some() || aspect_ratio.is_some() {
-                AlignSelf::START
-            } else {
-                AlignSelf::STRETCH
-            }
-        }),
-    };
-
-    let available_logical_size = parent_writing_mode.to_logical(grid_area_minus_item_margins_size);
-    let axis_size = |axis| {
-        let physical_axis = parent_writing_mode.physical_axis(axis);
-        let margin = match physical_axis {
-            crate::AbsoluteAxis::Horizontal => margin.horizontal_components(),
-            crate::AbsoluteAxis::Vertical => margin.vertical_components(),
-        };
-        (margin.start.is_some() && margin.end.is_some() && alignment_styles.get(axis) == AlignSelf::STRETCH)
-            .then_some(available_logical_size.get(axis))
-    };
-    // Inline stretch is resolved first, then aspect-ratio transfer, then
-    // block stretch. The tree/ratio boundary always retains physical sizes.
-    let mut logical_size = parent_writing_mode.to_logical(inherent_size);
-    logical_size.inline_size = logical_size.inline_size.or_else(|| axis_size(crate::geometry::AbstractAxis::Inline));
-    let physical_size = parent_writing_mode.to_physical(logical_size).maybe_apply_aspect_ratio_with_box_sizing(
-        aspect_ratio,
-        BoxSizing::BorderBox,
-        padding_border_size,
+    let mut sizing = resolve_item_sizing(
+        sizing_input(inherent_size, min_size, max_size),
+        grid_area_minus_item_margins_size.map(Some),
+        behavior,
     );
-    logical_size = parent_writing_mode.to_logical(physical_size);
-    logical_size.block_size = logical_size.block_size.or_else(|| axis_size(crate::geometry::AbstractAxis::Block));
-    let Size { width, height } = parent_writing_mode
-        .to_physical(logical_size)
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size)
-        .maybe_clamp(min_size, max_size);
 
-    // Layout node
-    let size = Size { width, height };
-
-    let layout_output = tree.perform_child_layout(
-        node,
+    let child_input = |known| {
         ChildLayoutInput::new(
-            size,
-            grid_area_size.map(Option::Some),
+            known,
+            grid_area_size.map(Some),
             parent_writing_mode,
             grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
-        ),
+        )
+        .with_block_auto_behavior(sizing.block_auto_behavior)
+    };
+    let mut dependency = resolve_ratio_dependent_inline_minimum(
+        tree,
+        node,
+        child_input(sizing.known_dimensions),
+        &mut sizing.constraints,
     );
+    let mut known = item_writing_mode.to_logical(sizing.known_dimensions);
+    if known.inline_size.is_none() {
+        let fit = resolve_intrinsic_axis_constraints(
+            tree,
+            node,
+            child_input(sizing.known_dimensions),
+            IntrinsicAxisInput {
+                preferred: crate::Dimension::fit_content(),
+                min: crate::Dimension::auto(),
+                max: crate::Dimension::auto(),
+                available_space: AvailableSpace::Definite(
+                    grid_area_minus_item_margins_size.get_abs(item_writing_mode.inline_axis()).max(0.0),
+                ),
+                axis: item_writing_mode.inline_axis(),
+            },
+        );
+        known.inline_size = fit.preferred;
+        dependency |= fit.depends_on_block_constraints;
+    }
+    known.inline_size = known.inline_size.maybe_clamp(
+        item_writing_mode.to_logical(sizing.constraints.min_size).inline_size,
+        item_writing_mode.to_logical(sizing.constraints.max_size).inline_size,
+    );
+    sizing.known_dimensions = item_writing_mode.to_physical(known);
+
+    let layout_output = tree
+        .perform_child_layout(node, child_input(sizing.known_dimensions))
+        .with_block_constraint_dependency(dependency);
 
     // Sizing proposals have already been constrained before child layout.
     // Its result may include a custom formatter's structural minimum; use it
@@ -580,7 +602,8 @@ pub(super) fn align_item_within_area(
     let alignment_based_offset = match alignment_keyword {
         // Baseline group alignment is resolved from the final sibling
         // fragments. This is the fallback used by nonparticipating items.
-        AlignItemsKeyword::Start
+        AlignItemsKeyword::Normal
+        | AlignItemsKeyword::Start
         | AlignItemsKeyword::FlexStart
         | AlignItemsKeyword::Baseline
         | AlignItemsKeyword::Stretch => {

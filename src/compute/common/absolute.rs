@@ -111,7 +111,7 @@ pub fn compute_absolute_layout(
         } else {
             match alignment.map(|value| value.keyword()) {
                 Some(AlignItemsKeyword::Stretch) => AutoSizeBehavior::StretchExplicit,
-                None if implicit_stretch => AutoSizeBehavior::StretchImplicit,
+                None | Some(AlignItemsKeyword::Normal) if implicit_stretch => AutoSizeBehavior::StretchImplicit,
                 _ => AutoSizeBehavior::FitContent,
             }
         };

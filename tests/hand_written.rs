@@ -21,6 +21,7 @@ mod hand_written {
     mod floats;
     mod flow_geometry;
     mod grid_detailed_layout_info;
+    mod grid_item_sizing;
     mod grid_writing_modes;
     mod intrinsic_width;
     mod logical_constraint_space;

@@ -177,11 +177,11 @@ pub(super) fn measure_intrinsic_baselines<Tree: LayoutPartialTree>(
             continue;
         }
         let area_size = grid_area_size(item, tree);
-        let known_dimensions = item.known_dimensions(tree, area_size);
+        let sizing = item.sizing_constraints(tree, area_size);
         let output = tree.perform_child_layout(
             item.node,
             ChildLayoutInput::new(
-                known_dimensions,
+                sizing.known_dimensions,
                 item.parent_writing_mode.to_physical(area_size),
                 item.parent_writing_mode,
                 item.parent_writing_mode
@@ -189,7 +189,8 @@ pub(super) fn measure_intrinsic_baselines<Tree: LayoutPartialTree>(
                     .map(|size| size.map_or(AvailableSpace::MinContent, AvailableSpace::Definite)),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_block_auto_behavior(sizing.block_auto_behavior),
         );
         let basis = area_size.inline_size;
         let margin = item.margin.map(|value| value.resolve_or_zero(basis, |value, basis| tree.calc(value, basis)));

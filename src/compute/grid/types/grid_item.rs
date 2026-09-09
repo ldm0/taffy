@@ -2,6 +2,7 @@
 use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use crate::compute::grid::baseline::GridItemBaseline;
+use crate::compute::grid::item_sizing::{auto_size_behavior, resolve_item_sizing, GridItemSizing};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothLogicalAxes, Line, LogicalSize, Point, Rect, Size};
@@ -286,11 +287,11 @@ impl GridItem {
     /// Compute the known_dimensions to be passed to the child sizing functions
     /// The key thing that is being done here is applying stretch alignment, which is necessary to
     /// allow percentage sizes further down the tree to resolve properly in some cases
-    pub(in crate::compute::grid) fn known_dimensions(
+    pub(in crate::compute::grid) fn sizing_constraints(
         &self,
         tree: &mut impl LayoutPartialTree,
         grid_area_size: LogicalSize<Option<f32>>,
-    ) -> Size<Option<f32>> {
+    ) -> GridItemSizing {
         let percentage_basis = grid_area_size.inline_size;
         let physical_area_size = self.parent_writing_mode.to_physical(grid_area_size);
         let margins =
@@ -307,7 +308,7 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let resolved = resolve_size_constraints(SizeConstraintInput {
+        let input = SizeConstraintInput {
             size: self
                 .size
                 .maybe_resolve(physical_area_size, |val, basis| tree.calc(val, basis))
@@ -326,36 +327,26 @@ impl GridItem {
             transferred_sizes_mode: TransferredSizesMode::Normal,
             aspect_ratio,
             padding_border: padding_border_size,
-        });
-        let inherent_size = resolved.size;
-        let min_size = resolved.min_size;
-        let max_size = resolved.max_size;
+        };
 
         let grid_area_minus_item_margins_size = physical_area_size.maybe_sub(margins);
 
-        let stretch = |axis| {
+        let behavior = |axis| {
             let margin = self.physical_axis_margins(axis);
-            if !margin.start.is_auto() && !margin.end.is_auto() && self.alignment(axis) == AlignSelf::STRETCH {
-                grid_area_minus_item_margins_size.get_abs(self.parent_writing_mode.physical_axis(axis))
-            } else {
-                None
-            }
+            auto_size_behavior(
+                self.alignment(axis),
+                margin.start.is_auto() || margin.end.is_auto(),
+                self.is_compressible_replaced,
+            )
         };
-        // Inline stretch wins before block stretch when an aspect ratio
-        // transfers a size. The ratio itself always remains physical width/height.
-        let mut logical = self.parent_writing_mode.to_logical(inherent_size);
-        logical.inline_size = logical.inline_size.or_else(|| stretch(AbstractAxis::Inline));
-        let physical = self.parent_writing_mode.to_physical(logical).maybe_apply_aspect_ratio_with_box_sizing(
-            aspect_ratio,
-            BoxSizing::BorderBox,
-            padding_border_size,
-        );
-        logical = self.parent_writing_mode.to_logical(physical);
-        logical.block_size = logical.block_size.or_else(|| stretch(AbstractAxis::Block));
-        self.parent_writing_mode
-            .to_physical(logical)
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_size)
-            .maybe_clamp(min_size, max_size)
+        resolve_item_sizing(
+            input,
+            grid_area_minus_item_margins_size,
+            self.parent_writing_mode.to_physical(LogicalSize {
+                inline_size: behavior(AbstractAxis::Inline),
+                block_size: behavior(AbstractAxis::Block),
+            }),
+        )
     }
 
     /// Returns the grid area's size in the specified axis when every spanned track has a definite fixed size.
@@ -469,7 +460,7 @@ impl GridItem {
         grid_area_size: LogicalSize<Option<f32>>,
         available_space: LogicalSize<Option<f32>>,
     ) -> f32 {
-        let known_dimensions = self.known_dimensions(tree, grid_area_size);
+        let sizing = self.sizing_constraints(tree, grid_area_size);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
         // Spec:
@@ -478,7 +469,7 @@ impl GridItem {
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
-                known_dimensions,
+                sizing.known_dimensions,
                 self.parent_writing_mode.to_physical(grid_area_size),
                 self.parent_writing_mode,
                 self.parent_writing_mode.to_physical(available_space.map(|opt| match opt {
@@ -487,7 +478,8 @@ impl GridItem {
                 })),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_block_auto_behavior(sizing.block_auto_behavior),
             self.parent_writing_mode.physical_axis(axis).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;
@@ -518,14 +510,14 @@ impl GridItem {
         grid_area_size: LogicalSize<Option<f32>>,
         available_space: LogicalSize<Option<f32>>,
     ) -> f32 {
-        let known_dimensions = self.known_dimensions(tree, grid_area_size);
+        let sizing = self.sizing_constraints(tree, grid_area_size);
         // See the min-content path above. Max-content measurement uses the same containing-block
         // basis so percentage-dependent item geometry is measured from the grid area rather than
         // from the container.
         let measured = tree.measure_child_size_with_metadata(
             self.node,
             ChildLayoutInput::new(
-                known_dimensions,
+                sizing.known_dimensions,
                 self.parent_writing_mode.to_physical(grid_area_size),
                 self.parent_writing_mode,
                 self.parent_writing_mode.to_physical(available_space.map(|opt| match opt {
@@ -534,7 +526,8 @@ impl GridItem {
                 })),
                 SizingMode::InherentSize,
                 Line::FALSE,
-            ),
+            )
+            .with_block_auto_behavior(sizing.block_auto_behavior),
             self.parent_writing_mode.physical_axis(axis).into(),
         );
         self.depends_on_block_constraints |= measured.depends_on_block_constraints;

@@ -23,7 +23,8 @@ use track_sizing::{
 };
 use types::{CellOccupancyMatrix, GridItem, GridTrack, NamedLineResolver, TrackCounts};
 
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::aspect_ratio::{resolve_node_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::intrinsic_size::resolve_content_based_block_constraints;
 use super::common::used_size::resolve_used_size;
 
 #[cfg(feature = "detailed_layout_info")]
@@ -35,6 +36,7 @@ mod alignment;
 mod baseline;
 mod explicit_grid;
 mod implicit_grid;
+mod item_sizing;
 mod placement;
 mod track_sizing;
 mod types;
@@ -49,7 +51,7 @@ mod util;
 pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     tree: &mut Tree,
     node: NodeId,
-    inputs: LayoutInput,
+    mut inputs: LayoutInput,
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
@@ -71,29 +73,39 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
+    let mut intrinsic_dependency = false;
     let (min_size, max_size, preferred_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
+        SizingMode::ContentSize => {
+            drop(style);
+            (Size::NONE, Size::NONE, Size::NONE, false)
+        }
         SizingMode::InherentSize => {
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: padding_border_size,
-            });
+            let mut resolved = resolve_node_size_constraints(
+                SizeConstraintInput {
+                    size: raw_size
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    min_size: style
+                        .min_size()
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    max_size: style
+                        .max_size()
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    block_auto_behavior: inputs.block_auto_behavior,
+                    transferred_sizes_mode: TransferredSizesMode::Normal,
+                    aspect_ratio,
+                    padding_border: padding_border_size,
+                },
+                known_dimensions,
+            );
+            drop(style);
+            intrinsic_dependency =
+                resolve_content_based_block_constraints(tree, node, &mut inputs, &mut resolved, padding_border_size);
             (
                 resolved.min_size,
                 resolved.max_size,
@@ -102,6 +114,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             )
         }
     };
+    let style = tree.get_grid_container_style(node);
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize
         && writing_mode.to_logical(known_dimensions).inline_size.is_none()
         && preferred_inline_from_aspect_ratio;
@@ -164,6 +177,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if run_mode == RunMode::ComputeSize {
         if let LogicalSize { inline_size: Some(inline_size), block_size: Some(block_size) } = outer_node_size {
             return LayoutOutput::from_outer_size(writing_mode.to_physical(LogicalSize { inline_size, block_size }))
+                .with_block_constraint_dependency(intrinsic_dependency)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
@@ -173,6 +187,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 return LayoutOutput::from_outer_size(
                     writing_mode.to_physical(LogicalSize { inline_size, block_size: 0.0 }),
                 )
+                .with_block_constraint_dependency(intrinsic_dependency)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
@@ -259,8 +274,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         in_flow_children_iter,
         writing_mode,
         style.grid_auto_flow(),
-        align_items.unwrap_or(AlignItems::STRETCH),
-        justify_items.unwrap_or(AlignItems::STRETCH),
+        align_items.unwrap_or(AlignItems::NORMAL),
+        justify_items.unwrap_or(AlignItems::NORMAL),
         &name_resolver,
     );
     for item in &mut items {
@@ -389,7 +404,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // If only the container's size has been requested
     if run_mode == RunMode::ComputeSize {
-        let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
+        let depends_on_block_constraints =
+            intrinsic_dependency || items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(writing_mode.to_physical(container_border_box))
             .with_block_constraint_dependency(depends_on_block_constraints)
             .with_applied_aspect_ratio(applied_aspect_ratio);
@@ -576,7 +592,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // If only the container's size has been requested
     if run_mode == RunMode::ComputeSize {
-        let depends_on_block_constraints = items.iter().any(|item| item.depends_on_block_constraints);
+        let depends_on_block_constraints =
+            intrinsic_dependency || items.iter().any(|item| item.depends_on_block_constraints);
         return LayoutOutput::from_outer_size(writing_mode.to_physical(container_border_box))
             .with_block_constraint_dependency(depends_on_block_constraints)
             .with_applied_aspect_ratio(applied_aspect_ratio);
@@ -838,6 +855,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         writing_mode.to_physical(content_size),
         first_baselines,
         last_baselines,
+    )
+    .with_block_constraint_dependency(
+        intrinsic_dependency || items.iter().any(|item| item.depends_on_block_constraints),
     )
 }
 

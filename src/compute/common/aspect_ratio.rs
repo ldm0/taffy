@@ -183,6 +183,26 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
     ResolvedSizeConstraints { size: resolved_size, aspect_ratio_applied, min_size, max_size, constraint_sources }
 }
 
+/// Resolve a formatting node's own preferred sizes from its incoming fixed
+/// dimensions. Parent-imposed sizes remain authoritative after ratio transfer.
+pub(crate) fn resolve_node_size_constraints(
+    mut input: SizeConstraintInput,
+    known_dimensions: Size<Option<f32>>,
+) -> ResolvedSizeConstraints {
+    // Parent-imposed dimensions participate in ratio transfer, but remain
+    // exact used sizes rather than style suggestions to clamp a second time.
+    input.size = known_dimensions.or(input.size);
+    let mut resolved = resolve_size_constraints(input);
+    resolved.size = super::used_size::resolve_used_size(
+        known_dimensions,
+        resolved.size,
+        resolved.min_size,
+        resolved.max_size,
+        input.padding_border,
+    );
+    resolved
+}
+
 /// Apply a preferred ratio while preserving the constraint space's ordering
 /// for an authored logical block-size of `auto`.
 pub(crate) fn apply_preferred_aspect_ratio(

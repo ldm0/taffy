@@ -21,10 +21,12 @@ use super::common::absolute::{
     compute_absolute_layout, AbsoluteConstraintSpace, StaticPositionAxis, StaticPositionEdge,
 };
 use super::common::alignment::apply_alignment_fallback;
-use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use super::common::aspect_ratio::{
+    resolve_node_size_constraints, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
+};
 #[cfg(feature = "content_size")]
 use super::common::content_size::{compute_content_size_contribution, content_size_contribution_location};
-use super::common::intrinsic_size::resolve_intrinsic_width_constraints;
+use super::common::intrinsic_size::{resolve_content_based_block_constraints, resolve_intrinsic_width_constraints};
 use super::common::used_size::resolve_used_size;
 
 use super::common::baseline::{BaselineAlignment, BaselineContext, BaselineGroups, BaselineMetrics};
@@ -376,7 +378,7 @@ fn resolve_cross_axis_available_space(
 pub fn compute_flexbox_layout(
     tree: &mut impl LayoutFlexboxContainer,
     node: NodeId,
-    inputs: LayoutInput,
+    mut inputs: LayoutInput,
 ) -> LayoutOutput {
     let writing_mode = tree.get_writing_mode(node);
     let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
@@ -392,35 +394,47 @@ pub fn compute_flexbox_layout(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
+    let mut intrinsic_dependency = false;
     let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
-        SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
+        SizingMode::ContentSize => {
+            drop(style);
+            (Size::NONE, Size::NONE, Size::NONE, false)
+        }
         SizingMode::InherentSize => {
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
-                    .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio,
-                padding_border: padding_border_sum,
-            });
+            let mut resolved = resolve_node_size_constraints(
+                SizeConstraintInput {
+                    size: raw_size
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    min_size: style
+                        .min_size()
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    max_size: style
+                        .max_size()
+                        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                        .maybe_add(box_sizing_adjustment),
+                    size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
+                    writing_mode,
+                    block_auto_behavior: inputs.block_auto_behavior,
+                    transferred_sizes_mode: TransferredSizesMode::Normal,
+                    aspect_ratio,
+                    padding_border: padding_border_sum,
+                },
+                known_dimensions,
+            );
+            drop(style);
+            intrinsic_dependency =
+                resolve_content_based_block_constraints(tree, node, &mut inputs, &mut resolved, padding_border_sum);
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
-            (min_size, max_size, preferred_size, resolved.aspect_ratio_applied.width)
+            (min_size, max_size, preferred_size, writing_mode.to_logical(resolved.aspect_ratio_applied).inline_size)
         }
     };
+
+    let style = tree.get_flexbox_container_style(node);
 
     // If both min and max in a given axis are set and max <= min then this determines the size in that axis
     let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
@@ -428,8 +442,8 @@ pub fn compute_flexbox_layout(
         _ => None,
     });
     let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-        && known_dimensions.width.is_none()
-        && min_max_definite_size.width.is_none()
+        && writing_mode.to_logical(known_dimensions).inline_size.is_none()
+        && writing_mode.to_logical(min_max_definite_size).inline_size.is_none()
         && preferred_inline_from_aspect_ratio;
 
     // The size of the container should be floored by the padding and border
@@ -446,6 +460,7 @@ pub fn compute_flexbox_layout(
     if run_mode == RunMode::ComputeSize {
         if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(intrinsic_dependency)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
@@ -453,17 +468,9 @@ pub fn compute_flexbox_layout(
         if inputs.axis == RequestedAxis::Horizontal {
             if let Some(width) = styled_based_known_dimensions.width {
                 return LayoutOutput::from_outer_size(Size { width, height: 0.0 })
+                    .with_block_constraint_dependency(intrinsic_dependency)
                     .with_applied_aspect_ratio(applied_aspect_ratio);
             }
-        }
-    }
-
-    // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
-    // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
-        if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
-            return LayoutOutput::from_outer_size(Size { width, height })
-                .with_applied_aspect_ratio(applied_aspect_ratio);
         }
     }
 
@@ -471,6 +478,7 @@ pub fn compute_flexbox_layout(
     drop(style);
 
     compute_preliminary(tree, node, LayoutInput { known_dimensions: styled_based_known_dimensions, ..inputs })
+        .with_block_constraint_dependency(intrinsic_dependency)
         .with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
@@ -735,7 +743,7 @@ fn compute_constants(
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_sum } else { Size::ZERO };
 
-    let align_items = style.align_items().unwrap_or(AlignItems::STRETCH);
+    let align_items = style.align_items().unwrap_or(AlignItems::NORMAL).resolve_normal(AlignItems::STRETCH);
     let align_content = style.align_content().unwrap_or(AlignContent::STRETCH);
     let justify_content = style.justify_content();
     let horizontal_direction = flow.horizontal_direction;
@@ -797,8 +805,20 @@ fn compute_constants(
         is_wrap,
         is_wrap_reverse,
         writing_mode,
-        min_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.min_size } else { Size::NONE },
-        max_size: if sizing_mode == SizingMode::InherentSize { resolved_constraints.max_size } else { Size::NONE },
+        // Entry sizing has already resolved fixed border-box axes. Keep only
+        // constraints on axes that the flex algorithm still has to determine.
+        min_size: if sizing_mode == SizingMode::InherentSize {
+            known_dimensions
+                .zip_map(resolved_constraints.min_size, |known, limit| if known.is_some() { None } else { limit })
+        } else {
+            Size::NONE
+        },
+        max_size: if sizing_mode == SizingMode::InherentSize {
+            known_dimensions
+                .zip_map(resolved_constraints.max_size, |known, limit| if known.is_some() { None } else { limit })
+        } else {
+            Size::NONE
+        },
         margin,
         border,
         gap,
@@ -886,13 +906,17 @@ fn generate_anonymous_flex_items(
             let raw_margin = child_style.margin();
             let margin = raw_margin.resolve_or_zero(percentage_basis, |val, basis| tree.calc(val, basis));
             let margin_is_auto = raw_margin.map(LengthPercentageAuto::is_auto);
-            let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
-                child_writing_mode,
-                child_style.direction(),
-                constants.writing_mode,
-                constants.inline_direction,
-                constants.dir.cross_axis(),
-            );
+            let align_self = child_style
+                .align_self()
+                .unwrap_or(constants.align_items)
+                .resolve_normal(AlignSelf::STRETCH)
+                .resolve_self_relative(
+                    child_writing_mode,
+                    child_style.direction(),
+                    constants.writing_mode,
+                    constants.inline_direction,
+                    constants.dir.cross_axis(),
+                );
             let overflow = child_style.overflow();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
@@ -2336,7 +2360,7 @@ fn align_flex_items_along_cross_axis(
             child.alignment_baseline.expect("baseline-aligned items must have sharing metrics"),
             free_space,
         ),
-        AlignItemsKeyword::Stretch => {
+        AlignItemsKeyword::Normal | AlignItemsKeyword::Stretch => {
             if constants.cross_axis_flex_start_reversed {
                 free_space
             } else {
@@ -2674,13 +2698,17 @@ fn perform_absolute_layout_on_absolute_children(
 
         let overflow = child_style.overflow();
         let static_cross_safety = child_style.align_self().map_or(crate::AlignmentSafety::Unsafe, |value| value.safety);
-        let align_self = child_style.align_self().unwrap_or(constants.align_items).resolve_self_relative(
-            child_writing_mode,
-            child_style.direction(),
-            constants.writing_mode,
-            constants.inline_direction,
-            constants.dir.cross_axis(),
-        );
+        let align_self = child_style
+            .align_self()
+            .unwrap_or(constants.align_items)
+            .resolve_normal(AlignSelf::STRETCH)
+            .resolve_self_relative(
+                child_writing_mode,
+                child_style.direction(),
+                constants.writing_mode,
+                constants.inline_direction,
+                constants.dir.cross_axis(),
+            );
         drop(child_style);
         let computed = compute_absolute_layout(
             tree,
@@ -2835,9 +2863,9 @@ fn perform_absolute_layout_on_absolute_children(
                         StaticPositionEdge::Max
                     }
                 }
-                (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
+                (AlignItemsKeyword::Normal | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, false)
                 | (AlignItemsKeyword::FlexEnd, true) => StaticPositionEdge::Min,
-                (AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
+                (AlignItemsKeyword::Normal | AlignItemsKeyword::Stretch | AlignItemsKeyword::FlexStart, true)
                 | (AlignItemsKeyword::FlexEnd, false) => StaticPositionEdge::Max,
                 (AlignItemsKeyword::Center, _) => StaticPositionEdge::Center,
                 // SelfStart/SelfEnd are resolved to Start/End against the item's own direction
