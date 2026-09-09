@@ -24,7 +24,7 @@ use super::common::aspect_ratio::{
 };
 use super::common::intrinsic_size::{
     measure_content_based_block_size, resolve_intrinsic_axis_constraints, resolve_intrinsic_width_constraints,
-    BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
+    resolve_ratio_dependent_inline_minimum, BlockSizeProperties, ContentBasedBlockSize, IntrinsicAxisInput,
 };
 use super::common::used_size::resolve_used_size;
 
@@ -438,21 +438,23 @@ pub fn compute_block_layout(
     let padding_border_size = (padding + border).sum_axes();
     let box_sizing = style.box_sizing();
     let box_sizing_adjustment = if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let raw_size = style.size();
+    let raw_min_size = style.min_size();
+    let raw_max_size = style.max_size();
+    drop(style);
 
+    let mut intrinsic_dependency = false;
     let (min_size, max_size, clamped_style_size, preferred_inline_from_aspect_ratio) = match inputs.sizing_mode {
         SizingMode::ContentSize => (Size::NONE, Size::NONE, Size::NONE, false),
         SizingMode::InherentSize => {
-            let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
+            let mut resolved = resolve_size_constraints(SizeConstraintInput {
                 size: raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
+                min_size: raw_min_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
+                max_size: raw_max_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
@@ -462,14 +464,27 @@ pub fn compute_block_layout(
                 aspect_ratio,
                 padding_border: padding_border_size,
             });
+            if writing_mode.to_logical(known_dimensions).inline_size.is_none() {
+                intrinsic_dependency = resolve_ratio_dependent_inline_minimum(
+                    tree,
+                    node_id,
+                    ChildLayoutInput::new(
+                        known_dimensions.or(resolved.size.maybe_clamp(resolved.min_size, resolved.max_size)),
+                        inputs.parent_size,
+                        inputs.parent_writing_mode,
+                        inputs.available_space,
+                        SizingMode::ContentSize,
+                        inputs.block_margins_are_collapsible,
+                    ),
+                    &mut resolved,
+                );
+            }
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let preferred_size = resolved.size.maybe_clamp(min_size, max_size);
             (min_size, max_size, preferred_size, writing_mode.to_logical(resolved.aspect_ratio_applied).inline_size)
         }
     };
-
-    drop(style);
 
     // If both min and max in a given axis are set and max <= min then this determines the size in that axis
     let min_max_definite_size = min_size.zip_map(max_size, |min, max| match (min, max) {
@@ -494,6 +509,7 @@ pub fn compute_block_layout(
     if run_mode == RunMode::ComputeSize {
         if let Size { width: Some(width), height: Some(height) } = styled_based_known_dimensions {
             return LayoutOutput::from_outer_size(Size { width, height })
+                .with_block_constraint_dependency(intrinsic_dependency)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
         }
 
@@ -504,6 +520,7 @@ pub fn compute_block_layout(
                 return LayoutOutput::from_outer_size(
                     writing_mode.to_physical(LogicalSize { inline_size, block_size: 0.0 }),
                 )
+                .with_block_constraint_dependency(intrinsic_dependency)
                 .with_applied_aspect_ratio(applied_aspect_ratio);
             }
         }
@@ -529,7 +546,7 @@ pub fn compute_block_layout(
             )
         }
     };
-    output.with_applied_aspect_ratio(applied_aspect_ratio)
+    output.with_block_constraint_dependency(intrinsic_dependency).with_applied_aspect_ratio(applied_aspect_ratio)
 }
 
 /// Computes the layout of [`LayoutBlockContainer`] according to the block layout algorithm
@@ -1096,7 +1113,7 @@ fn generate_item_list(
                 depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
             }
 
-            let resolved = resolve_size_constraints(SizeConstraintInput {
+            let mut resolved = resolve_size_constraints(SizeConstraintInput {
                 size,
                 min_size,
                 max_size,
@@ -1107,6 +1124,21 @@ fn generate_item_list(
                 aspect_ratio,
                 padding_border: pb_sum,
             });
+            if position != Position::Absolute {
+                depends_on_block_constraints |= resolve_ratio_dependent_inline_minimum(
+                    tree,
+                    child_node_id,
+                    ChildLayoutInput::new(
+                        resolved.size.maybe_clamp(resolved.min_size, resolved.max_size),
+                        physical_node_inner_size,
+                        writing_mode,
+                        writing_mode.to_physical(available_space),
+                        SizingMode::ContentSize,
+                        Line::TRUE,
+                    ),
+                    &mut resolved,
+                );
+            }
             let block_axis_constraints = resolved.block_axis_constraints(child_writing_mode);
             size = resolved.size;
             min_size = resolved.min_size;

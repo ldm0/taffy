@@ -6,7 +6,7 @@
 //! seam so every formatting context uses the same pass-local cache and no
 //! retained intrinsic-size state is required.
 
-use super::aspect_ratio::ResolvedAxisConstraints;
+use super::aspect_ratio::{ResolvedAxisConstraints, ResolvedSizeConstraints};
 use crate::geometry::{AbsoluteAxis, LogicalSize, Size, WritingMode};
 use crate::style::{AvailableSpace, CoreStyle, Dimension};
 use crate::tree::{
@@ -39,6 +39,43 @@ fn measure_intrinsic_axis(
         ChildLayoutInput { known_dimensions, available_space, sizing_mode: SizingMode::ContentSize, ..inputs },
         RequestedAxis::from(axis),
     )
+}
+
+/// Complete a ratio-dependent inline constraint before its preferred size is
+/// published as an exact child dimension. The ratio supplies the preferred
+/// extent, not the real min-content contribution (CSS Sizing 4 section 4.3).
+///
+/// Callers retain ownership of fixed layout inputs. This operation applies to
+/// provisional style-derived sizes only, never to a flexed or stretched size
+/// already assigned by a parent formatting context.
+/// Returns whether measuring the minimum observed a block-constraint dependency.
+pub(crate) fn resolve_ratio_dependent_inline_minimum(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: ChildLayoutInput,
+    constraints: &mut ResolvedSizeConstraints,
+) -> bool {
+    let writing_mode = tree.get_writing_mode(node_id);
+    let axis = writing_mode.inline_axis();
+    if !constraints.aspect_ratio_applied.get_abs(axis) {
+        return false;
+    }
+    let style = tree.get_core_container_style(node_id);
+    let preferred = style.size().get_abs(axis);
+    let overflow = style.overflow();
+    if style.is_compressible_replaced()
+        || overflow.x.is_scroll_container()
+        || overflow.y.is_scroll_container()
+        || !style.min_size().get_abs(axis).is_auto()
+        || !(preferred.is_auto() || preferred.is_intrinsic())
+    {
+        return false;
+    }
+    drop(style);
+
+    let measured = measure_intrinsic_axis(tree, node_id, inputs, AvailableSpace::MinContent, axis);
+    constraints.apply_automatic_minimum(axis, measured.size.get_abs(axis));
+    measured.depends_on_block_constraints
 }
 
 /// One resolved intrinsic extent together with cache dependency metadata.

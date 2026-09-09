@@ -123,7 +123,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 if box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
             let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
+            let mut resolved = resolve_size_constraints(SizeConstraintInput {
                 size: raw_size
                     .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
@@ -142,6 +142,22 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
                 aspect_ratio,
                 padding_border: padding_border_size,
             });
+            drop(style);
+            if known_dimensions.get_abs(root_writing_mode.inline_axis()).is_none() {
+                common::intrinsic_size::resolve_ratio_dependent_inline_minimum(
+                    tree,
+                    root,
+                    ChildLayoutInput::new(
+                        resolved.size.maybe_clamp(resolved.min_size, resolved.max_size),
+                        parent_size,
+                        root_writing_mode,
+                        available_space,
+                        SizingMode::ContentSize,
+                        Line::FALSE,
+                    ),
+                    &mut resolved,
+                );
+            }
             let min_size = resolved.min_size;
             let max_size = resolved.max_size;
             let clamped_style_size = resolved.size.maybe_clamp(min_size, max_size);
