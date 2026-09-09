@@ -141,20 +141,14 @@ struct FlexItem {
     /// The order of the node relative to it's siblings
     order: u32,
 
-    /// The base size of this item
-    size: Size<Option<f32>>,
-    /// The authored preferred size after aspect-ratio resolution.
-    ///
-    /// A content-based flex basis ignores this in the flex base-size and
-    /// hypothetical cross-size calculations, but automatic minimum sizing
-    /// still uses it as the specified-size suggestion.
-    authored_size: Size<Option<f32>>,
     /// The preferred size before transferring a dimension through `aspect-ratio`
     /// or applying a content-box padding/border adjustment.
     ///
     /// `flex-basis: content` must ignore a preferred main size, but it may use
     /// an independently definite cross size with the intrinsic aspect ratio.
     untransferred_size: Size<Option<f32>>,
+    /// Whether the item's automatic minimum uses replaced-element suggestions.
+    is_replaced: bool,
     /// The minimum allowable size with aspect-ratio transfers ignored.
     ///
     /// Flexible-length resolution uses this constraint; transferred constraints
@@ -250,9 +244,51 @@ struct FlexItem {
 }
 
 impl FlexItem {
+    /// Authored preferred sizes never acquire a value from the opposite axis.
+    /// Ratio transfer belongs to the sizing operation that consumes them.
+    fn preferred_border_box_size(&self) -> Size<Option<f32>> {
+        let adjustment =
+            if self.box_sizing == BoxSizing::ContentBox { (self.padding + self.border).sum_axes() } else { Size::ZERO };
+        self.untransferred_size.maybe_add(adjustment)
+    }
+
+    /// Transfer an independently resolved cross size, including its box floor.
+    fn transferred_main_size(&self, direction: FlexDirection, cross: Option<f32>) -> Option<f32> {
+        let padding_border = (self.padding + self.border).sum_axes();
+        Size::NONE
+            .with_cross(direction, cross)
+            .maybe_max(padding_border)
+            .maybe_apply_aspect_ratio_with_box_sizing(self.aspect_ratio, BoxSizing::BorderBox, padding_border)
+            .maybe_max(padding_border)
+            .main(direction)
+    }
+
     /// Returns true if the item is a <https://www.w3.org/TR/css-overflow-3/#scroll-container>
     fn is_scroll_container(&self) -> bool {
         self.overflow.x.is_scroll_container() | self.overflow.y.is_scroll_container()
+    }
+}
+
+/// Independent size sources for a flex item's content-based automatic minimum.
+/// A transferred size is not a specified-size cap (CSS Flexbox section 4.5).
+struct FlexSizeSuggestions {
+    /// Resolved authored main size, absent for an automatic preferred size.
+    specified: Option<f32>,
+    /// Intrinsic content after applying the ratio-transferred cross limits.
+    content: f32,
+    /// Main size transferred from an independently definite cross size.
+    transferred: Option<f32>,
+}
+
+impl FlexSizeSuggestions {
+    /// Replaced content may shrink to the ratio; ordinary content encompasses it.
+    fn automatic_minimum(self, is_replaced: bool, maximum: Option<f32>) -> f32 {
+        let content = if is_replaced {
+            self.content.maybe_min(self.transferred)
+        } else {
+            self.content.maybe_max(self.transferred)
+        };
+        content.maybe_min(self.specified).maybe_min(maximum)
     }
 }
 
@@ -918,6 +954,7 @@ fn generate_anonymous_flex_items(
                     constants.dir.cross_axis(),
                 );
             let overflow = child_style.overflow();
+            let is_replaced = child_style.is_compressible_replaced();
             let flex_grow = child_style.flex_grow();
             let flex_shrink = child_style.flex_shrink();
             drop(child_style);
@@ -969,9 +1006,6 @@ fn generate_anonymous_flex_items(
             min_size.width = min_size.width.or(intrinsic.min);
             max_size.width = max_size.width.or(intrinsic.max);
             depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
-            let authored_size = untransferred_size
-                .maybe_add(box_sizing_adjustment)
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum);
             let constraint_input = SizeConstraintInput {
                 size,
                 min_size,
@@ -988,14 +1022,12 @@ fn generate_anonymous_flex_items(
                 transferred_sizes_mode: TransferredSizesMode::Ignore,
                 ..constraint_input
             });
-            size = constraints_with_transfer.size;
 
             Some(FlexItem {
                 node: child,
                 order: index as u32,
-                size,
-                authored_size,
                 untransferred_size,
+                is_replaced,
                 min_size: constraints_without_transfer.min_size,
                 max_size: constraints_without_transfer.max_size,
                 min_size_with_transfer: constraints_with_transfer.min_size,
@@ -1114,10 +1146,6 @@ fn determine_flex_base_size(
 
     for child in flex_items.iter_mut() {
         let used_flex_basis = child.used_flex_basis;
-        let requires_content_measurement = used_flex_basis.requires_content_measurement();
-        let aspect_ratio = child.aspect_ratio;
-        let padding_border = (child.padding + child.border).sum_axes();
-        let box_sizing_adjustment = if child.box_sizing == BoxSizing::ContentBox { padding_border } else { Size::ZERO };
 
         // Parent size for child sizing
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
@@ -1142,11 +1170,7 @@ fn determine_flex_base_size(
 
         // Known dimensions for child sizing
         let child_known_dimensions = {
-            let mut ckd = if requires_content_measurement {
-                child.untransferred_size.with_main(dir, None).maybe_add(box_sizing_adjustment)
-            } else {
-                child.size.with_main(dir, None)
-            };
+            let mut ckd = child.preferred_border_box_size().with_main(dir, None);
             // Clamp the definite cross size by the cross min/max sizes so that sizes
             // transferred through an intrinsic aspect ratio (e.g. for replaced elements)
             // are based on the used cross size.
@@ -1155,6 +1179,7 @@ fn determine_flex_base_size(
                 ckd.cross(dir).maybe_clamp(min_size_with_transfer.cross(dir), max_size_with_transfer.cross(dir)),
             );
             if child.align_self == AlignSelf::STRETCH
+                && !constants.is_wrap
                 && !child.margin_is_auto.cross_start(constants.dir)
                 && !child.margin_is_auto.cross_end(constants.dir)
                 && ckd.cross(dir).is_none()
@@ -1167,16 +1192,7 @@ fn determine_flex_base_size(
             ckd
         };
 
-        let content_ratio_size = if requires_content_measurement {
-            child_known_dimensions
-                .maybe_sub(box_sizing_adjustment)
-                .maybe_max(Size::ZERO)
-                .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, child.box_sizing, padding_border)
-                .maybe_add(box_sizing_adjustment)
-                .main(dir)
-        } else {
-            None
-        };
+        let transferred_main_size = child.transferred_main_size(dir, child_known_dimensions.cross(dir));
 
         child.flex_basis = 'flex_basis: {
             // A. If the item has a definite used flex basis, that’s the flex base size.
@@ -1192,8 +1208,8 @@ fn determine_flex_base_size(
             match used_flex_basis {
                 UsedFlexBasis::Resolved(flex_basis) => break 'flex_basis flex_basis,
                 UsedFlexBasis::Content => {
-                    if let Some(content_ratio_size) = content_ratio_size {
-                        break 'flex_basis content_ratio_size;
+                    if let Some(transferred_main_size) = transferred_main_size {
+                        break 'flex_basis transferred_main_size;
                     }
                 }
             }
@@ -1279,7 +1295,7 @@ fn determine_flex_base_size(
         let style_min_main_size =
             child.min_size.or(child.overflow.map(Overflow::maybe_into_automatic_min_size).into()).main(dir);
 
-        child.resolved_minimum_main_size = style_min_main_size.unwrap_or({
+        child.resolved_minimum_main_size = style_min_main_size.unwrap_or_else(|| {
             let min_content_main_size = {
                 let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
 
@@ -1302,10 +1318,17 @@ fn determine_flex_base_size(
 
             // 4.5. Automatic Minimum Size of Flex Items
             // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
-            let clamped_min_content_size = min_content_main_size
-                .maybe_min(child.authored_size.main(dir))
-                .maybe_min(max_size_with_transfer.main(dir));
-            clamped_min_content_size.maybe_max(padding_border_axes_sums.main(dir))
+            let content = min_content_main_size.maybe_clamp(
+                child.transferred_main_size(dir, child.min_size.cross(dir)),
+                child.transferred_main_size(dir, child.max_size.cross(dir)),
+            );
+            FlexSizeSuggestions {
+                specified: child.preferred_border_box_size().main(dir),
+                content,
+                transferred: transferred_main_size,
+            }
+            .automatic_minimum(child.is_replaced, child.max_size.main(dir))
+            .maybe_max(padding_border_axes_sums.main(dir))
         });
 
         // Sizes transferred through the aspect ratio clamp the hypothetical main size,
@@ -1498,7 +1521,7 @@ fn determine_container_main_size(
                 for line in lines.iter_mut() {
                     for item in line.items.iter_mut() {
                         let style_min = item.min_size.main(constants.dir);
-                        let style_preferred = item.size.main(constants.dir);
+                        let style_preferred = item.preferred_border_box_size().main(constants.dir);
                         let style_max = item.max_size.main(constants.dir);
 
                         // The spec seems a bit unclear on this point (my initial reading was that the `.maybe_max(style_preferred)` should
@@ -1552,7 +1575,7 @@ fn determine_container_main_size(
 
                                 // Known dimensions for child sizing
                                 let child_known_dimensions = {
-                                    let mut ckd = item.size.with_main(dir, None);
+                                    let mut ckd = item.preferred_border_box_size().with_main(dir, None);
                                     if item.align_self == AlignSelf::STRETCH && ckd.cross(dir).is_none() {
                                         ckd.set_cross(
                                             dir,
@@ -1902,7 +1925,7 @@ fn determine_hypothetical_cross_size(
             .maybe_apply_aspect_ratio_with_box_sizing(child.aspect_ratio, BoxSizing::BorderBox, padding_border)
             .cross(constants.dir);
         let child_cross = child
-            .size
+            .preferred_border_box_size()
             .cross(constants.dir)
             .or(ratio_cross)
             .maybe_clamp(transferred_min_cross, transferred_max_cross)
@@ -2965,5 +2988,26 @@ fn sum_axis_gaps(gap: f32, num_items: usize) -> f32 {
     } else {
         // ...otherwise there are (num_items - 1) gaps
         gap * (num_items - 1) as f32
+    }
+}
+
+#[cfg(test)]
+mod size_suggestion_tests {
+    use super::FlexSizeSuggestions;
+
+    #[test]
+    fn automatic_minimum_retains_each_suggestion_source() {
+        for (content, transferred, specified, maximum, ordinary, replaced) in [
+            (60.0, Some(100.0), None, None, 100.0, 60.0),
+            (160.0, Some(100.0), None, None, 160.0, 100.0),
+            (160.0, Some(100.0), Some(70.0), None, 70.0, 70.0),
+            (160.0, Some(100.0), None, Some(50.0), 50.0, 50.0),
+            (0.0, None, Some(100.0), None, 0.0, 0.0),
+        ] {
+            for (is_replaced, expected) in [(false, ordinary), (true, replaced)] {
+                let suggestions = FlexSizeSuggestions { specified, content, transferred };
+                assert_eq!(suggestions.automatic_minimum(is_replaced, maximum), expected);
+            }
+        }
     }
 }

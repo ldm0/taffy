@@ -15,6 +15,7 @@ mod hand_written {
     mod child_fragment_size;
     mod flex_aspect_ratio;
     mod flex_auto_margins;
+    mod flex_automatic_minimum;
     mod flex_baseline;
     mod flex_basis_content;
     mod flex_writing_modes;
