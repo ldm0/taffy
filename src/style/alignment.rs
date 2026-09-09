@@ -113,24 +113,6 @@ pub enum AlignContentKeyword {
     SpaceAround,
 }
 
-impl AlignContentKeyword {
-    /// Returns the reversed keyword for RTL (right-to-left) contexts: `Start`↔`End`,
-    /// `FlexStart`↔`FlexEnd`. `Stretch` maps to `End` to preserve the layout
-    /// algorithms' historical handling. Center and the distribution keywords
-    /// (`SpaceBetween`, `SpaceEvenly`, `SpaceAround`) are unaffected because their
-    /// visual placement is direction-symmetric.
-    pub(crate) fn reversed(self) -> Self {
-        match self {
-            Self::Start => Self::End,
-            Self::End => Self::Start,
-            Self::FlexStart => Self::FlexEnd,
-            Self::FlexEnd => Self::FlexStart,
-            Self::Stretch => Self::End,
-            Self::Center | Self::SpaceBetween | Self::SpaceEvenly | Self::SpaceAround => self,
-        }
-    }
-}
-
 /// The overflow-position modifier per [CSS Box Alignment §4.3][css-align-overflow].
 ///
 /// `Safe` falls back to start-edge alignment when the alignment subject would
@@ -795,20 +777,6 @@ mod tests {
         assert_eq!(AlignContent::SAFE_FLEX_END.keyword(), AlignContentKeyword::FlexEnd);
         assert_eq!(AlignContent::SAFE_CENTER.keyword(), AlignContentKeyword::Center);
         assert_eq!(AlignContent::SPACE_BETWEEN.keyword(), AlignContentKeyword::SpaceBetween);
-    }
-
-    #[test]
-    fn align_content_keyword_reversed_swaps_start_end() {
-        assert_eq!(AlignContentKeyword::Start.reversed(), AlignContentKeyword::End);
-        assert_eq!(AlignContentKeyword::End.reversed(), AlignContentKeyword::Start);
-        assert_eq!(AlignContentKeyword::FlexStart.reversed(), AlignContentKeyword::FlexEnd);
-        assert_eq!(AlignContentKeyword::FlexEnd.reversed(), AlignContentKeyword::FlexStart);
-        // Stretch reverses to End — preserves pre-refactor behaviour.
-        assert_eq!(AlignContentKeyword::Stretch.reversed(), AlignContentKeyword::End);
-        assert_eq!(AlignContentKeyword::Center.reversed(), AlignContentKeyword::Center);
-        assert_eq!(AlignContentKeyword::SpaceBetween.reversed(), AlignContentKeyword::SpaceBetween);
-        assert_eq!(AlignContentKeyword::SpaceEvenly.reversed(), AlignContentKeyword::SpaceEvenly);
-        assert_eq!(AlignContentKeyword::SpaceAround.reversed(), AlignContentKeyword::SpaceAround);
     }
 
     #[cfg(feature = "parse")]

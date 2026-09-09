@@ -1,8 +1,25 @@
 //! Generic CSS content size code that is shared between all CSS algorithms.
-use crate::geometry::{Point, Rect, Size};
+use crate::geometry::{LogicalOffset, LogicalSize, Point, Rect, Size};
 use crate::style::Overflow;
 use crate::util::sys::{f32_max, f32_min};
 use crate::Direction;
+
+/// Compute one scrollable-overflow contribution in the container's logical
+/// axes. The numeric union is identical for either physical orientation.
+pub(crate) fn compute_logical_content_size_contribution(
+    location: LogicalOffset<f32>,
+    size: LogicalSize<f32>,
+    content_size: LogicalSize<f32>,
+    overflow: LogicalSize<Overflow>,
+) -> LogicalSize<f32> {
+    let result = compute_content_size_contribution(
+        Point { x: location.inline_offset, y: location.block_offset },
+        Size { width: size.inline_size, height: size.block_size },
+        Size { width: content_size.inline_size, height: content_size.block_size },
+        Point { x: overflow.inline_size, y: overflow.block_size },
+    );
+    LogicalSize { inline_size: result.width, block_size: result.height }
+}
 
 /// Convert a child's border-box location from the container's border-box
 /// coordinate space into the coordinate space used by `Layout::content_size`.

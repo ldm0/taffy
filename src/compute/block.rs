@@ -323,7 +323,7 @@ impl BlockContext<'_> {
 
 use super::common::alignment::{apply_alignment_fallback, compute_alignment_offset};
 #[cfg(feature = "content_size")]
-use super::common::content_size::compute_content_size_contribution;
+use super::common::content_size::{compute_content_size_contribution, compute_logical_content_size_contribution};
 
 /// Per-child data that is accumulated and modified over the course of the layout algorithm
 struct BlockItem {
@@ -1420,23 +1420,6 @@ fn physical_baseline(
 /// Project physical overflow axes into the current formatting context.
 fn logical_overflow(overflow: Point<Overflow>, writing_mode: WritingMode) -> LogicalSize<Overflow> {
     writing_mode.to_logical(Size { width: overflow.x, height: overflow.y })
-}
-
-#[cfg(feature = "content_size")]
-/// Compute one scrollable-overflow contribution without leaving logical axes.
-fn compute_logical_content_size_contribution(
-    location: LogicalOffset<f32>,
-    size: LogicalSize<f32>,
-    content_size: LogicalSize<f32>,
-    overflow: LogicalSize<Overflow>,
-) -> LogicalSize<f32> {
-    let result = compute_content_size_contribution(
-        Point { x: location.inline_offset, y: location.block_offset },
-        Size { width: size.inline_size, height: size.block_size },
-        Size { width: content_size.inline_size, height: content_size.block_size },
-        Point { x: overflow.inline_size, y: overflow.block_size },
-    );
-    LogicalSize { inline_size: result.width, block_size: result.height }
 }
 
 /// Compute each child's final size and position.

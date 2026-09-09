@@ -1,7 +1,7 @@
 //! Contains CellOccupancyMatrix used to track occupied cells during grid placement
 use super::TrackCounts;
 use crate::compute::grid::OriginZeroLine;
-use crate::geometry::AbsoluteAxis;
+use crate::geometry::AbstractAxis;
 use crate::geometry::Line;
 use crate::util::sys::{new_vec_with_capacity, Vec};
 use core::cmp::{max, min};
@@ -124,25 +124,10 @@ impl TrackIntervals {
         self.intervals = result;
     }
 
-    /// Find the extent of the occupied interval which an auto-placement search along the track
-    /// would collide with last: the end of the last overlapping interval when searching forwards,
-    /// or the start of the first overlapping interval when searching backwards (`reversed ==
-    /// true`). Returns the extremal occupied cell of that interval (which may lie outside
-    /// `range`: every search position before the returned extent also collides with the
-    /// interval), or `None` if the range is entirely unoccupied.
-    fn collision_extent(&self, range: &Range<i16>, reversed: bool) -> Option<i16> {
-        if reversed {
-            let interval = self.intervals.iter().find(|interval| interval.overlaps(range))?;
-            Some(interval.range.start)
-        } else {
-            let interval = self.intervals.iter().rev().find(|interval| interval.overlaps(range))?;
-            Some(interval.range.end - 1)
-        }
-    }
-
-    /// The start line of the first (lowest coordinate) cell with the specified state, if any
-    fn first_of_state(&self, state: CellOccupancyState) -> Option<i16> {
-        self.intervals.iter().find(|interval| interval.state == state).map(|interval| interval.range.start)
+    /// First logical line past all occupied intervals overlapping the range.
+    /// Auto-placement always searches toward logical end, including RTL.
+    fn collision_end(&self, range: &Range<i16>) -> Option<i16> {
+        self.intervals.iter().rev().find(|interval| interval.overlaps(range)).map(|interval| interval.range.end)
     }
 
     /// The start line of the last (highest coordinate) cell with the specified state, if any
@@ -216,10 +201,10 @@ impl CellOccupancyMatrix {
 
     /// The per-track interval lists for tracks in the specified axis. Each row track's intervals
     /// are in column coordinates and vice versa.
-    fn track_lists(&self, track_axis: AbsoluteAxis) -> &[TrackIntervals] {
+    fn track_lists(&self, track_axis: AbstractAxis) -> &[TrackIntervals] {
         match track_axis {
-            AbsoluteAxis::Horizontal => &self.column_intervals,
-            AbsoluteAxis::Vertical => &self.row_intervals,
+            AbstractAxis::Inline => &self.column_intervals,
+            AbstractAxis::Block => &self.row_intervals,
         }
     }
 
@@ -260,14 +245,14 @@ impl CellOccupancyMatrix {
     /// Mark an area of the matrix as occupied, expanding the allocated space as necessary to accommodate the passed area.
     pub fn mark_area_as(
         &mut self,
-        primary_axis: AbsoluteAxis,
+        primary_axis: AbstractAxis,
         primary_span: Line<OriginZeroLine>,
         secondary_span: Line<OriginZeroLine>,
         value: CellOccupancyState,
     ) {
         let (row_span, column_span) = match primary_axis {
-            AbsoluteAxis::Horizontal => (secondary_span, primary_span),
-            AbsoluteAxis::Vertical => (primary_span, secondary_span),
+            AbstractAxis::Inline => (secondary_span, primary_span),
+            AbstractAxis::Block => (primary_span, secondary_span),
         };
 
         self.expand_to_fit_range(row_span, column_span);
@@ -287,11 +272,11 @@ impl CellOccupancyMatrix {
     #[cfg(test)]
     pub fn line_area_is_unoccupied(
         &self,
-        primary_axis: AbsoluteAxis,
+        primary_axis: AbstractAxis,
         primary_span: Line<OriginZeroLine>,
         secondary_span: Line<OriginZeroLine>,
     ) -> bool {
-        self.line_area_collision_jump(primary_axis, primary_span, secondary_span, false).is_none()
+        self.line_area_collision_jump(primary_axis, primary_span, secondary_span).is_none()
     }
 
     /// Checks the specified area for occupied cells (`primary_span` and `secondary_span` are
@@ -302,13 +287,12 @@ impl CellOccupancyMatrix {
     /// advancing one track at a time.
     pub fn line_area_collision_jump(
         &self,
-        primary_axis: AbsoluteAxis,
+        primary_axis: AbstractAxis,
         primary_span: Line<OriginZeroLine>,
         secondary_span: Line<OriginZeroLine>,
-        reversed: bool,
     ) -> Option<OriginZeroLine> {
-        let track_lists = self.track_lists(primary_axis.other_axis());
-        let secondary_counts = self.track_counts(primary_axis.other_axis());
+        let track_lists = self.track_lists(primary_axis.other());
+        let secondary_counts = self.track_counts(primary_axis.other());
         let secondary_range = secondary_counts.oz_line_range_to_track_range(secondary_span);
 
         // Out of bounds cells are considered unoccupied, so clamp the secondary range to the
@@ -320,69 +304,50 @@ impl CellOccupancyMatrix {
 
         let mut extent: Option<i16> = None;
         for secondary_index in secondary_start..secondary_end {
-            let Some(cell) = track_lists[secondary_index as usize].collision_extent(&primary_range, reversed) else {
+            let Some(cell) = track_lists[secondary_index as usize].collision_end(&primary_range) else {
                 continue;
             };
             extent = Some(match extent {
                 None => cell,
-                Some(best) => {
-                    if reversed {
-                        min(best, cell)
-                    } else {
-                        max(best, cell)
-                    }
-                }
+                Some(best) => max(best, cell),
             });
         }
 
-        extent.map(|cell| if reversed { OriginZeroLine(cell - 1) } else { OriginZeroLine(cell + 1) })
+        extent.map(OriginZeroLine)
     }
 
     /// Given a span of tracks in `axis` (in OriginZero coordinates), returns the next search
     /// position past all non-empty tracks within the span, or `None` if all tracks within the
     /// span are entirely unoccupied. Used to place items which span every track in the other
     /// axis (such items can only fit in a stripe of entirely unoccupied tracks).
-    pub fn occupied_track_jump(
-        &self,
-        axis: AbsoluteAxis,
-        span: Line<OriginZeroLine>,
-        reversed: bool,
-    ) -> Option<OriginZeroLine> {
+    pub fn occupied_track_jump(&self, axis: AbstractAxis, span: Line<OriginZeroLine>) -> Option<OriginZeroLine> {
         let counts = self.track_counts(axis);
         let track_lists = self.track_lists(axis);
         let range = counts.oz_line_range_to_track_range(span);
         let start = max(range.start, 0);
         let end = min(range.end, track_lists.len() as i16);
-        let found = if !reversed {
-            (start..end).rev().find(|&index| !track_lists[index as usize].is_empty())
-        } else {
-            (start..end).find(|&index| !track_lists[index as usize].is_empty())
-        };
+        let found = (start..end).rev().find(|&index| !track_lists[index as usize].is_empty());
         found.map(|track_index| {
             let line = counts.track_to_prev_oz_line(track_index as u16);
-            if reversed {
-                OriginZeroLine(line.0 - 1)
-            } else {
-                line + 1
-            }
+            line + 1
         })
     }
 
     /// Determines whether the specified row contains any items
     pub fn row_is_occupied(&self, row_index: usize) -> bool {
-        self.track_lists(AbsoluteAxis::Vertical).get(row_index).is_some_and(|track| !track.is_empty())
+        self.track_lists(AbstractAxis::Block).get(row_index).is_some_and(|track| !track.is_empty())
     }
 
     /// Determines whether the specified column contains any items
     pub fn column_is_occupied(&self, column_index: usize) -> bool {
-        self.track_lists(AbsoluteAxis::Horizontal).get(column_index).is_some_and(|track| !track.is_empty())
+        self.track_lists(AbstractAxis::Inline).get(column_index).is_some_and(|track| !track.is_empty())
     }
 
     /// Returns the track counts of this CellOccunpancyMatrix in the relevant axis
-    pub fn track_counts(&self, track_type: AbsoluteAxis) -> &TrackCounts {
+    pub fn track_counts(&self, track_type: AbstractAxis) -> &TrackCounts {
         match track_type {
-            AbsoluteAxis::Horizontal => &self.columns,
-            AbsoluteAxis::Vertical => &self.rows,
+            AbstractAxis::Inline => &self.columns,
+            AbstractAxis::Block => &self.rows,
         }
     }
 
@@ -391,37 +356,18 @@ impl CellOccupancyMatrix {
     /// Return the index of that cell or None.
     pub fn last_of_type(
         &self,
-        track_type: AbsoluteAxis,
+        track_type: AbstractAxis,
         start_at: OriginZeroLine,
         kind: CellOccupancyState,
     ) -> Option<OriginZeroLine> {
-        let track_counts = self.track_counts(track_type.other_axis());
+        let track_counts = self.track_counts(track_type.other());
         let track_computed_index = track_counts.oz_line_to_next_track(start_at);
-        let track_lists = self.track_lists(track_type.other_axis());
+        let track_lists = self.track_lists(track_type.other());
         if track_computed_index < 0 || track_computed_index >= track_lists.len() as i16 {
             // Index out of bounds: no tracks to search
             return None;
         }
         track_lists[track_computed_index as usize].last_of_state(kind).map(OriginZeroLine)
-    }
-
-    /// Given an axis and a track index
-    /// Search forwards from the start of the track and find the first grid cell matching the specified state (if any)
-    /// Return the index of that cell or None.
-    pub fn first_of_type(
-        &self,
-        track_type: AbsoluteAxis,
-        start_at: OriginZeroLine,
-        kind: CellOccupancyState,
-    ) -> Option<OriginZeroLine> {
-        let track_counts = self.track_counts(track_type.other_axis());
-        let track_computed_index = track_counts.oz_line_to_next_track(start_at);
-        let track_lists = self.track_lists(track_type.other_axis());
-        if track_computed_index < 0 || track_computed_index >= track_lists.len() as i16 {
-            // Index out of bounds: no tracks to search
-            return None;
-        }
-        track_lists[track_computed_index as usize].first_of_state(kind).map(OriginZeroLine)
     }
 }
 
@@ -483,31 +429,30 @@ mod tests {
         }
 
         #[test]
-        fn collision_extent_finds_extremal_occupied_cell() {
+        fn collision_end_skips_overlapping_intervals_including_negative_tracks() {
             let mut track = TrackIntervals::default();
             track.paint(2..4, AutoPlaced);
             track.paint(6..8, DefinitelyPlaced);
-            // Forward search: the last cell of the last overlapping interval
-            assert_eq!(track.collision_extent(&(0..10), false), Some(7));
-            assert_eq!(track.collision_extent(&(0..7), false), Some(7));
-            assert_eq!(track.collision_extent(&(0..6), false), Some(3));
-            assert_eq!(track.collision_extent(&(4..6), false), None);
-            // Reverse search: the first cell of the first overlapping interval
-            assert_eq!(track.collision_extent(&(0..10), true), Some(2));
-            assert_eq!(track.collision_extent(&(3..10), true), Some(2));
-            assert_eq!(track.collision_extent(&(4..10), true), Some(6));
+            assert_eq!(track.collision_end(&(0..10)), Some(8));
+            assert_eq!(track.collision_end(&(0..7)), Some(8));
+            assert_eq!(track.collision_end(&(0..6)), Some(4));
+            assert_eq!(track.collision_end(&(4..6)), None);
+            track.paint(-4..-2, AutoPlaced);
+            assert_eq!(track.collision_end(&(-10..0)), Some(-2));
+            assert_eq!(track.collision_end(&(-3..0)), Some(-2));
+            assert_eq!(track.collision_end(&(-2..2)), None);
         }
 
         #[test]
-        fn first_and_last_of_state_ignore_other_states() {
+        fn last_of_state_ignores_other_states() {
             let mut track = TrackIntervals::default();
             track.paint(0..2, DefinitelyPlaced);
             track.paint(2..4, AutoPlaced);
             track.paint(6..8, AutoPlaced);
             track.paint(8..9, DefinitelyPlaced);
-            assert_eq!(track.first_of_state(AutoPlaced), Some(2));
+            assert_eq!(track.last_of_state(CellOccupancyState::Unoccupied), None);
             assert_eq!(track.last_of_state(AutoPlaced), Some(7));
-            assert_eq!(track.first_of_state(DefinitelyPlaced), Some(0));
+
             assert_eq!(track.last_of_state(DefinitelyPlaced), Some(8));
         }
 
@@ -522,7 +467,7 @@ mod tests {
 
     mod cell_occupancy_matrix {
         use super::*;
-        use crate::geometry::AbsoluteAxis::{Horizontal, Vertical};
+        use crate::geometry::AbstractAxis::{Block, Inline};
         use CellOccupancyState::AutoPlaced;
 
         fn line(start: i16, end: i16) -> Line<OriginZeroLine> {
@@ -533,17 +478,17 @@ mod tests {
         fn negative_expansion_preserves_occupancy() {
             let mut matrix =
                 CellOccupancyMatrix::with_track_counts(TrackCounts::from_raw(0, 2, 0), TrackCounts::from_raw(0, 2, 0));
-            matrix.mark_area_as(Horizontal, line(0, 1), line(0, 1), AutoPlaced);
+            matrix.mark_area_as(Inline, line(0, 1), line(0, 1), AutoPlaced);
             // Expand by marking an area in negative tracks
-            matrix.mark_area_as(Horizontal, line(-2, -1), line(-1, 0), AutoPlaced);
+            matrix.mark_area_as(Inline, line(-2, -1), line(-1, 0), AutoPlaced);
 
-            assert_eq!(*matrix.track_counts(Horizontal), TrackCounts::from_raw(2, 2, 0));
-            assert_eq!(*matrix.track_counts(Vertical), TrackCounts::from_raw(1, 2, 0));
+            assert_eq!(*matrix.track_counts(Inline), TrackCounts::from_raw(2, 2, 0));
+            assert_eq!(*matrix.track_counts(Block), TrackCounts::from_raw(1, 2, 0));
 
             // Original cell still occupied at the same OriginZero coordinates
-            assert!(!matrix.line_area_is_unoccupied(Horizontal, line(0, 1), line(0, 1)));
-            assert!(!matrix.line_area_is_unoccupied(Horizontal, line(-2, -1), line(-1, 0)));
-            assert!(matrix.line_area_is_unoccupied(Horizontal, line(-1, 0), line(0, 1)));
+            assert!(!matrix.line_area_is_unoccupied(Inline, line(0, 1), line(0, 1)));
+            assert!(!matrix.line_area_is_unoccupied(Inline, line(-2, -1), line(-1, 0)));
+            assert!(matrix.line_area_is_unoccupied(Inline, line(-1, 0), line(0, 1)));
 
             // Matrix-index based queries account for the shifted origin
             assert!(matrix.column_is_occupied(0)); // OriginZero column -2
@@ -558,40 +503,28 @@ mod tests {
         fn collision_jump_returns_next_search_position() {
             let mut matrix =
                 CellOccupancyMatrix::with_track_counts(TrackCounts::from_raw(0, 4, 0), TrackCounts::from_raw(0, 4, 0));
-            matrix.mark_area_as(Horizontal, line(1, 3), line(0, 1), AutoPlaced);
+            matrix.mark_area_as(Inline, line(1, 3), line(0, 1), AutoPlaced);
 
             // Forwards: jump past the end of the last colliding interval
-            assert_eq!(
-                matrix.line_area_collision_jump(Horizontal, line(0, 2), line(0, 1), false),
-                Some(OriginZeroLine(3))
-            );
-            assert_eq!(
-                matrix.line_area_collision_jump(Horizontal, line(0, 4), line(0, 1), false),
-                Some(OriginZeroLine(3))
-            );
+            assert_eq!(matrix.line_area_collision_jump(Inline, line(0, 2), line(0, 1)), Some(OriginZeroLine(3)));
+            assert_eq!(matrix.line_area_collision_jump(Inline, line(0, 4), line(0, 1)), Some(OriginZeroLine(3)));
             // Backwards: jump past the start of the first colliding interval
-            assert_eq!(
-                matrix.line_area_collision_jump(Horizontal, line(2, 4), line(0, 1), true),
-                Some(OriginZeroLine(0))
-            );
-            assert_eq!(
-                matrix.line_area_collision_jump(Horizontal, line(0, 4), line(0, 1), true),
-                Some(OriginZeroLine(0))
-            );
+            assert_eq!(matrix.line_area_collision_jump(Inline, line(2, 4), line(0, 1)), Some(OriginZeroLine(3)));
+            assert_eq!(matrix.line_area_collision_jump(Inline, line(0, 4), line(-1, 0)), None);
             // No collision in a different row
-            assert_eq!(matrix.line_area_collision_jump(Horizontal, line(0, 4), line(1, 2), false), None);
+            assert_eq!(matrix.line_area_collision_jump(Inline, line(0, 4), line(1, 2)), None);
         }
 
         #[test]
         fn occupied_track_jump_skips_non_empty_tracks() {
             let mut matrix =
                 CellOccupancyMatrix::with_track_counts(TrackCounts::from_raw(0, 4, 0), TrackCounts::from_raw(0, 4, 0));
-            matrix.mark_area_as(Horizontal, line(0, 1), line(1, 2), AutoPlaced);
+            matrix.mark_area_as(Inline, line(0, 1), line(1, 2), AutoPlaced);
 
-            // Vertical (row) tracks: row 1 is occupied
-            assert_eq!(matrix.occupied_track_jump(Vertical, line(0, 4), false), Some(OriginZeroLine(2)));
-            assert_eq!(matrix.occupied_track_jump(Vertical, line(0, 4), true), Some(OriginZeroLine(0)));
-            assert_eq!(matrix.occupied_track_jump(Vertical, line(2, 4), false), None);
+            // Block (row) tracks: row 1 is occupied
+            assert_eq!(matrix.occupied_track_jump(Block, line(0, 4)), Some(OriginZeroLine(2)));
+            assert_eq!(matrix.occupied_track_jump(Block, line(1, 2)), Some(OriginZeroLine(2)));
+            assert_eq!(matrix.occupied_track_jump(Block, line(2, 4)), None);
         }
     }
 }
