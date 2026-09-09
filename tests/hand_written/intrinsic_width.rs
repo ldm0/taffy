@@ -203,6 +203,128 @@ fn block_root_only_stretches_an_auto_preferred_width() {
 }
 
 #[test]
+fn intrinsic_root_inline_size_respects_numeric_limits() {
+    use taffy::{LogicalSize, WritingMode as LayoutWritingMode};
+    for mode in [LayoutWritingMode::HorizontalTb, LayoutWritingMode::VerticalRl, LayoutWritingMode::VerticalLr] {
+        for display in [Display::Block, Display::Flex, Display::Grid] {
+            for width in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content()] {
+                for (min, max, expected) in [
+                    (auto(), length(100.0), 100.0),
+                    (length(300.0), auto(), 300.0),
+                    (length(120.0), length(100.0), 120.0),
+                    (auto(), percent(0.25), 100.0),
+                ] {
+                    for box_sizing in [BoxSizing::ContentBox, BoxSizing::BorderBox] {
+                        let mut tree = new_test_tree();
+                        let item = tree
+                            .new_leaf(Style {
+                                size: mode
+                                    .to_physical(LogicalSize { inline_size: length(250.0), block_size: length(20.0) }),
+                                ..Default::default()
+                            })
+                            .unwrap();
+                        let root = tree
+                            .new_with_children(
+                                Style {
+                                    display,
+                                    box_sizing,
+                                    size: mode.to_physical(LogicalSize { inline_size: width, block_size: auto() }),
+                                    min_size: mode.to_physical(LogicalSize { inline_size: min, block_size: auto() }),
+                                    max_size: mode.to_physical(LogicalSize { inline_size: max, block_size: auto() }),
+                                    padding: Rect {
+                                        left: length(5.0),
+                                        right: length(5.0),
+                                        top: length(5.0),
+                                        bottom: length(5.0),
+                                    },
+                                    border: Rect {
+                                        left: length(2.0),
+                                        right: length(2.0),
+                                        top: length(2.0),
+                                        bottom: length(2.0),
+                                    },
+                                    ..Default::default()
+                                },
+                                &[item],
+                            )
+                            .unwrap();
+                        for node in [root, item] {
+                            tree.set_writing_mode(node, mode).unwrap();
+                        }
+                        tree.compute_layout(
+                            root,
+                            Size { width: AvailableSpace::Definite(400.0), height: AvailableSpace::Definite(400.0) },
+                        )
+                        .unwrap();
+                        let expected = expected + if box_sizing == BoxSizing::ContentBox { 14.0 } else { 0.0 };
+                        assert_eq!(
+                            mode.to_logical(tree.layout(root).unwrap().size).inline_size,
+                            expected,
+                            "{mode:?} {display:?} {box_sizing:?} {width:?} min={min:?} max={max:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn intrinsic_limits_apply_to_numeric_root_preferred_sizes() {
+    for display in [Display::Block, Display::Flex, Display::Grid] {
+        for (width, min, max) in [(100.0, Dimension::max_content(), auto()), (300.0, auto(), Dimension::min_content())]
+        {
+            let mut tree = new_test_tree();
+            let item = tree.new_leaf(Style { size: Size::from_lengths(250.0, 20.0), ..Default::default() }).unwrap();
+            let root = tree
+                .new_with_children(
+                    Style {
+                        display,
+                        size: Size::from_lengths(width, 20.0),
+                        min_size: Size { width: min, height: auto() },
+                        max_size: Size { width: max, height: auto() },
+                        ..Default::default()
+                    },
+                    &[item],
+                )
+                .unwrap();
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            assert_eq!(tree.layout(root).unwrap().size.width, 250.0, "{display:?} min={min:?} max={max:?}");
+        }
+    }
+}
+
+#[test]
+fn intrinsic_input_resolution_preserves_parent_assigned_inline_sizes() {
+    use super::test_tree::{TestNode, TestTree};
+    use taffy::{LayoutInput, RunMode, SizingMode, WritingMode as LayoutWritingMode};
+    for mode in [LayoutWritingMode::HorizontalTb, LayoutWritingMode::VerticalRl, LayoutWritingMode::VerticalLr] {
+        let node = TestNode::container(
+            Display::Grid,
+            Style {
+                min_size: Size { width: Dimension::min_content(), height: Dimension::min_content() },
+                max_size: Size::from_lengths(50.0, 50.0),
+                ..Default::default()
+            },
+            Rect::ZERO,
+        );
+        let item = TestNode::leaf(Style::default(), Size { width: 200.0, height: 200.0 });
+        let mut tree = TestTree::new(node, item);
+        tree.nodes[0].writing_mode = mode;
+        let inputs = LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: SizingMode::InherentSize,
+            known_dimensions: Size { width: Some(100.0), height: Some(100.0) },
+            ..LayoutInput::HIDDEN
+        };
+        let resolved = taffy::resolve_intrinsic_inline_inputs_with_provenance(&mut tree, NodeId::from(0_usize), inputs);
+        assert_eq!(resolved.inputs, inputs, "{mode:?}");
+        assert!(!resolved.depends_on_block_constraints);
+        assert!(!resolved.applied_aspect_ratio);
+    }
+}
+
+#[test]
 fn definite_opposite_size_transfers_before_intrinsic_width_measurement() {
     for display in [Display::Block, Display::Flex, Display::Grid] {
         let mut tree = new_test_tree();
