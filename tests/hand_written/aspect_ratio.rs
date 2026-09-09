@@ -146,6 +146,94 @@ fn ratio_dependent_inline_size_respects_the_automatic_content_minimum() {
 }
 
 #[test]
+fn grid_does_not_reclamp_the_ratio_content_minimum_during_final_layout() {
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        let mut tree = TaffyTree::<()>::new();
+        let content = tree
+            .new_leaf(Style {
+                size: mode.to_physical(LogicalSize { inline_size: length(100.0), block_size: length(20.0) }),
+                ..Style::default()
+            })
+            .unwrap();
+        let grid = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: mode.to_physical(LogicalSize { inline_size: auto(), block_size: length(200.0) }),
+                    max_size: mode.to_physical(LogicalSize { inline_size: auto(), block_size: length(100.0) }),
+                    aspect_ratio: Some(if mode.is_horizontal() { 0.5 } else { 2.0 }),
+                    ..Style::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: length(240.0), height: length(180.0) },
+                    ..Style::default()
+                },
+                &[grid],
+            )
+            .unwrap();
+        for node in [root, grid, content] {
+            tree.set_writing_mode(node, mode).unwrap();
+        }
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        assert_eq!(tree.layout(grid).unwrap().size, Size { width: 100.0, height: 100.0 }, "{mode:?}");
+    }
+}
+
+#[test]
+fn fixed_grid_space_controls_auto_repeat_and_final_size() {
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        let root = TestNode::container(
+            Display::Grid,
+            Style {
+                max_size: Size { width: length(50.0), height: length(50.0) },
+                grid_template_columns: vec![repeat("auto-fill", vec![length(40.0)])],
+                grid_template_rows: vec![length(20.0)],
+                ..Style::default()
+            },
+            Rect::ZERO,
+        );
+        let content = TestNode::leaf(
+            Style { size: Size { width: length(10.0), height: length(10.0) }, ..Style::default() },
+            Size::ZERO,
+        );
+        let mut tree = TestTree::new(root, content.clone());
+        tree.nodes.push(content);
+        tree.nodes[0].children.push(2);
+        for node in &mut tree.nodes {
+            node.writing_mode = mode;
+        }
+        let output = tree.compute_child_layout(
+            NodeId::from(0_usize),
+            LayoutInput {
+                run_mode: RunMode::PerformLayout,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::Layout,
+                axis: RequestedAxis::Both,
+                block_auto_behavior: taffy::AutoSizeBehavior::FitContent,
+                known_dimensions: Size { width: Some(100.0), height: Some(100.0) },
+                definite_dimensions: Size { width: Some(100.0), height: Some(100.0) },
+                parent_size: Size { width: Some(100.0), height: Some(100.0) },
+                parent_writing_mode: mode,
+                available_space: Size {
+                    width: AvailableSpace::Definite(100.0),
+                    height: AvailableSpace::Definite(100.0),
+                },
+                block_margins_are_collapsible: Line::FALSE,
+            },
+        );
+        assert_eq!(output.size, Size { width: 100.0, height: 100.0 }, "{mode:?}");
+        let location = tree.layout(2).location;
+        assert_eq!(if mode.is_horizontal() { location.x } else { location.y }, 40.0, "{mode:?}");
+    }
+}
+
+#[test]
 fn resolved_aspect_ratio_rejects_invalid_values() {
     for ratio in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         assert_eq!(ResolvedAspectRatio::new(ratio, BoxSizing::ContentBox), None);

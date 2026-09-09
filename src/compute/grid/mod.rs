@@ -124,8 +124,6 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // CSS sizes and tree constraints enter in physical axes. Track sizing and
     // placement remain in the grid's logical axes until fragment publication.
     let outer_node_size = writing_mode.to_logical(outer_node_size);
-    let known_dimensions = writing_mode.to_logical(known_dimensions);
-    let preferred_size = writing_mode.to_logical(preferred_size);
     let min_size = writing_mode.to_logical(min_size);
     let max_size = writing_mode.to_logical(max_size);
     let available_space = writing_mode.to_logical(available_space);
@@ -194,9 +192,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // This is very similar to the inner_node_size except if the inner_node_size is not definite but the node
     // has a min- or max- size style then that will be used in it's place.
     let auto_fit_container_size = outer_node_size
-        .or(max_size)
-        .or(min_size)
-        .maybe_clamp(min_size, max_size)
+        .or(max_size.or(min_size).maybe_clamp(min_size, max_size))
         .maybe_max(padding_border_size)
         .maybe_sub(content_box_inset.sum_axes());
 
@@ -369,19 +365,23 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     debug_log!(dbg: rows.iter().map(|track| track.base_size).collect::<Vec<_>>());
 
     // 6. Compute container size
-    let resolved_style_size = known_dimensions.or(preferred_size);
-    let mut container_border_box = LogicalSize {
-        inline_size: resolved_style_size
-            .get(AbstractAxis::Inline)
-            .unwrap_or_else(|| initial_column_sum + content_box_inset.inline_axis_sum())
-            .maybe_clamp(min_size.inline_size, max_size.inline_size)
-            .max(padding_border_size.inline_size),
-        block_size: resolved_style_size
-            .get(AbstractAxis::Block)
-            .unwrap_or_else(|| initial_row_sum + content_box_inset.block_axis_sum())
-            .maybe_clamp(min_size.block_size, max_size.block_size)
-            .max(padding_border_size.block_size),
+    // The initial sizing boundary has already resolved fixed/preferred axes.
+    // Only a still-content-sized axis may be clamped from its track sum. Keep
+    // that ownership unchanged when intrinsic track sizing is re-run below.
+    let resolve_container_size = |tracks: LogicalSize<f32>| LogicalSize {
+        inline_size: outer_node_size.inline_size.unwrap_or_else(|| {
+            (tracks.inline_size + content_box_inset.inline_axis_sum())
+                .maybe_clamp(min_size.inline_size, max_size.inline_size)
+                .max(padding_border_size.inline_size)
+        }),
+        block_size: outer_node_size.block_size.unwrap_or_else(|| {
+            (tracks.block_size + content_box_inset.block_axis_sum())
+                .maybe_clamp(min_size.block_size, max_size.block_size)
+                .max(padding_border_size.block_size)
+        }),
     };
+    let mut container_border_box =
+        resolve_container_size(LogicalSize { inline_size: initial_column_sum, block_size: initial_row_sum });
     let mut container_content_box = LogicalSize {
         inline_size: f32_max(0.0, container_border_box.inline_size - content_box_inset.inline_axis_sum()),
         block_size: f32_max(0.0, container_border_box.block_size - content_box_inset.block_axis_sum()),
@@ -558,23 +558,17 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     {
         let final_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
         let final_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
+        let final_border_box =
+            resolve_container_size(LogicalSize { inline_size: final_column_sum, block_size: final_row_sum });
 
         if intrinsic_column_contribution_changed && !has_percentage_column {
-            container_border_box.inline_size = resolved_style_size
-                .get(AbstractAxis::Inline)
-                .unwrap_or_else(|| final_column_sum + content_box_inset.inline_axis_sum())
-                .maybe_clamp(min_size.inline_size, max_size.inline_size)
-                .max(padding_border_size.inline_size);
+            container_border_box.inline_size = final_border_box.inline_size;
             container_content_box.inline_size =
                 f32_max(0.0, container_border_box.inline_size - content_box_inset.inline_axis_sum());
         }
 
         if intrinsic_row_contribution_changed && !has_percentage_row {
-            container_border_box.block_size = resolved_style_size
-                .get(AbstractAxis::Block)
-                .unwrap_or_else(|| final_row_sum + content_box_inset.block_axis_sum())
-                .maybe_clamp(min_size.block_size, max_size.block_size)
-                .max(padding_border_size.block_size);
+            container_border_box.block_size = final_border_box.block_size;
             container_content_box.block_size =
                 f32_max(0.0, container_border_box.block_size - content_box_inset.block_axis_sum());
         }
