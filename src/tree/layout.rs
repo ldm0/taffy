@@ -657,6 +657,21 @@ impl LayoutOutput {
     }
 }
 
+/// A child's contribution to its parent's in-flow alignment rectangle.
+///
+/// Unlike the final border-box position, this position excludes relative
+/// positioning. Margins are the used flow margins (including collapsing block
+/// struts), not a second resolution of the authored CSS margins. Scrollable
+/// overflow needs both this geometry and the final positioned fragment.
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct InFlowLayout {
+    /// Physical border-box origin in the parent's border-box coordinates.
+    pub location: Point<f32>,
+    /// Physical used margins contributing to the alignment rectangle.
+    pub margin: Rect<f32>,
+}
+
 /// The final result of a layout algorithm for a single node.
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -668,11 +683,17 @@ pub struct Layout {
     pub order: u32,
     /// The top-left corner of the node
     pub location: Point<f32>,
+    /// Normal-flow geometry, including floats, before relative positioning.
+    /// Hidden and absolutely positioned children do not contribute a box to
+    /// their parent's in-flow alignment rectangle and carry `None`.
+    pub in_flow: Option<InFlowLayout>,
     /// The width and height of the node
     pub size: Size<f32>,
     #[cfg(feature = "content_size")]
-    /// The width and height of the content inside the node. This may be larger than the size of the node in the case of
-    /// overflowing content and is useful for computing a "scroll width/height" for scrollable nodes
+    /// Numeric content extent used by layout algorithms. This is not a physical
+    /// scrollable-overflow rectangle: it has no origin and cannot account for
+    /// transforms or unreachable regions. Browser overflow consumers should
+    /// combine final fragments with their [`Self::in_flow`] contributions.
     pub content_size: Size<f32>,
     /// The size of the scrollbars in each dimension. If there is no scrollbar then the size will be zero.
     pub scrollbar_size: Size<f32>,
@@ -701,6 +722,7 @@ impl Layout {
         Self {
             order: 0,
             location: Point::ZERO,
+            in_flow: None,
             size: Size::zero(),
             #[cfg(feature = "content_size")]
             content_size: Size::zero(),
@@ -721,6 +743,7 @@ impl Layout {
             order,
             size: Size::zero(),
             location: Point::ZERO,
+            in_flow: None,
             #[cfg(feature = "content_size")]
             content_size: Size::zero(),
             scrollbar_size: Size::zero(),

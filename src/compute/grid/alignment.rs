@@ -71,11 +71,17 @@ pub(super) struct GridItemLayout {
 impl GridItemLayout {
     /// Publish the aligned fragment and return its contribution to its parent.
     pub(super) fn place(
-        self,
+        mut self,
         tree: &mut impl LayoutGridContainer,
         node: NodeId,
         container: GridPlacementContext,
     ) -> GridItemPlacement {
+        if let Some(in_flow) = self.layout.in_flow.as_mut() {
+            in_flow.location = Point {
+                x: self.layout.location.x - self.relative_offset.x,
+                y: self.layout.location.y - self.relative_offset.y,
+            };
+        }
         tree.set_unrounded_layout(node, &self.layout);
         let mode = container.flow.mode;
         #[cfg(feature = "content_size")]
@@ -438,6 +444,8 @@ pub(super) fn layout_item(
         layout: Layout {
             order,
             location: Point { x, y },
+            in_flow: (position != Position::Absolute)
+                .then_some(crate::InFlowLayout { location: Point::ZERO, margin: resolved_margin }),
             size: Size { width, height },
             #[cfg(feature = "content_size")]
             content_size: layout_output.content_size,

@@ -2484,6 +2484,12 @@ fn calculate_flex_item(
     } else {
         Point { x: offset_cross, y: offset_main }
     };
+    let main_displacement = if is_rtl_row { -main_relative_inset } else { main_relative_inset };
+    let relative_offset = if direction.is_row() {
+        Point { x: main_displacement, y: cross_relative_inset }
+    } else {
+        Point { x: cross_relative_inset, y: main_displacement }
+    };
     let scrollbar_size = item.scrollbar_size;
 
     tree.set_unrounded_layout(
@@ -2495,6 +2501,10 @@ fn calculate_flex_item(
             content_size,
             scrollbar_size,
             location,
+            in_flow: Some(crate::InFlowLayout {
+                location: Point { x: location.x - relative_offset.x, y: location.y - relative_offset.y },
+                margin: item.margin,
+            }),
             padding: item.padding,
             border: item.border,
             margin: item.margin,
@@ -3032,6 +3042,7 @@ fn perform_absolute_layout_on_absolute_children(
                 content_size: layout_output.content_size,
                 scrollbar_size,
                 location,
+                in_flow: None,
                 padding,
                 border,
                 margin: resolved_margin,

@@ -201,6 +201,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
         &Layout {
             order: 0,
             location,
+            in_flow: None,
             size: output.size,
             #[cfg(feature = "content_size")]
             content_size: output.content_size,
@@ -375,6 +376,9 @@ pub fn round_layout_with_scale_factor(tree: &mut impl RoundTree, node_id: NodeId
 
         layout.location.x = round_to_scale(unrounded_layout.location.x, scale_factor);
         layout.location.y = round_to_scale(unrounded_layout.location.y, scale_factor);
+        if let Some(in_flow) = layout.in_flow.as_mut() {
+            in_flow.location = in_flow.location.map(|value| round_to_scale(value, scale_factor));
+        }
         layout.size.width = round_to_scale(cumulative_x + unrounded_layout.size.width, scale_factor)
             - round_to_scale(cumulative_x, scale_factor);
         layout.size.height = round_to_scale(cumulative_y + unrounded_layout.size.height, scale_factor)

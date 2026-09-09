@@ -410,6 +410,8 @@ struct PendingBlockLayout {
     layout: Layout,
     /// Flow-relative border-box offset in the parent formatting context.
     logical_offset: LogicalOffset<f32>,
+    /// Relative displacement, excluded from the parent's alignment rectangle.
+    relative_offset: LogicalOffset<f32>,
     /// Whether this normal-flow fragment belongs to the align-content subject.
     participates_in_align_content: bool,
 }
@@ -887,6 +889,15 @@ fn compute_inner(
         if let Some(pending) = item.pending_layout.as_ref() {
             let mut layout = pending.layout;
             layout.location = converter.to_physical_point(pending.logical_offset, layout.size);
+            if let Some(in_flow) = layout.in_flow.as_mut() {
+                in_flow.location = converter.to_physical_point(
+                    LogicalOffset {
+                        inline_offset: pending.logical_offset.inline_offset - pending.relative_offset.inline_offset,
+                        block_offset: pending.logical_offset.block_offset - pending.relative_offset.block_offset,
+                    },
+                    layout.size,
+                );
+            }
             tree.set_unrounded_layout(item.node_id, &layout);
         }
     }
@@ -1580,11 +1591,13 @@ fn perform_final_layout_on_in_flow_children(
                         content_size: item_layout.content_size,
                         scrollbar_size,
                         location: Point::ZERO,
+                        in_flow: Some(crate::InFlowLayout { location: Point::ZERO, margin: resolved_margin }),
                         padding: item.padding,
                         border: item.border,
                         margin: resolved_margin,
                     },
                     logical_offset: logical_location,
+                    relative_offset: LogicalOffset::ZERO,
                     participates_in_align_content: false,
                 });
 
@@ -1980,6 +1993,17 @@ fn perform_final_layout_on_in_flow_children(
 
             // Defer fragment materialization so `align-content` can shift the
             // logical block offset before the physical top-left is known.
+            let mut flow_margin = resolved_logical_margin;
+            if item.can_be_collapsed_through {
+                // A self-collapsing child's position already includes the
+                // adjoining start strut. Only the remainder extends the
+                // parent's alignment rectangle past that border edge.
+                flow_margin.block_end = active_collapsible_margin_set
+                    .collapse_with_set(block_start_margin_set)
+                    .collapse_with_set(block_end_margin_set)
+                    .resolve()
+                    - block_margin_offset;
+            }
             item.pending_layout = Some(PendingBlockLayout {
                 layout: Layout {
                     order: item.order,
@@ -1988,11 +2012,16 @@ fn perform_final_layout_on_in_flow_children(
                     content_size: item_layout.content_size,
                     scrollbar_size,
                     location: Point::ZERO,
+                    in_flow: Some(crate::InFlowLayout {
+                        location: Point::ZERO,
+                        margin: writing_direction.to_physical_box_strut(flow_margin),
+                    }),
                     padding: item.padding,
                     border: item.border,
                     margin: resolved_margin,
                 },
                 logical_offset: logical_location,
+                relative_offset: inset_offset,
                 participates_in_align_content: true,
             });
 
@@ -2344,6 +2373,7 @@ fn perform_absolute_layout_on_absolute_children(
                 content_size: layout_output.content_size,
                 scrollbar_size,
                 location,
+                in_flow: None,
                 padding,
                 border,
                 margin: resolved_margin,
