@@ -526,6 +526,13 @@ pub struct LayoutOutput {
     #[cfg(feature = "content_size")]
     /// The size of the content within the node
     pub content_size: Size<f32>,
+    /// Physical block-end of the laid-out block content, measured from the top
+    /// border edge and excluding end padding/border. Unlike scrollable overflow,
+    /// this follows normal-flow positions, includes contained floats, and excludes
+    /// absolute descendants and relative-position offsets. Block alignment is
+    /// included. Embedders can use this edge to synthesize a table-cell baseline.
+    /// `None` means the algorithm did not compute this metric (e.g. a size-only probe).
+    pub block_content_end: Option<f32>,
     /// The first baseline of the node in each dimension, if any
     pub first_baselines: Point<Option<f32>>,
     /// The last baseline of the node in each dimension, if any
@@ -549,6 +556,7 @@ impl LayoutOutput {
         applied_aspect_ratio: false,
         #[cfg(feature = "content_size")]
         content_size: Size::ZERO,
+        block_content_end: None,
         first_baselines: Point::NONE,
         last_baselines: Point::NONE,
         top_margin: CollapsibleMarginSet::ZERO,
@@ -581,6 +589,7 @@ impl LayoutOutput {
             applied_aspect_ratio: false,
             #[cfg(feature = "content_size")]
             content_size,
+            block_content_end: None,
             first_baselines,
             last_baselines,
             top_margin: CollapsibleMarginSet::ZERO,
