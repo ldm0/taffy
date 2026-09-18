@@ -653,13 +653,18 @@ fn compute_inner(
         block_ctx,
     );
 
-    // Root BFCs contain floats
+    let mut block_content_end = (intrinsic_outer_height - content_box_inset.bottom).max(0.0);
+    #[cfg(feature = "float_layout")]
+    let align_floats = tree.block_alignment_includes_floats(node_id);
+    #[cfg(feature = "float_layout")]
+    let mut contained_float_end = None;
+    // Root BFCs contain floats, including the padding after their margin boxes.
     #[cfg(feature = "float_layout")]
     if block_ctx.is_bfc_root() || is_scroll_container {
-        intrinsic_outer_height =
-            intrinsic_outer_height.max(block_ctx.floated_content_height_contribution() + content_box_inset.bottom);
+        let float_end = block_ctx.floated_content_height_contribution();
+        contained_float_end = Some(float_end);
+        intrinsic_outer_height = intrinsic_outer_height.max(float_end + content_box_inset.bottom);
     }
-    let mut block_content_end = (intrinsic_outer_height - content_box_inset.bottom).max(0.0);
 
     let container_outer_height = known_dimensions
         .height
@@ -691,7 +696,7 @@ fn compute_inner(
         let free_space = container_inner_height - inflow_content_height;
         let participates = |item: &BlockItem| {
             #[cfg(feature = "float_layout")]
-            if item.float.is_floated() && !tree.block_alignment_includes_floats(node_id) {
+            if item.float.is_floated() && !align_floats {
                 return false;
             }
             item.final_layout.is_some()
@@ -703,6 +708,10 @@ fn compute_inner(
             first_baseline = first_baseline.map(|baseline| baseline + group_offset);
             last_baseline = last_baseline.map(|baseline| baseline + group_offset);
             block_content_end += group_offset;
+            #[cfg(feature = "float_layout")]
+            if align_floats {
+                contained_float_end = contained_float_end.map(|end| end + group_offset);
+            }
             for item in items.iter_mut() {
                 if participates(item) {
                     let layout = item.final_layout.as_mut().unwrap();
@@ -733,6 +742,10 @@ fn compute_inner(
                 }
             }
         }
+    }
+    #[cfg(feature = "float_layout")]
+    if let Some(float_end) = contained_float_end {
+        block_content_end = block_content_end.max(float_end);
     }
 
     // Determine whether this node can be collapsed through
