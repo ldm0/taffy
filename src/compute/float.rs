@@ -515,8 +515,9 @@ impl FloatContext {
         let end_idx = match end {
             None => {
                 let last_y_end = self.segments.last().map(|seg| seg.y.end).unwrap_or(0.0);
-                if min_y > last_y_end {
-                    self.segments.push(Segment { y: last_y_end..min_y, insets: [0.0, 0.0], has_float: [false; 2] });
+                let end_y = start_y + floated_box.height;
+                if end_y > last_y_end {
+                    self.segments.push(Segment { y: last_y_end..end_y, insets: [0.0, 0.0], has_float: [false; 2] });
                 }
                 self.segments.len() - 1
             }
@@ -627,10 +628,12 @@ impl FloatContext {
                     height: f32::INFINITY,
                 }
             }
+            // Exhausting the segments must advance below the floats, even if
+            // the caller keeps the original line position while trying wider slots.
             None => ContentSlot {
                 segment_id: None,
                 x: containing_block_insets[0],
-                y: min_y,
+                y: self.segments.last().map(|segment| segment.y.end).unwrap_or(min_y).max(min_y),
                 width: self.available_width - containing_block_insets[0] - containing_block_insets[1],
                 height: f32::INFINITY,
             },

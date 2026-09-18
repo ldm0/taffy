@@ -1,8 +1,75 @@
 #![cfg(feature = "float_layout")]
 use taffy::geometry::Point;
 use taffy::prelude::*;
-use taffy::style::{Clear, Float};
+use taffy::style::{Clear, Float, FloatDirection};
 use taffy_test_helpers::new_test_tree;
+
+/// Once an inline line cannot fit beside a float, the final content slot must
+/// move below it rather than returning full width at the original line position.
+#[test]
+fn content_slot_advances_below_last_float() {
+    for direction in [FloatDirection::Left, FloatDirection::Right] {
+        let mut context = taffy::FloatContext::new();
+        context.set_width(200.0);
+        context.place_floated_box(Size { width: 200.0, height: 80.0 }, 0.0, [0.0, 0.0], direction, Clear::None);
+
+        let beside = context.find_content_slot(12.0, [10.0, 20.0], Clear::None, None);
+        assert!(beside.segment_id.is_some());
+        assert_eq!(beside.y, 12.0);
+
+        let below = context.find_content_slot(12.0, [10.0, 20.0], Clear::None, beside.segment_id);
+        assert_eq!(below.segment_id, None);
+        assert_eq!((below.x, below.y, below.width), (10.0, 80.0, 170.0));
+
+        // Advancing the search must also preserve a later requested line top.
+        let later = context.find_content_slot(100.0, [10.0, 20.0], Clear::None, beside.segment_id);
+        assert_eq!((later.x, later.y, later.width), (10.0, 100.0, 170.0));
+    }
+}
+
+#[test]
+fn content_slot_walks_staggered_float_bottoms() {
+    for taller_first in [false, true] {
+        let mut context = taffy::FloatContext::new();
+        context.set_width(200.0);
+        let mut floats = [(80.0, 40.0, FloatDirection::Left), (60.0, 90.0, FloatDirection::Right)];
+        if taller_first {
+            floats.reverse();
+        }
+        for (width, height, direction) in floats {
+            context.place_floated_box(Size { width, height }, 0.0, [0.0, 0.0], direction, Clear::None);
+        }
+
+        let beside_both = context.find_content_slot(10.0, [0.0, 0.0], Clear::None, None);
+        assert_eq!((beside_both.x, beside_both.y, beside_both.width), (80.0, 10.0, 60.0));
+        assert!(beside_both.segment_id.is_some());
+
+        let beside_right = context.find_content_slot(10.0, [0.0, 0.0], Clear::None, beside_both.segment_id);
+        assert_eq!((beside_right.x, beside_right.y, beside_right.width), (0.0, 40.0, 140.0));
+        assert!(beside_right.segment_id.is_some());
+
+        let below = context.find_content_slot(10.0, [0.0, 0.0], Clear::None, beside_right.segment_id);
+        assert_eq!(below.segment_id, None);
+        assert_eq!((below.x, below.y, below.width), (0.0, 90.0, 200.0));
+    }
+}
+
+#[test]
+fn content_slot_below_float_uses_nested_block_coordinates() {
+    let mut formatting_context = taffy::BlockFormattingContext::new();
+    let mut root = formatting_context.root_block_context();
+    root.set_width(200.0);
+    root.place_floated_box(Size { width: 200.0, height: 80.0 }, 20.0, FloatDirection::Left, Clear::None, false);
+    let nested = root.sub_context(30.0, [10.0, 20.0]);
+
+    let beside = nested.find_content_slot(5.0, Clear::None, None);
+    assert!(beside.segment_id.is_some());
+    assert_eq!(beside.y, 5.0);
+
+    let below = nested.find_content_slot(5.0, Clear::None, beside.segment_id);
+    assert_eq!(below.segment_id, None);
+    assert_eq!((below.x, below.y, below.width), (0.0, 70.0, 170.0));
+}
 
 /// Regression test for <https://wpt.live/css/CSS2/floats-clear/floats-146.xht>
 ///
