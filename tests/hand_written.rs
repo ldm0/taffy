@@ -3,6 +3,7 @@ mod hand_written {
     mod adversarial_styles;
     mod baseline;
     mod aspect_ratio;
+    mod block_content_alignment;
     mod block_intrinsic_percentage;
     mod block_replaced;
     mod border_and_padding;

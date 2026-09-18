@@ -11,6 +11,7 @@ pub(super) struct TestNode {
     pub(super) scrollbar_insets: Rect<f32>,
     pub(super) resolved_aspect_ratio: Option<ResolvedAspectRatio>,
     pub(super) indefinite_block_percentage_basis: bool,
+    pub(super) align_floats: bool,
     pub(super) children: Vec<usize>,
     leaf: bool,
     measured_size: Size<f32>,
@@ -24,6 +25,7 @@ impl TestNode {
             scrollbar_insets,
             resolved_aspect_ratio: None,
             indefinite_block_percentage_basis: false,
+            align_floats: false,
             children: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
@@ -37,6 +39,7 @@ impl TestNode {
             scrollbar_insets: Rect::ZERO,
             resolved_aspect_ratio: None,
             indefinite_block_percentage_basis: false,
+            align_floats: false,
             children: Vec::new(),
             leaf: true,
             measured_size,
@@ -172,6 +175,11 @@ impl LayoutBlockContainer for TestTree {
         } else {
             height
         }
+    }
+
+    #[cfg(feature = "float_layout")]
+    fn block_alignment_includes_floats(&self, node_id: NodeId) -> bool {
+        self.nodes[usize::from(node_id)].align_floats
     }
 }
 

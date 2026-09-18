@@ -368,6 +368,14 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
         height
     }
 
+    /// Whether block alignment should move contained floats together with the
+    /// normal-flow content. Table-cell embedders need this for vertical alignment;
+    /// ordinary block `align-content` leaves floated boxes in their original positions.
+    #[cfg(feature = "float_layout")]
+    fn block_alignment_includes_floats(&self, _node_id: NodeId) -> bool {
+        false
+    }
+
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
     fn compute_block_child_layout(

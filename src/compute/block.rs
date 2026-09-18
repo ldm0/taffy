@@ -664,8 +664,10 @@ fn compute_inner(
     // Root BFCs contain floats
     #[cfg(feature = "float_layout")]
     if block_ctx.is_bfc_root() || establishes_new_bfc {
-        intrinsic_outer_height = intrinsic_outer_height.max(block_ctx.floated_content_height_contribution());
+        intrinsic_outer_height =
+            intrinsic_outer_height.max(block_ctx.floated_content_height_contribution() + content_box_inset.bottom);
     }
+    let mut block_content_end = (intrinsic_outer_height - content_box_inset.bottom).max(0.0);
 
     let container_outer_height = known_dimensions
         .height
@@ -682,7 +684,8 @@ fn compute_inner(
     let own_bottom_margin_collapses_with_children =
         own_margins_collapse_with_children.end && !height_constrained_by_min_height;
 
-    // Apply `align-content` to in-flow non-floated items if requested. The per-item layouts were
+    // Apply block alignment to the content group. Ordinary blocks exclude floats;
+    // table-cell embedders can include them. The per-item layouts were
     // held back in `item.final_layout` so that this step can shift `location.y` before tree commit.
     //
     // For block layout the entire stack of in-flow children is treated as a single alignment
@@ -694,14 +697,23 @@ fn compute_inner(
         let container_inner_height = container_outer_height - content_box_inset.vertical_axis_sum();
         let inflow_content_height = intrinsic_outer_height - content_box_inset.vertical_axis_sum();
         let free_space = container_inner_height - inflow_content_height;
-        let any_in_flow = items.iter().any(|item| item.final_layout.is_some());
+        let participates = |item: &BlockItem| {
+            #[cfg(feature = "float_layout")]
+            if item.float.is_floated() && !tree.block_alignment_includes_floats(node_id) {
+                return false;
+            }
+            item.final_layout.is_some()
+        };
+        let any_in_flow = items.iter().any(participates);
         if any_in_flow {
             let keyword = apply_alignment_fallback(free_space, 1, align_content);
             let group_offset = compute_alignment_offset(free_space, 1, 0.0, keyword, false, true);
             first_baseline = first_baseline.map(|baseline| baseline + group_offset);
             last_baseline = last_baseline.map(|baseline| baseline + group_offset);
+            block_content_end += group_offset;
             for item in items.iter_mut() {
-                if let Some(layout) = item.final_layout.as_mut() {
+                if participates(item) {
+                    let layout = item.final_layout.as_mut().unwrap();
                     layout.location.y += group_offset;
                 }
             }
@@ -764,6 +776,7 @@ fn compute_inner(
         CollapsibleMarginSet::from_margin(margin_bottom)
     };
     output.margins_can_collapse_through = can_be_collapsed_through;
+    output.block_content_end = Some(block_content_end);
 
     // Short-circuit if computing size.
     //
@@ -773,7 +786,7 @@ fn compute_inner(
         return output;
     }
 
-    // Commit deferred child layouts to the tree.
+    // Commit deferred normal-flow and floated layouts after block alignment.
     for item in items.iter() {
         if let Some(layout) = item.final_layout.as_ref() {
             tree.set_unrounded_layout(item.node_id, layout);
@@ -1386,8 +1399,6 @@ fn perform_final_layout_on_in_flow_children(
                 // println!("BLOCK FLOATED BOX ({:?}) {:?}", item.node_id, float_direction);
                 // println!("w:{} h:{} x:{}, y:{}", margin_box.width, margin_box.height, location.x, location.y);
 
-                // Deferred to the post-loop pass in `compute_inner` (like in-flow items) so that
-                // `align-content` can shift `location.y` before the layout is committed.
                 item.final_layout = Some(Layout {
                     order: item.order,
                     size: item_layout.size,
