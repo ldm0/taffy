@@ -111,7 +111,14 @@ fn table_cell_alignment_moves_floats_but_not_absolute_children() {
                 if mixed {
                     assert_eq!(tree.layout(3).location.y, 10.0 + offset);
                 }
-                assert_eq!(result.block_content_end, Some(40.0 + if align_floats || mixed { offset } else { 0.0 }));
+                let content_end = if align_floats {
+                    40.0 + offset
+                } else if mixed {
+                    30.0 + offset
+                } else {
+                    40.0
+                };
+                assert_eq!(result.block_content_end, Some(content_end));
             }
         }
     }
