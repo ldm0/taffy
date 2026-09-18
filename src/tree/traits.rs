@@ -357,6 +357,17 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
     /// Get the child's styles
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
 
+    /// Resolve the block container's border-box height used as a percentage basis.
+    ///
+    /// A browser's table layout may assign a cell its final row height without
+    /// making that height definite for normal-flow descendants. Returning `None`
+    /// preserves that distinction while absolutely positioned descendants still
+    /// use the container's final geometry. Content-box insets are subtracted by
+    /// the block algorithm after this hook.
+    fn get_block_percentage_resolution_height(&self, _node_id: NodeId, height: Option<f32>) -> Option<f32> {
+        height
+    }
+
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
     fn compute_block_child_layout(
