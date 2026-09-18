@@ -549,7 +549,9 @@ fn compute_inner(
             .maybe_clamp(min_size, max_size);
         Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
     };
-    let container_content_box_size = known_dimensions.maybe_sub(content_box_inset.sum_axes());
+    let container_content_box_size = known_dimensions
+        .map_height(|height| tree.get_block_percentage_resolution_height(node_id, height))
+        .maybe_sub(content_box_inset.sum_axes());
 
     let overflow = style.overflow();
     let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
@@ -614,8 +616,10 @@ fn compute_inner(
             .with_block_constraint_dependency(content_width_depends_on_block_constraints);
     }
 
-    let container_percentage_resolution_height =
-        known_dimensions.height.or(size.height.maybe_max(min_size.height)).or(min_size.height);
+    let container_percentage_resolution_height = tree.get_block_percentage_resolution_height(
+        node_id,
+        known_dimensions.height.or(size.height.maybe_max(min_size.height)).or(min_size.height),
+    );
     // Relative block-axis percentage insets only resolve against a definite
     // containing-block height. A min-height may determine the eventual used
     // height, but it does not make an otherwise-auto height definite.

@@ -66,4 +66,45 @@ mod tests {
         assert_eq!(taffy.layout(outer).unwrap().size.width, 160.0);
         assert_eq!(taffy.layout(inner).unwrap().size.width, 160.0);
     }
+
+    #[test]
+    fn used_block_height_can_remain_indefinite_for_inflow_percentages() {
+        use crate::hand_written::test_tree::{TestNode, TestTree};
+
+        for indefinite in [false, true] {
+            let mut root = TestNode::container(
+                Display::Block,
+                Style {
+                    size: Size { width: length(100.0), height: length(120.0) },
+                    padding: Rect::length(5.0),
+                    border: Rect::length(5.0),
+                    ..Style::default()
+                },
+                Rect::ZERO,
+            );
+            root.indefinite_block_percentage_basis = indefinite;
+            let child = TestNode::leaf(
+                Style { size: Size { width: length(10.0), height: percent(0.5) }, ..Style::default() },
+                Size { width: 10.0, height: 10.0 },
+            );
+            let mut tree = TestTree::new(root, child.clone());
+            let mut absolute = child;
+            absolute.style.position = Position::Absolute;
+            tree.nodes.push(absolute);
+            tree.nodes[0].children.push(2);
+            tree.nodes.push(TestNode::leaf(
+                Style { position: Position::Absolute, inset: Rect::length(0.0), ..Style::default() },
+                Size::ZERO,
+            ));
+            tree.nodes[0].children.push(3);
+
+            tree.compute(Size::MAX_CONTENT);
+
+            assert_eq!(tree.layout(0).size.height, 120.0);
+            assert_eq!(tree.layout(1).size.height, if indefinite { 10.0 } else { 50.0 });
+            // Positioned descendants resolve against the final padding box.
+            assert_eq!(tree.layout(2).size.height, 55.0);
+            assert_eq!(tree.layout(3).size.height, 110.0);
+        }
+    }
 }

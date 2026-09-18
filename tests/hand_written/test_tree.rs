@@ -10,6 +10,7 @@ pub(super) struct TestNode {
     pub(super) style: Style,
     pub(super) scrollbar_insets: Rect<f32>,
     pub(super) resolved_aspect_ratio: Option<ResolvedAspectRatio>,
+    pub(super) indefinite_block_percentage_basis: bool,
     pub(super) children: Vec<usize>,
     leaf: bool,
     measured_size: Size<f32>,
@@ -22,6 +23,7 @@ impl TestNode {
             style: Style { display, ..style },
             scrollbar_insets,
             resolved_aspect_ratio: None,
+            indefinite_block_percentage_basis: false,
             children: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
@@ -34,6 +36,7 @@ impl TestNode {
             style,
             scrollbar_insets: Rect::ZERO,
             resolved_aspect_ratio: None,
+            indefinite_block_percentage_basis: false,
             children: Vec::new(),
             leaf: true,
             measured_size,
@@ -161,6 +164,14 @@ impl LayoutBlockContainer for TestTree {
 
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_> {
         self.get_core_container_style(child_node_id)
+    }
+
+    fn get_block_percentage_resolution_height(&self, node_id: NodeId, height: Option<f32>) -> Option<f32> {
+        if self.nodes[usize::from(node_id)].indefinite_block_percentage_basis {
+            None
+        } else {
+            height
+        }
     }
 }
 
