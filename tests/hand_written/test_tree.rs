@@ -13,6 +13,7 @@ pub(super) struct TestNode {
     pub(super) indefinite_block_percentage_basis: bool,
     pub(super) align_floats: bool,
     pub(super) children: Vec<usize>,
+    pub(super) layout_inputs: Vec<LayoutInput>,
     leaf: bool,
     measured_size: Size<f32>,
     layout: Layout,
@@ -27,6 +28,7 @@ impl TestNode {
             indefinite_block_percentage_basis: false,
             align_floats: false,
             children: Vec::new(),
+            layout_inputs: Vec::new(),
             leaf: false,
             measured_size: Size::ZERO,
             layout: Layout::with_order(0),
@@ -41,6 +43,7 @@ impl TestNode {
             indefinite_block_percentage_basis: false,
             align_floats: false,
             children: Vec::new(),
+            layout_inputs: Vec::new(),
             leaf: true,
             measured_size,
             layout: Layout::with_order(0),
@@ -129,6 +132,7 @@ impl LayoutPartialTree for TestTree {
         );
         let style = self.nodes[index].style.clone();
         if self.nodes[index].leaf {
+            self.nodes[index].layout_inputs.push(inputs);
             let measured_size = self.nodes[index].measured_size;
             return compute_leaf_layout_with_context(
                 inputs,

@@ -197,14 +197,26 @@ pub(super) fn align_and_position_item(
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
         height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
     };
-    let intrinsic_available_width = if position == Position::Absolute {
-        grid_area_minus_item_margins_size.width
-            - inset_horizontal.start.unwrap_or(0.0)
-            - inset_horizontal.end.unwrap_or(0.0)
+    // Absolute children are measured in the space remaining after both their
+    // margins and definite insets. Keep this contract for intrinsic probes,
+    // the two-axis auto-size measurement, and final layout. The full grid area
+    // remains the containing block used to resolve percentages.
+    let available_size = if position == Position::Absolute {
+        Size {
+            width: grid_area_minus_item_margins_size
+                .width
+                .maybe_sub(inset_horizontal.start)
+                .maybe_sub(inset_horizontal.end),
+            height: grid_area_minus_item_margins_size
+                .height
+                .maybe_sub(inset_vertical.start)
+                .maybe_sub(inset_vertical.end),
+        }
+        .map(|size| f32_max(size, 0.0))
     } else {
-        grid_area_minus_item_margins_size.width
+        grid_area_minus_item_margins_size
     };
-    let intrinsic_available_space = AvailableSpace::Definite(f32_max(intrinsic_available_width, 0.0));
+    let intrinsic_available_space = AvailableSpace::Definite(f32_max(available_size.width, 0.0));
     let intrinsic_inputs = LayoutInput {
         run_mode: RunMode::ComputeSize,
         sizing_mode: SizingMode::InherentSize,
@@ -217,7 +229,7 @@ pub(super) fn align_and_position_item(
         parent_writing_mode,
         available_space: Size {
             width: intrinsic_available_space,
-            height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
+            height: AvailableSpace::Definite(available_size.height),
         },
         vertical_margins_are_collapsible: Line::FALSE,
     };
@@ -341,7 +353,7 @@ pub(super) fn align_and_position_item(
                 Size { width, height },
                 grid_area_size.map(Option::Some),
                 parent_writing_mode,
-                grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+                available_size.map(AvailableSpace::Definite),
                 SizingMode::InherentSize,
                 Line::FALSE,
             ),
@@ -357,7 +369,7 @@ pub(super) fn align_and_position_item(
             size,
             grid_area_size.map(Option::Some),
             parent_writing_mode,
-            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            available_size.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
         ),
