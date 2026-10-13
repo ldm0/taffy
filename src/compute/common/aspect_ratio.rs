@@ -54,6 +54,19 @@ impl ResolvedAxisConstraints {
 }
 
 impl ResolvedSizeConstraints {
+    /// Merge measured width candidates with authored numeric constraints before
+    /// choosing a used size. Keep source ordering so an authored minimum wins
+    /// over a smaller maximum, including when either one is intrinsic.
+    pub(crate) fn with_intrinsic_width(mut self, intrinsic: super::intrinsic_size::IntrinsicWidthConstraints) -> Self {
+        self.size.width = intrinsic.preferred.or(self.size.width);
+        if intrinsic.preferred.is_some() {
+            self.aspect_ratio_applied.width = intrinsic.applied_aspect_ratio;
+        }
+        (self.min_size.width, self.max_size.width) =
+            self.constraint_sources.width.resolve(intrinsic.min, intrinsic.max, None);
+        self
+    }
+
     /// Return source-preserving constraints for the logical block axis.
     pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
         writing_mode.to_logical(self.constraint_sources).block_size

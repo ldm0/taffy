@@ -307,7 +307,7 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_used_width_inputs(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -366,7 +366,7 @@ where
     /// result internally; only its measurement projection crosses this seam.
     fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
         debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let resolved = crate::compute::resolve_intrinsic_width_inputs_with_provenance(self, node_id, inputs);
+        let resolved = crate::compute::resolve_used_width_inputs(self, node_id, inputs);
         let inputs = resolved.inputs;
         let intrinsic_dependency = resolved.depends_on_block_constraints;
         let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
@@ -1311,6 +1311,126 @@ mod tests {
         assert!(ratio_sized.applied_aspect_ratio);
         assert_eq!(externally_sized.size.width, 70.0);
         assert!(!externally_sized.applied_aspect_ratio);
+    }
+
+    #[test]
+    fn intrinsic_width_candidates_merge_authored_limits_before_height_measurement() {
+        use crate::BoxSizing;
+
+        let cases = [
+            (Dimension::auto(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
+            (Dimension::max_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 240.0),
+            (Dimension::length(200.0), Dimension::min_content(), BoxSizing::BorderBox, 0.0, 200.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::ContentBox, 10.0, 170.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 10.0, 150.0),
+        ];
+        for (min, max, box_sizing, padding, expected) in cases {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy
+                .new_leaf(Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                    min_size: Size { width: min, height: Dimension::auto() },
+                    max_size: Size { width: max, height: Dimension::auto() },
+                    padding: Rect::length(padding),
+                    box_sizing,
+                    ..Style::default()
+                })
+                .unwrap();
+            let mut layout_tree = TaffyView {
+                taffy: &mut taffy,
+                measure_function: |known: Size<Option<f32>>, available: Size<AvailableSpace>, _, _, _| {
+                    let width = known.width.unwrap_or(match available.width {
+                        AvailableSpace::MinContent => 80.0,
+                        AvailableSpace::MaxContent => 240.0,
+                        AvailableSpace::Definite(limit) => limit.clamp(80.0, 240.0),
+                    });
+                    Size { width, height: (240.0 / width).ceil() * 10.0 }
+                },
+            };
+            let input = LayoutInput {
+                run_mode: RunMode::ComputeSize,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
+                axis: RequestedAxis::Vertical,
+                parent_size: Size { width: Some(150.0), height: None },
+                available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
+                ..LayoutInput::HIDDEN
+            };
+            let result = layout_tree.compute_child_size(node, input);
+            assert_eq!(result.size.width, expected, "min={min:?}, max={max:?}, box-sizing={box_sizing:?}");
+            assert_eq!(result.size.height, (240.0 / (expected - padding * 2.0)).ceil() * 10.0 + padding * 2.0);
+            let candidates = crate::compute::measure_intrinsic_width_constraints(&mut layout_tree, node, input);
+            assert_eq!(candidates.preferred, Some(240.0 + padding * 2.0), "raw max-content must remain unconstrained");
+        }
+    }
+
+    #[test]
+    fn intrinsic_width_resolution_preserves_parent_fixed_sizes_and_content_queries() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                min_size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                max_size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                ..Style::default()
+            })
+            .unwrap();
+        let mut layout_tree = TaffyView {
+            taffy: &mut taffy,
+            measure_function: |known: Size<Option<f32>>, _, _, _, _| Size {
+                width: known.width.unwrap_or(240.0),
+                height: 10.0,
+            },
+        };
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            known_dimensions: Size { width: Some(120.0), height: None },
+            parent_size: Size { width: Some(150.0), height: None },
+            ..LayoutInput::HIDDEN
+        };
+        assert_eq!(layout_tree.compute_child_size(node, input).size.width, 120.0);
+        let intrinsic = LayoutInput {
+            known_dimensions: Size::NONE,
+            sizing_mode: SizingMode::ContentSize,
+            available_space: Size::MAX_CONTENT,
+            ..input
+        };
+        assert_eq!(layout_tree.compute_child_size(node, intrinsic).size.width, 240.0);
+    }
+
+    #[test]
+    fn intrinsic_width_preferred_source_preserves_aspect_ratio_provenance() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::stretch(), height: Dimension::length(40.0) },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            parent_size: Size { width: Some(150.0), height: None },
+            available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
+            ..LayoutInput::HIDDEN
+        };
+        assert_eq!(taffy.as_layout_tree().compute_child_size(node, input).size.width, 150.0);
+
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
+                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let result = taffy.as_layout_tree().compute_child_size(node, input);
+        assert_eq!(result.size.width, 80.0);
+        assert!(result.applied_aspect_ratio);
     }
 
     /// Test that adding `add_child()` works

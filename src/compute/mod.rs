@@ -67,8 +67,10 @@ use crate::{CacheTree, MaybeMath, MaybeResolve, RequestedAxis};
 
 use self::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 pub use self::common::intrinsic_size::{
-    resolve_intrinsic_width_inputs, resolve_intrinsic_width_inputs_with_provenance, ResolvedIntrinsicWidthInputs,
+    measure_intrinsic_width_constraints, resolve_intrinsic_width_inputs,
+    resolve_intrinsic_width_inputs_with_provenance, IntrinsicWidthConstraints, ResolvedIntrinsicWidthInputs,
 };
+pub use self::common::used_size::{resolve_used_width_inputs, ResolvedWidthInputs};
 
 /// Compute layout for the root node in the tree
 pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, available_space: Size<AvailableSpace>) {
@@ -76,7 +78,7 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     // A block root only falls back to filling definite available space when
     // its preferred width is auto. Resolve intrinsic sizing keywords before
     // that fallback so they remain explicit used sizes at the root seam.
-    let root_inputs = resolve_intrinsic_width_inputs(
+    let root_inputs = resolve_used_width_inputs(
         tree,
         root,
         LayoutInput {
@@ -92,7 +94,8 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             available_space,
             vertical_margins_are_collapsible: Line::FALSE,
         },
-    );
+    )
+    .inputs;
     let mut known_dimensions = root_inputs.known_dimensions;
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
 

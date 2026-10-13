@@ -97,9 +97,10 @@ fn resolve_intrinsic_width_value(
 ///
 /// Numeric and percentage components are resolved by the formatting-context
 /// algorithm that owns their containing block. These fields contain only the
-/// values that required intrinsic content measurement (or `stretch`).
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct IntrinsicWidthConstraints {
+/// values that required intrinsic content measurement (or `stretch`), including
+/// their preferred-ratio transfers. They remain candidates until used sizing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IntrinsicWidthConstraints {
     /// Intrinsic component of `width`.
     pub preferred: Option<f32>,
     /// Intrinsic component of `min-width`.
@@ -109,6 +110,8 @@ pub(crate) struct IntrinsicWidthConstraints {
     /// Whether any measured contribution changes with the containing block's
     /// block-size.
     pub depends_on_block_constraints: bool,
+    /// Whether the preferred width was transferred from the block axis.
+    pub applied_aspect_ratio: bool,
 }
 
 /// Content-derived constraints for one logical block axis.
@@ -323,56 +326,49 @@ pub(crate) fn resolve_intrinsic_width_constraints(
         depends_on_block_constraints: preferred.depends_on_block_constraints
             || min.depends_on_block_constraints
             || max.depends_on_block_constraints,
+        applied_aspect_ratio: false,
     }
 }
 
-/// Resolve intrinsic width/min-width/max-width values on a node before its
-/// formatting-context algorithm consumes `known_dimensions`.
+/// Compatibility entry point for resolving a used width at the tree seam.
 ///
-/// This is public for custom [`LayoutPartialTree`] implementations that
-/// dispatch Taffy's low-level algorithms themselves. It is a pure, pass-local
-/// sizing step: recursive measurements use `SizingMode::ContentSize` and the
-/// existing tree cache.
+/// Intrinsic measurements are candidates, not fixed dimensions. The shared
+/// used-size resolver merges them with numeric constraints before producing
+/// `known_dimensions`. New integrations can call
+/// [`crate::compute::resolve_used_width_inputs`] directly.
 pub fn resolve_intrinsic_width_inputs(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
     inputs: LayoutInput,
 ) -> LayoutInput {
-    resolve_intrinsic_width_inputs_with_provenance(tree, node_id, inputs).inputs
+    super::used_size::resolve_used_width_inputs(tree, node_id, inputs).inputs
 }
 
-/// Resolved input for an intrinsic sizing operation and the provenance needed
-/// by the node sizing boundary.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ResolvedIntrinsicWidthInputs {
-    /// Layout input with intrinsic inline-size keywords resolved into a known
-    /// border-box width.
-    pub inputs: LayoutInput,
-    /// Whether resolving those keywords measured content whose inline
-    /// contribution depends on the containing block's block-size.
-    pub depends_on_block_constraints: bool,
-    /// Whether resolving the preferred inline size synthesized it from the
-    /// block axis through the node's preferred aspect ratio.
-    pub applied_aspect_ratio: bool,
-}
+/// Compatibility name for the result of shared used-width resolution.
+pub type ResolvedIntrinsicWidthInputs = super::used_size::ResolvedWidthInputs;
 
-/// Resolve intrinsic inline-size keywords while retaining dependency
-/// provenance from recursive content measurements.
-///
-/// Browser integrations that implement [`LayoutPartialTree`] directly should
-/// use this entry point before [`crate::compute_cached_size`], so a resolved
-/// `known_dimensions.width` does not erase the dependency that produced it.
+/// Compatibility entry point retaining intrinsic measurement provenance.
 pub fn resolve_intrinsic_width_inputs_with_provenance(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
-    mut inputs: LayoutInput,
+    inputs: LayoutInput,
 ) -> ResolvedIntrinsicWidthInputs {
+    super::used_size::resolve_used_width_inputs(tree, node_id, inputs)
+}
+
+/// Measure preferred/minimum/maximum width candidates without assigning a
+/// final width or clamping raw content contributions to authored limits.
+///
+/// All values are border-box sizes. Numeric and percentage constraints remain
+/// the responsibility of the shared used-size stage. Recursive content probes
+/// use `ContentSize`, keeping the original intrinsic contribution available.
+pub fn measure_intrinsic_width_constraints(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
+    inputs: LayoutInput,
+) -> IntrinsicWidthConstraints {
     if inputs.sizing_mode != SizingMode::InherentSize {
-        return ResolvedIntrinsicWidthInputs {
-            inputs,
-            depends_on_block_constraints: false,
-            applied_aspect_ratio: false,
-        };
+        return IntrinsicWidthConstraints::default();
     }
 
     let percentage_basis = inputs.constraint_space(tree.get_writing_mode(node_id)).margin_padding_percentage_basis();
@@ -429,9 +425,10 @@ pub fn resolve_intrinsic_width_inputs_with_provenance(
     let min_size = transferred_min_width.or(intrinsic.min);
     let max_size = transferred_max_width.or(intrinsic.max);
 
-    inputs.known_dimensions.width = inputs.known_dimensions.width.or(preferred).maybe_clamp(min_size, max_size);
-    ResolvedIntrinsicWidthInputs {
-        inputs,
+    IntrinsicWidthConstraints {
+        preferred,
+        min: min_size,
+        max: max_size,
         depends_on_block_constraints: intrinsic.depends_on_block_constraints,
         applied_aspect_ratio,
     }
