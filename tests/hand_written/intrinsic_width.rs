@@ -263,6 +263,37 @@ fn auto_grid_tracks_include_intrinsic_item_minimum_widths() {
 }
 
 #[test]
+fn intrinsic_grid_item_minimum_is_applied_before_measuring_its_row_height() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: length(0.0), height: auto() },
+                min_size: Size { width: Dimension::max_content(), height: auto() },
+                ..Default::default()
+            },
+            text_context(),
+        )
+        .unwrap();
+    let next = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(200.0), height: auto() },
+                grid_template_columns: vec![auto(), length(100.0)],
+                ..Default::default()
+            },
+            &[item, next],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 240.0, height: 10.0 });
+    assert_eq!(tree.layout(next).unwrap().location.x, 240.0);
+    assert_eq!(tree.layout(grid).unwrap().size.height, 10.0);
+}
+
+#[test]
 fn auto_grid_tracks_do_not_shrink_intrinsic_minimums_to_a_smaller_preferred_width() {
     for (minimum, expected) in [(Dimension::min_content(), 160.0), (Dimension::max_content(), 240.0)] {
         let (item, next_column) = grid_track_with_intrinsic_minimum(Dimension::length(0.0), minimum);
