@@ -253,6 +253,52 @@ fn intrinsic_grid_tracks_include_explicit_intrinsic_item_widths() {
     assert_eq!(intrinsic_grid_track_width(Dimension::max_content()), (240.0, 240.0),);
 }
 
+#[test]
+fn auto_grid_tracks_include_intrinsic_item_minimum_widths() {
+    for (minimum, expected) in [(Dimension::min_content(), 160.0), (Dimension::max_content(), 240.0)] {
+        let (item, next_column) = grid_track_with_intrinsic_minimum(Dimension::auto(), minimum);
+        assert_eq!(item, expected);
+        assert_eq!(next_column, expected, "the auto track must include the authored minimum");
+    }
+}
+
+#[test]
+fn auto_grid_tracks_do_not_shrink_intrinsic_minimums_to_a_smaller_preferred_width() {
+    for (minimum, expected) in [(Dimension::min_content(), 160.0), (Dimension::max_content(), 240.0)] {
+        let (item, next_column) = grid_track_with_intrinsic_minimum(Dimension::length(0.0), minimum);
+        assert_eq!(item, expected);
+        assert_eq!(next_column, expected, "the minimum must also constrain the track contribution");
+    }
+}
+
+fn grid_track_with_intrinsic_minimum(width: Dimension, min_width: Dimension) -> (f32, f32) {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width, height: Dimension::length(20.0) },
+                min_size: Size { width: min_width, height: Dimension::auto() },
+                ..Default::default()
+            },
+            text_context(),
+        )
+        .unwrap();
+    let next = tree.new_leaf(Style::default()).unwrap();
+    let grid = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+                grid_template_columns: vec![auto(), length(100.0)],
+                ..Default::default()
+            },
+            &[item, next],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+    (tree.layout(item).unwrap().size.width, tree.layout(next).unwrap().location.x)
+}
+
 fn flexible_intrinsic_item_width(mut item_style: Style, container_width: f32) -> f32 {
     let mut tree = new_test_tree();
     item_style.display = Display::Block;
