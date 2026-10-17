@@ -78,26 +78,34 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
     // A block root only falls back to filling definite available space when
     // its preferred width is auto. Resolve intrinsic sizing keywords before
     // that fallback so they remain explicit used sizes at the root seam.
-    let root_inputs = resolve_used_width_inputs(
-        tree,
-        root,
-        LayoutInput {
-            run_mode: RunMode::PerformLayout,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::Layout,
-            axis: RequestedAxis::Both,
-            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
-            known_dimensions: Size::NONE,
-            definite_dimensions: Size::NONE,
-            parent_size: available_space.into_options(),
-            parent_writing_mode: root_writing_mode,
-            available_space,
-            vertical_margins_are_collapsible: Line::FALSE,
-        },
-    )
-    .inputs;
-    let mut known_dimensions = root_inputs.known_dimensions;
+    let root_inputs = LayoutInput {
+        run_mode: RunMode::PerformLayout,
+        sizing_mode: SizingMode::InherentSize,
+        sizing_purpose: SizingPurpose::Layout,
+        axis: RequestedAxis::Both,
+        block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+        known_dimensions: Size::NONE,
+        definite_dimensions: Size::NONE,
+        parent_size: available_space.into_options(),
+        parent_writing_mode: root_writing_mode,
+        available_space,
+        vertical_margins_are_collapsible: Line::FALSE,
+    };
     let percentage_basis = root_inputs.constraint_space(root_writing_mode).margin_padding_percentage_basis();
+    let auto_width = {
+        let style = tree.get_core_container_style(root);
+        if style.is_block() && style.size().width.is_auto() {
+            available_space.width.into_option().map(|width| {
+                let margin = style.margin().resolve_or_zero(percentage_basis, |value, basis| tree.calc(value, basis));
+                (width - margin.horizontal_axis_sum()).max(0.0)
+            })
+        } else {
+            None
+        }
+    };
+    let root_inputs =
+        self::common::used_size::resolve_used_width_inputs_with_auto_width(tree, root, root_inputs, auto_width).inputs;
+    let mut known_dimensions = root_inputs.known_dimensions;
 
     #[cfg(feature = "block_layout")]
     {
