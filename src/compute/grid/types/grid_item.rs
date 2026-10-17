@@ -1,6 +1,7 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
+use crate::compute::common::intrinsic_size::measure_intrinsic_width_constraints;
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
@@ -584,9 +585,29 @@ impl GridItem {
             aspect_ratio: self.aspect_ratio,
             padding_border: padding_border_size,
         });
+        let resolved = if axis == AbstractAxis::Inline {
+            let intrinsic = measure_intrinsic_width_constraints(
+                tree,
+                self.node,
+                ChildLayoutInput::new(
+                    Size::NONE,
+                    grid_area_size,
+                    self.parent_writing_mode,
+                    grid_area_size.map(|size| size.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite)),
+                    SizingMode::InherentSize,
+                    Line::FALSE,
+                )
+                .into_measurement(crate::RequestedAxis::Horizontal),
+            );
+            self.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+            resolved.with_intrinsic_width(intrinsic)
+        } else {
+            resolved
+        };
         resolved
             .size
             .get(axis)
+            .map(|size| size.maybe_clamp(resolved.min_size.get(axis), resolved.max_size.get(axis)))
             .or_else(|| resolved.min_size.get(axis))
             .or_else(|| self.overflow.get(axis).maybe_into_automatic_min_size())
             .unwrap_or_else(|| {
