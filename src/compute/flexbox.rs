@@ -2988,26 +2988,13 @@ fn perform_absolute_layout_on_absolute_children(
         let cross_is_rtl = cross_axis_is_horizontal && constants.horizontal_direction.is_rtl();
         let main_axis_flex_start_reversed = constants.main_axis_flex_start_reversed;
         let cross_axis_flex_start_reversed = constants.cross_axis_flex_start_reversed;
-        let main_start_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_start(constants.dir)
-        };
-        let cross_start_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        };
-        let main_end_scrollbar_offset = if main_axis_flex_start_reversed {
-            constants.scrollbar_insets.main_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.main_end(constants.dir)
-        };
-        let cross_end_scrollbar_offset = if cross_axis_flex_start_reversed {
-            constants.scrollbar_insets.cross_start(constants.dir)
-        } else {
-            constants.scrollbar_insets.cross_end(constants.dir)
-        };
+        // Insets and gutters are physical edges. Flex-flow reversal only
+        // changes static alignment; it must not swap the left/right gutter
+        // when resolving explicit physical inset properties.
+        let main_start_scrollbar_offset = constants.scrollbar_insets.main_start(constants.dir);
+        let cross_start_scrollbar_offset = constants.scrollbar_insets.cross_start(constants.dir);
+        let main_end_scrollbar_offset = constants.scrollbar_insets.main_end(constants.dir);
+        let cross_end_scrollbar_offset = constants.scrollbar_insets.cross_end(constants.dir);
 
         // Apply main-axis alignment
         // let free_main_space = free_space.main(constants.dir) - resolved_margin.main_axis_sum(constants.dir);
