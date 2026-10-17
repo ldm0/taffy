@@ -97,6 +97,49 @@ fn intrinsic_min_and_max_clamp_preferred_width() {
 }
 
 #[test]
+fn auto_root_width_obeys_an_intrinsic_maximum_without_a_parent_supplied_width() {
+    let mut tree = new_test_tree();
+    let node = tree
+        .new_leaf_with_context(
+            Style {
+                max_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                ..Default::default()
+            },
+            text_context(),
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(node).unwrap().size.width, 160.0);
+}
+
+#[test]
+fn auto_block_width_obeys_an_intrinsic_maximum() {
+    assert_eq!(
+        layout_child(
+            Display::Block,
+            Style {
+                max_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                ..Default::default()
+            },
+        ),
+        160.0,
+    );
+}
+
+#[test]
+fn auto_block_width_with_an_intrinsic_minimum_can_still_fill_available_space() {
+    for minimum in [Dimension::min_content(), Dimension::max_content()] {
+        assert_eq!(
+            layout_child(
+                Display::Block,
+                Style { min_size: Size { width: minimum, height: Dimension::auto() }, ..Default::default() },
+            ),
+            300.0,
+        );
+    }
+}
+
+#[test]
 fn fit_content_and_stretch_apply_as_min_and_max_constraints() {
     for (constraint, expected) in [(Dimension::fit_content(), 240.0), (Dimension::stretch(), 300.0)] {
         assert_eq!(

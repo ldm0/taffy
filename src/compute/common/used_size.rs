@@ -2,7 +2,7 @@
 
 use super::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 use super::intrinsic_size::measure_intrinsic_width_constraints;
-use crate::tree::LayoutPartialTreeExt;
+use crate::tree::{ChildLayoutInput, LayoutPartialTreeExt, RequestedAxis};
 use crate::{
     BoxSizing, CoreStyle, LayoutInput, LayoutPartialTree, MaybeMath, MaybeResolve, ResolveOrZero, Size, SizingMode,
 };
@@ -70,17 +70,35 @@ pub fn resolve_used_width_inputs(
         padding_border,
     })
     .with_intrinsic_width(intrinsic);
+    drop(style);
 
-    inputs.known_dimensions.width = resolve_used_axis(
-        None,
-        resolved.size.width,
-        resolved.min_size.width,
-        resolved.max_size.width,
-        padding_border.width,
-    );
+    // An auto preferred size still needs its intrinsic min/max constraints.
+    // Measure the unconstrained auto size first; treating an intrinsic minimum
+    // itself as the preferred size would prevent the box from growing.
+    let mut depends_on_block_constraints = intrinsic.depends_on_block_constraints;
+    let preferred = resolved.size.width.or_else(|| {
+        let measured = tree.measure_child_size_with_metadata(
+            node_id,
+            ChildLayoutInput::new(
+                inputs.known_dimensions,
+                inputs.parent_size,
+                inputs.parent_writing_mode,
+                inputs.available_space,
+                SizingMode::ContentSize,
+                inputs.vertical_margins_are_collapsible,
+            )
+            .with_block_auto_behavior(inputs.block_auto_behavior),
+            RequestedAxis::Horizontal,
+        );
+        depends_on_block_constraints |= measured.depends_on_block_constraints;
+        Some(measured.size.width)
+    });
+
+    inputs.known_dimensions.width =
+        resolve_used_axis(None, preferred, resolved.min_size.width, resolved.max_size.width, padding_border.width);
     ResolvedWidthInputs {
         inputs,
-        depends_on_block_constraints: intrinsic.depends_on_block_constraints,
+        depends_on_block_constraints,
         applied_aspect_ratio: resolved.aspect_ratio_applied.width,
     }
 }
