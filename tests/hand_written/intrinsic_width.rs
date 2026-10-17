@@ -408,6 +408,42 @@ fn flex_basis_content_ignores_an_intrinsic_preferred_main_size() {
     );
 }
 
+#[test]
+fn content_flex_basis_includes_percentage_padding_from_the_containing_block() {
+    for container_width in [240.0, 300.0, 400.0] {
+        for percentage in [0.0, 0.05, 0.1, 0.2] {
+            for box_sizing in [BoxSizing::ContentBox, BoxSizing::BorderBox] {
+                let mut tree = new_test_tree();
+                let item = tree
+                    .new_leaf_with_context(
+                        Style {
+                            box_sizing,
+                            padding: Rect {
+                                left: percent(percentage),
+                                right: percent(percentage),
+                                top: length(0.0),
+                                bottom: length(0.0),
+                            },
+                            ..Default::default()
+                        },
+                        TestNodeContext::ahem_text("aaaa\u{200b}bbbb\u{200b}cccc".into(), WritingMode::Horizontal),
+                    )
+                    .unwrap();
+                let flex = tree
+                    .new_with_children(
+                        Style { size: Size { width: length(container_width), height: auto() }, ..Default::default() },
+                        &[item],
+                    )
+                    .unwrap();
+                tree.compute_layout_with_measure(flex, Size::MAX_CONTENT, test_measure_function).unwrap();
+                let size = tree.layout(item).unwrap().size;
+                assert_eq!(size.width, 120.0 + 2.0 * percentage * container_width);
+                assert_eq!(size.height, 10.0);
+            }
+        }
+    }
+}
+
 fn floated_keyword_width(width: Dimension) -> f32 {
     let mut tree = new_test_tree();
     let item = tree
