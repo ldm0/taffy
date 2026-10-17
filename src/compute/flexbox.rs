@@ -1099,7 +1099,26 @@ fn determine_flex_base_size(
 
         // Parent size for child sizing
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
-        let child_parent_size = Size::from_cross(dir, cross_axis_parent_size);
+        let consumes_parent_inline_size = {
+            let style = tree.get_core_container_style(child.node);
+            [
+                style.padding().map(|value| value.into_raw()),
+                style.border().map(|value| value.into_raw()),
+                style.margin().map(|value| value.into_raw()),
+            ]
+            .into_iter()
+            .any(|rect| [rect.left, rect.right, rect.top, rect.bottom].into_iter().any(|value| value.uses_percentage()))
+        };
+        // Content sizing makes the preferred main size indefinite, but a
+        // percentage box model still consumes the containing block's inline
+        // size. Keep that basis separate from max-content available space.
+        // Otherwise retain the indefinite input so equivalent content probes
+        // can continue sharing their cache entries.
+        let child_parent_size = if consumes_parent_inline_size {
+            constants.node_inner_size
+        } else {
+            Size::from_cross(dir, cross_axis_parent_size)
+        };
 
         // Available space for child sizing
         // Min/max sizes transferred through the aspect ratio are taken into account here
