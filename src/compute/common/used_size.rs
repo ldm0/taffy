@@ -28,7 +28,18 @@ pub struct ResolvedWidthInputs {
 pub fn resolve_used_width_inputs(
     tree: &mut impl LayoutPartialTree,
     node_id: crate::NodeId,
+    inputs: LayoutInput,
+) -> ResolvedWidthInputs {
+    resolve_used_width_inputs_with_auto_width(tree, node_id, inputs, None)
+}
+
+/// Preserve an automatic width selected by the owning formatting context,
+/// while still applying authored intrinsic bounds before it becomes fixed.
+pub(crate) fn resolve_used_width_inputs_with_auto_width(
+    tree: &mut impl LayoutPartialTree,
+    node_id: crate::NodeId,
     mut inputs: LayoutInput,
+    auto_width: Option<f32>,
 ) -> ResolvedWidthInputs {
     if inputs.sizing_mode != SizingMode::InherentSize || inputs.known_dimensions.width.is_some() {
         return ResolvedWidthInputs { inputs, depends_on_block_constraints: false, applied_aspect_ratio: false };
@@ -76,7 +87,7 @@ pub fn resolve_used_width_inputs(
     // Measure the unconstrained auto size first; treating an intrinsic minimum
     // itself as the preferred size would prevent the box from growing.
     let mut depends_on_block_constraints = intrinsic.depends_on_block_constraints;
-    let preferred = resolved.size.width.or_else(|| {
+    let preferred = resolved.size.width.or(auto_width).or_else(|| {
         let measured = tree.measure_child_size_with_metadata(
             node_id,
             ChildLayoutInput::new(

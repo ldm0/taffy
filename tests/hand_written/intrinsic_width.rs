@@ -113,6 +113,38 @@ fn auto_root_width_obeys_an_intrinsic_maximum_without_a_parent_supplied_width() 
 }
 
 #[test]
+fn auto_block_root_retains_stretching_before_intrinsic_bounds_are_applied() {
+    for (minimum, maximum, expected) in [
+        (Dimension::min_content(), Dimension::auto(), 300.0),
+        (Dimension::max_content(), Dimension::auto(), 300.0),
+        (Dimension::auto(), Dimension::stretch(), 300.0),
+        (Dimension::auto(), Dimension::min_content(), 160.0),
+        (Dimension::auto(), Dimension::max_content(), 240.0),
+        (Dimension::max_content(), Dimension::min_content(), 240.0),
+    ] {
+        let mut tree = new_test_tree();
+        let node = tree
+            .new_leaf_with_context(
+                Style {
+                    display: Display::Block,
+                    min_size: Size { width: minimum, height: auto() },
+                    max_size: Size { width: maximum, height: auto() },
+                    ..Default::default()
+                },
+                text_context(),
+            )
+            .unwrap();
+        tree.compute_layout_with_measure(
+            node,
+            Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::MaxContent },
+            test_measure_function,
+        )
+        .unwrap();
+        assert_eq!(tree.layout(node).unwrap().size.width, expected, "{minimum:?} / {maximum:?}");
+    }
+}
+
+#[test]
 fn auto_block_width_obeys_an_intrinsic_maximum() {
     assert_eq!(
         layout_child(
