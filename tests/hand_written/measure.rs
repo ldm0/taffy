@@ -239,7 +239,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, custom_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, custom_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 100.0);

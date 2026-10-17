@@ -260,6 +260,8 @@ impl LayoutInput {
 pub(crate) struct ChildLayoutInput {
     /// Child border-box dimensions that are already known.
     pub known_dimensions: Size<Option<f32>>,
+    /// Known dimensions that descendants may use as percentage bases.
+    pub definite_dimensions: Size<Option<f32>>,
     /// Physical containing-block dimensions used to resolve child percentages.
     pub parent_size: Size<Option<f32>>,
     /// Writing mode that establishes the containing block's logical axes.
@@ -287,6 +289,7 @@ impl ChildLayoutInput {
     ) -> Self {
         Self {
             known_dimensions,
+            definite_dimensions: known_dimensions,
             parent_size,
             parent_writing_mode,
             available_space,
@@ -294,6 +297,14 @@ impl ChildLayoutInput {
             block_auto_behavior: AutoSizeBehavior::FitContent,
             vertical_margins_are_collapsible,
         }
+    }
+
+    /// Keep content-derived dimensions indefinite through nested layout.
+    #[inline(always)]
+    pub fn with_definiteness(mut self, definite: Size<bool>) -> Self {
+        self.definite_dimensions =
+            self.known_dimensions.zip_map(definite, |value, is_definite| value.filter(|_| is_definite));
+        self
     }
 
     /// Set the containing formatting context's block-axis auto behavior.
@@ -313,7 +324,7 @@ impl ChildLayoutInput {
             axis,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,
@@ -331,7 +342,7 @@ impl ChildLayoutInput {
             axis: RequestedAxis::Both,
             block_auto_behavior: self.block_auto_behavior,
             known_dimensions: self.known_dimensions,
-            definite_dimensions: self.known_dimensions,
+            definite_dimensions: self.definite_dimensions,
             parent_size: self.parent_size,
             parent_writing_mode: self.parent_writing_mode,
             available_space: self.available_space,

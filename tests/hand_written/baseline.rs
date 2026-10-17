@@ -57,7 +57,7 @@ mod baseline {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(root, Size::MAX_CONTENT, baseline_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(root, Size::MAX_CONTENT, baseline_measure_function).unwrap();
 
         let layout_a = taffy.layout(child_a).unwrap();
         let layout_b = taffy.layout(child_b).unwrap();
@@ -103,7 +103,7 @@ mod baseline {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(root, Size::MAX_CONTENT, baseline_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(root, Size::MAX_CONTENT, baseline_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child_a).unwrap().location.y, 0.0);
         assert_eq!(taffy.layout(child_b).unwrap().location.y, 0.0);

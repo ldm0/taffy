@@ -155,7 +155,7 @@ fn mixed_benchmark(c: &mut Criterion) {
                     },
                     |(mut taffy, root)| {
                         taffy
-                            .compute_layout_with_measure(
+                            .compute_layout_with_measure_output(
                                 root,
                                 Size::MAX_CONTENT,
                                 |inputs, _node_id, node_context, style| {

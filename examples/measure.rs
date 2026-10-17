@@ -54,7 +54,7 @@ fn main() -> Result<(), taffy::TaffyError> {
     )?;
 
     // Compute layout and print result
-    taffy.compute_layout_with_measure(
+    taffy.compute_layout_with_measure_output(
         root,
         Size::MAX_CONTENT,
         // Note: this closure is a FnMut closure and can be used to borrow external context for the duration of layout

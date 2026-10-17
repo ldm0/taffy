@@ -15,6 +15,58 @@ mod adversarial_styles {
         Size { width: AvailableSpace::Definite(size), height: AvailableSpace::Definite(size) }
     }
 
+    /// Finite inputs can round a track's remaining growth to zero while the
+    /// growability predicate still includes it. Other tracks must still receive
+    /// the remaining space, even when distribution has an iteration bound.
+    #[test]
+    fn finite_grid_track_distribution_preserves_remaining_space() {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let first = tree.new_leaf(Style::default()).unwrap();
+        let second = tree.new_leaf(Style::default()).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: Size { width: length(2000.0), height: auto() },
+                    grid_template_columns: vec![
+                        minmax(length(173.68802), length(993.3)),
+                        minmax(length(0.0), length(3000.0)),
+                    ],
+                    ..Default::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        let first_width = tree.layout(first).unwrap().size.width;
+        let second_width = tree.layout(second).unwrap().size.width;
+        assert!((first_width - 993.3).abs() < 0.001, "first track: {first_width}");
+        assert!((second_width - 1006.7).abs() < 0.001, "second track: {second_width}");
+        assert!((first_width + second_width - 2000.0).abs() < 0.002);
+    }
+
+    #[test]
+    fn fractional_grid_track_limits_terminate_with_finite_sizes() {
+        let mut tree = new_test_tree();
+        tree.disable_rounding();
+        let child = tree.new_leaf(Style::default()).unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: Size { width: length(1000.0), height: length(100.0) },
+                    grid_template_columns: vec![minmax(percent(0.06879453), percent(0.20244017))],
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        let width = tree.layout(child).unwrap().size.width;
+        assert!((width - 202.44017).abs() < 0.001, "track width: {width}");
+    }
+
     /// A `NaN` flex factor makes every comparison in the "find the size of an fr" algorithm false,
     /// which used to prevent that algorithm from ever finding a valid hypothetical fr size.
     #[test]

@@ -454,16 +454,16 @@ pub fn compute_flexbox_layout(
     debug_log!("FLEX:", dbg:style.flex_direction());
     drop(style);
 
-    // Normalize the definiteness flags: they only apply to dimensions which were passed in as known
-    // by the parent. Dimensions resolved from the node's own style are always definite.
-    let known_dimensions_are_definite = inputs
-        .known_dimensions_are_definite
-        .zip_map(known_dimensions, |is_definite, known_dimension| is_definite || known_dimension.is_none());
+    // Preserve the parent's indefinite content-derived sizes; dimensions
+    // resolved from this node's own style are definite per flexbox §9.8.
+    let definite_dimensions = known_dimensions
+        .zip_map(styled_based_known_dimensions, |incoming, styled| if incoming.is_none() { styled } else { None })
+        .or(inputs.definite_dimensions);
 
     compute_preliminary(
         tree,
         node,
-        LayoutInput { known_dimensions: styled_based_known_dimensions, known_dimensions_are_definite, ..inputs },
+        LayoutInput { known_dimensions: styled_based_known_dimensions, definite_dimensions, ..inputs },
     )
     .with_applied_aspect_ratio(applied_aspect_ratio)
 }
@@ -734,6 +734,8 @@ fn compute_constants(
 
     let node_outer_size = known_dimensions;
     let node_inner_size = node_outer_size.maybe_sub(content_box_inset.sum_axes());
+    let known_dimensions_are_definite =
+        inputs.definite_dimensions.zip_map(known_dimensions, |definite, known| known.is_none() || definite.is_some());
     let known_main_size_is_definite = known_dimensions_are_definite.main(dir);
     let has_definite_main_size = known_main_size_is_definite && known_dimensions.main(dir).is_some();
     let has_definite_cross_size = known_dimensions_are_definite.cross(dir) && known_dimensions.cross(dir).is_some();
@@ -1192,7 +1194,10 @@ fn determine_flex_base_size(
             // a main size transferred from an independently definite cross
             // size (including an align-self stretch size) through aspect-ratio.
             match used_flex_basis {
-                UsedFlexBasis::Resolved(flex_basis) => { child.flex_basis_is_definite = true; break 'flex_basis flex_basis; },
+                UsedFlexBasis::Resolved(flex_basis) => {
+                    child.flex_basis_is_definite = true;
+                    break 'flex_basis flex_basis;
+                }
                 UsedFlexBasis::Content => {
                     if let Some(content_ratio_size) = content_ratio_size {
                         child.flex_basis_is_definite = child_cross_size_is_definite;
@@ -1940,7 +1945,8 @@ fn determine_hypothetical_cross_size(
                     },
                     SizingMode::ContentSize,
                     Line::FALSE,
-                ),
+                )
+                .with_definiteness(item_definiteness(constants, child)),
                 constants.dir.cross_axis().into(),
             );
             child.depends_on_block_constraints |= measured.depends_on_block_constraints;
@@ -2018,7 +2024,8 @@ fn calculate_children_base_lines(
                     },
                     SizingMode::ContentSize,
                     Line::FALSE,
-                ),
+                )
+                .with_definiteness(item_definiteness(constants, child)),
             );
 
             let baseline = measured_size_and_baselines.first_baselines.y;
@@ -2511,7 +2518,8 @@ fn calculate_flex_item(
             constants.container_size.map(|s| s.into()),
             SizingMode::ContentSize,
             Line::FALSE,
-        ),
+        )
+        .with_definiteness(item_definiteness(constants, item)),
     );
     let LayoutOutput {
         size,

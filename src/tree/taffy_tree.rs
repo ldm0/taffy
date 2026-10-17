@@ -16,6 +16,7 @@ use crate::tree::{
 };
 use crate::util::debug::{debug_log, debug_log_node};
 use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
+use crate::ResolvedAspectRatio;
 
 use crate::compute::{
     compute_cached_layout, compute_cached_size, compute_hidden_layout,
@@ -279,7 +280,14 @@ impl<NodeContext> PrintTree for TaffyTree<NodeContext> {
 /// which makes the lifetimes of the context much more flexible.
 pub(crate) struct TaffyView<'t, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     /// A reference to the TaffyTree
     pub(crate) taffy: &'t mut TaffyTree<NodeContext>,
@@ -289,7 +297,14 @@ where
 
 impl<NodeContext, MeasureFunction> TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     #[inline(always)]
     /// Unified implementation that both `LayoutPartialTree::compute_child_layout`
@@ -342,17 +357,7 @@ where
                     let style = &tree.taffy.nodes[node_key].style;
                     let has_context = tree.taffy.nodes[node_key].has_context;
                     let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    let measure_function = |known_dimensions, available_space| {
-                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
-                    };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
-                        inputs,
-                        style,
-                        writing_mode,
-                        aspect_ratio,
-                        |_, _| 0.0,
-                        measure_function,
-                    )
+                    (tree.measure_function)(inputs, writing_mode, aspect_ratio, node_id, node_context, style)
                 }
             };
             output
@@ -391,17 +396,7 @@ where
                     let style = &tree.taffy.nodes[node_key].style;
                     let has_context = tree.taffy.nodes[node_key].has_context;
                     let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    let measure_function = |known_dimensions, available_space| {
-                        (tree.measure_function)(known_dimensions, available_space, node_id, node_context, style)
-                    };
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
-                        inputs,
-                        style,
-                        writing_mode,
-                        aspect_ratio,
-                        |_, _| 0.0,
-                        measure_function,
-                    )
+                    (tree.measure_function)(inputs, writing_mode, aspect_ratio, node_id, node_context, style)
                 }
             };
             output
@@ -415,7 +410,14 @@ where
 // TraversePartialTree impl for TaffyView
 impl<NodeContext, MeasureFunction> TraversePartialTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     type ChildIter<'a>
         = TaffyTreeChildIter<'a>
@@ -440,14 +442,28 @@ where
 
 // TraverseTree impl for TaffyView
 impl<NodeContext, MeasureFunction> TraverseTree for TaffyView<'_, NodeContext, MeasureFunction> where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput
 {
 }
 
 // LayoutPartialTree impl for TaffyView
 impl<NodeContext, MeasureFunction> LayoutPartialTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     type CoreContainerStyle<'a>
         = &'a Style
@@ -494,7 +510,14 @@ where
 
 impl<NodeContext, MeasureFunction> CacheTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
         self.taffy.nodes[node_id.into()].cache.get(input)
@@ -520,7 +543,14 @@ where
 #[cfg(feature = "block_layout")]
 impl<NodeContext, MeasureFunction> LayoutBlockContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     type BlockContainerStyle<'a>
         = &'a Style
@@ -555,7 +585,14 @@ where
 #[cfg(feature = "flexbox")]
 impl<NodeContext, MeasureFunction> LayoutFlexboxContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     type FlexboxContainerStyle<'a>
         = &'a Style
@@ -580,7 +617,14 @@ where
 #[cfg(feature = "grid")]
 impl<NodeContext, MeasureFunction> LayoutGridContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     type GridContainerStyle<'a>
         = &'a Style
@@ -611,7 +655,14 @@ where
 // RoundTree impl for TaffyView
 impl<NodeContext, MeasureFunction> RoundTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
 {
     #[inline(always)]
     fn get_unrounded_layout(&self, node: NodeId) -> Layout {
@@ -1007,15 +1058,66 @@ impl<NodeContext> TaffyTree<NodeContext> {
         Ok(self.nodes[node.into()].cache.is_empty())
     }
 
-    /// Updates the stored layout of the provided `node` and its children
+    /// Updates layout using a callback that returns the complete leaf layout,
+    /// including baselines, following the upstream measurement protocol.
+    pub fn compute_layout_with_measure_output<MeasureFunction>(
+        &mut self,
+        node_id: NodeId,
+        available_space: Size<AvailableSpace>,
+        mut measure_function: MeasureFunction,
+    ) -> Result<(), TaffyError>
+    where
+        MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    {
+        self.compute_layout_with_measure_internal(node_id, available_space, |inputs, _, _, node, context, style| {
+            measure_function(inputs, node, context, style)
+        })
+    }
+
+    /// Updates layout using a content-size callback. Taffy applies the node's
+    /// box model, resolved aspect ratio and writing mode around the callback.
     pub fn compute_layout_with_measure<MeasureFunction>(
+        &mut self,
+        node_id: NodeId,
+        available_space: Size<AvailableSpace>,
+        mut measure_function: MeasureFunction,
+    ) -> Result<(), TaffyError>
+    where
+        MeasureFunction:
+            FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId, Option<&mut NodeContext>, &Style) -> Size<f32>,
+    {
+        self.compute_layout_with_measure_internal(
+            node_id,
+            available_space,
+            |inputs, writing_mode, aspect_ratio, node, context, style| {
+                compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    inputs,
+                    style,
+                    writing_mode,
+                    aspect_ratio,
+                    |_, _| 0.0,
+                    |known, available| measure_function(known, available, node, context, style),
+                )
+            },
+        )
+    }
+
+    /// Run the common tree traversal with the selected leaf measurement adapter.
+    fn compute_layout_with_measure_internal<MeasureFunction>(
         &mut self,
         node_id: NodeId,
         available_space: Size<AvailableSpace>,
         measure_function: MeasureFunction,
     ) -> Result<(), TaffyError>
     where
-        MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+        MeasureFunction: FnMut(
+            LayoutInput,
+            WritingMode,
+            Option<ResolvedAspectRatio>,
+            NodeId,
+            Option<&mut NodeContext>,
+            &Style,
+        ) -> LayoutOutput,
     {
         let use_rounding = self.config.use_rounding;
         let mut taffy_view = TaffyView { taffy: self, measure_function };
@@ -1026,11 +1128,9 @@ impl<NodeContext> TaffyTree<NodeContext> {
         Ok(())
     }
 
-    /// Updates the stored layout of the provided `node` and its children
+    /// Updates the stored layout of the provided `node` and its children.
     pub fn compute_layout(&mut self, node: NodeId, available_space: Size<AvailableSpace>) -> Result<(), TaffyError> {
-        self.compute_layout_with_measure(node, available_space, |inputs, _, _, style| {
-            compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO)
-        })
+        self.compute_layout_with_measure(node, available_space, |_, _, _, _, _| Size::ZERO)
     }
 
     /// Prints a debug representation of the tree's layout
@@ -1044,7 +1144,16 @@ impl<NodeContext> TaffyTree<NodeContext> {
     pub(crate) fn as_layout_tree(&mut self) -> impl LayoutPartialTree + CacheTree + '_ {
         TaffyView {
             taffy: self,
-            measure_function: |inputs, _, _, style| compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO),
+            measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
+                compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    inputs,
+                    style,
+                    writing_mode,
+                    aspect_ratio,
+                    |_, _| 0.0,
+                    |_, _| Size::ZERO,
+                )
+            },
         }
     }
 }
@@ -1057,7 +1166,7 @@ mod tests {
     use crate::style::{Dimension, Display, FlexDirection, Overflow};
     use crate::style_helpers::*;
     use crate::util::sys;
-    use crate::{RequestedAxis, SizingMode, SizingPurpose};
+    use crate::{compute_leaf_layout, RequestedAxis, SizingMode, SizingPurpose};
 
     fn size_measure_function(
         inputs: LayoutInput,
@@ -1203,11 +1312,11 @@ mod tests {
     fn set_measure() {
         let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
         let node = taffy.new_leaf_with_context(Style::default(), Size { width: 200.0, height: 200.0 }).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 200.0);
 
         taffy.set_node_context(node, Some(Size { width: 100.0, height: 100.0 })).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
     }
 
@@ -1215,11 +1324,11 @@ mod tests {
     fn set_measure_of_previously_unmeasured_node() {
         let mut taffy: TaffyTree<Size<f32>> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 0.0);
 
         taffy.set_node_context(node, Some(Size { width: 100.0, height: 100.0 })).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, size_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
     }
 
@@ -1340,13 +1449,22 @@ mod tests {
                 .unwrap();
             let mut layout_tree = TaffyView {
                 taffy: &mut taffy,
-                measure_function: |known: Size<Option<f32>>, available: Size<AvailableSpace>, _, _, _| {
-                    let width = known.width.unwrap_or(match available.width {
-                        AvailableSpace::MinContent => 80.0,
-                        AvailableSpace::MaxContent => 240.0,
-                        AvailableSpace::Definite(limit) => limit.clamp(80.0, 240.0),
-                    });
-                    Size { width, height: (240.0 / width).ceil() * 10.0 }
+                measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
+                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                        inputs,
+                        style,
+                        writing_mode,
+                        aspect_ratio,
+                        |_, _| 0.0,
+                        |known, available| {
+                            let width = known.width.unwrap_or(match available.width {
+                                AvailableSpace::MinContent => 80.0,
+                                AvailableSpace::MaxContent => 240.0,
+                                AvailableSpace::Definite(limit) => limit.clamp(80.0, 240.0),
+                            });
+                            Size { width, height: (240.0 / width).ceil() * 10.0 }
+                        },
+                    )
                 },
             };
             let input = LayoutInput {
@@ -1379,9 +1497,15 @@ mod tests {
             .unwrap();
         let mut layout_tree = TaffyView {
             taffy: &mut taffy,
-            measure_function: |known: Size<Option<f32>>, _, _, _, _| Size {
-                width: known.width.unwrap_or(240.0),
-                height: 10.0,
+            measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
+                compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    inputs,
+                    style,
+                    writing_mode,
+                    aspect_ratio,
+                    |_, _| 0.0,
+                    |known, _| Size { width: known.width.unwrap_or(240.0), height: 10.0 },
+                )
             },
         };
         let input = LayoutInput {

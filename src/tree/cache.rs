@@ -130,7 +130,9 @@ impl From<&LayoutInput> for CacheKey {
             ) & NON_SIGN_BITS_MASK)
                 | extra_bits,
             parent_writing_mode: input.parent_writing_mode,
-            known_dimensions_are_definite: input.definite_dimensions.zip_map(input.known_dimensions, |def, kd| kd.is_none() || def.is_some()),
+            known_dimensions_are_definite: input
+                .definite_dimensions
+                .zip_map(input.known_dimensions, |def, kd| kd.is_none() || def.is_some()),
             sizing_mode: input.sizing_mode,
             sizing_purpose: input.sizing_purpose,
             block_auto_behavior: input.block_auto_behavior,
@@ -282,6 +284,7 @@ impl Cache {
         let key = CacheKey::from(input);
         for entry in self.measure_entries.iter().flatten() {
             if entry.key.kd_available_space == key.kd_available_space
+                && entry.key.known_dimensions_are_definite == key.known_dimensions_are_definite
                 && entry.key.inline_parent_size_and_axis() == key.inline_parent_size_and_axis()
                 && entry.key.parent_writing_mode == key.parent_writing_mode
                 && entry.key.sizing_mode == key.sizing_mode

@@ -450,13 +450,19 @@ pub fn compute_block_layout(
         }
     }
 
+    // A size resolved from this block's own style establishes a definite
+    // percentage basis, while a parent-supplied content size may remain indefinite.
+    let definite_dimensions = known_dimensions
+        .zip_map(styled_based_known_dimensions, |incoming, styled| if incoming.is_none() { styled } else { None })
+        .or(inputs.definite_dimensions);
+
     // Unwrap the block formatting context if one was passed, or else create a new one
     debug_log!("BLOCK");
     let output = match block_ctx {
         Some(inherited_bfc) if !establishes_new_bfc => compute_inner(
             tree,
             node_id,
-            LayoutInput { known_dimensions: styled_based_known_dimensions, ..inputs },
+            LayoutInput { known_dimensions: styled_based_known_dimensions, definite_dimensions, ..inputs },
             inherited_bfc,
         ),
         _ => {
@@ -465,7 +471,7 @@ pub fn compute_block_layout(
             compute_inner(
                 tree,
                 node_id,
-                LayoutInput { known_dimensions: styled_based_known_dimensions, ..inputs },
+                LayoutInput { known_dimensions: styled_based_known_dimensions, definite_dimensions, ..inputs },
                 &mut root_ctx,
             )
         }
@@ -554,7 +560,9 @@ fn compute_inner(
     };
     let percentage_basis_dimensions = Size {
         width: known_dimensions.width,
-        height: known_dimensions.height.filter(|_| inputs.known_dimensions_are_definite.height),
+        height: known_dimensions
+            .height
+            .filter(|_| inputs.known_dimensions.height.is_none() || inputs.definite_dimensions.height.is_some()),
     };
     let container_content_box_size = percentage_basis_dimensions
         .map_height(|height| tree.get_block_percentage_resolution_height(node_id, height))
