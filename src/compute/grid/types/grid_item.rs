@@ -1,7 +1,7 @@
 //! Contains GridItem used to represent a single grid item during layout
 use super::GridTrack;
 use crate::compute::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
-use crate::compute::common::intrinsic_size::measure_intrinsic_width_constraints;
+use crate::compute::common::intrinsic_size::{measure_intrinsic_width_constraints, IntrinsicWidthConstraints};
 use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{InBothAbsAxis, Line, Point, Rect, Size};
@@ -261,7 +261,7 @@ impl GridItem {
     /// The key thing that is being done here is applying stretch alignment, which is necessary to
     /// allow percentage sizes further down the tree to resolve properly in some cases
     fn known_dimensions(
-        &self,
+        &mut self,
         tree: &mut impl LayoutPartialTree,
         grid_area_size: Size<Option<f32>>,
     ) -> Size<Option<f32>> {
@@ -299,6 +299,8 @@ impl GridItem {
             aspect_ratio,
             padding_border: padding_border_size,
         });
+        let intrinsic = self.intrinsic_width_constraints(tree, grid_area_size);
+        let resolved = resolved.with_intrinsic_width(intrinsic);
         let inherent_size = resolved.size;
         let min_size = resolved.min_size;
         let max_size = resolved.max_size;
@@ -344,6 +346,30 @@ impl GridItem {
         let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
 
         Size { width, height }
+    }
+
+    /// Resolve authored intrinsic widths before either track contributions or
+    /// the opposite-axis measurement fixes the item's border-box width.
+    fn intrinsic_width_constraints(
+        &mut self,
+        tree: &mut impl LayoutPartialTree,
+        grid_area_size: Size<Option<f32>>,
+    ) -> IntrinsicWidthConstraints {
+        let intrinsic = measure_intrinsic_width_constraints(
+            tree,
+            self.node,
+            ChildLayoutInput::new(
+                Size::NONE,
+                grid_area_size,
+                self.parent_writing_mode,
+                grid_area_size.map(|size| size.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite)),
+                SizingMode::InherentSize,
+                Line::FALSE,
+            )
+            .into_measurement(crate::RequestedAxis::Horizontal),
+        );
+        self.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+        intrinsic
     }
 
     /// Returns the grid area's size in the specified axis when every spanned track has a definite fixed size.
@@ -586,20 +612,7 @@ impl GridItem {
             padding_border: padding_border_size,
         });
         let resolved = if axis == AbstractAxis::Inline {
-            let intrinsic = measure_intrinsic_width_constraints(
-                tree,
-                self.node,
-                ChildLayoutInput::new(
-                    Size::NONE,
-                    grid_area_size,
-                    self.parent_writing_mode,
-                    grid_area_size.map(|size| size.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite)),
-                    SizingMode::InherentSize,
-                    Line::FALSE,
-                )
-                .into_measurement(crate::RequestedAxis::Horizontal),
-            );
-            self.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+            let intrinsic = self.intrinsic_width_constraints(tree, grid_area_size);
             resolved.with_intrinsic_width(intrinsic)
         } else {
             resolved
