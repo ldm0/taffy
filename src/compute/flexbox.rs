@@ -2413,9 +2413,12 @@ fn align_flex_items_along_cross_axis(
                     max_baseline - child.alignment_baseline
                 }
             } else {
-                // Taffy does not yet synthesize vertical baselines, so use the
-                // flex-start fallback on a vertical cross axis.
-                if constants.cross_axis_flex_start_reversed {
+                // Preserve upstream's column baseline fallback. In a
+                // wrapping column the line itself establishes the horizontal
+                // baseline-group edge; reversing it again by RTL would shift
+                // narrower items inside that group.
+                let reverse_column_baseline = constants.cross_axis_start_reversed && !constants.is_wrap;
+                if constants.is_wrap_reverse ^ reverse_column_baseline {
                     free_space
                 } else {
                     0.0
