@@ -1436,7 +1436,11 @@ fn distribute_space_up_to_limits(
             .filter(|track| track_affected_property(track) + track.item_incurred_increase < track_limit(track))
             .filter(|track| track_is_affected(track))
             .map(|track| {
-                (track_limit(track) - track_affected_property(track) - track.item_incurred_increase)
+                // Match the rounded current size used by the growability
+                // predicate. Subtracting the two components separately can
+                // produce zero remaining growth while the track is still
+                // considered growable, leaving the distribution loop stuck.
+                (track_limit(track) - (track_affected_property(track) + track.item_incurred_increase))
                     / track_distribution_proportion(track)
             })
             .min_by(|a, b| a.total_cmp(b))
@@ -1457,4 +1461,36 @@ fn distribute_space_up_to_limits(
     }
 
     space_to_distribute
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::{MaxTrackSizingFunction, MinTrackSizingFunction};
+    use crate::style_helpers::TaffyAuto;
+    use core::cell::Cell;
+
+    #[test]
+    fn fractional_growth_limit_distribution_makes_progress() {
+        let mut track = GridTrack::new(MinTrackSizingFunction::AUTO, MaxTrackSizingFunction::AUTO);
+        track.base_size = 68.79453;
+        track.growth_limit = 202.44017;
+        let mut tracks = [track];
+        let limit_queries = Cell::new(0);
+        let remaining = distribute_space_up_to_limits(
+            200.0,
+            &mut tracks,
+            |_| true,
+            |_| 1.0,
+            |track| track.base_size,
+            |track| {
+                limit_queries.set(limit_queries.get() + 1);
+                assert!(limit_queries.get() <= 32, "distribution stopped making progress");
+                track.growth_limit
+            },
+        );
+        let track = &tracks[0];
+        assert!((track.base_size + track.item_incurred_increase - track.growth_limit).abs() < 0.001);
+        assert!((60.0..70.0).contains(&remaining));
+    }
 }
