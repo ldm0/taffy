@@ -17,7 +17,9 @@ use crate::tree::{
 };
 use crate::util::sys::{f32_max, Vec};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
-use crate::{AxisStaticEdge, BoxSizing, Direction};
+use crate::{AbsoluteAxis, AxisStaticEdge, BoxSizing, Direction};
+
+use super::common::aspect_ratio::{resolve_size_constraints, SizeConstraintInput, TransferredSizesMode};
 
 #[cfg(feature = "content_size")]
 use super::common::scrollable_overflow::compute_scrollable_overflow_contribution;
@@ -488,7 +490,8 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
     let area_height = area_size.height;
 
     let percentage_basis = parent_writing_mode.to_logical(area_size).inline_size;
-    let aspect_ratio = child_style.aspect_ratio();
+    let aspect_ratio = tree.get_resolved_aspect_ratio(candidate.node);
+    let item_writing_mode = tree.get_writing_mode(candidate.node);
     let margin = child_style
         .margin()
         .map(|margin| margin.resolve_to_option(percentage_basis, |val, basis| tree.calc(val, basis)));
@@ -506,34 +509,56 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
 
     // Compute known dimensions from min/max/inherent size styles
     let size_style = child_style.size();
-    let style_size = size_style
-        .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
-    let mut min_size = child_style
+    let raw_size =
+        size_style.maybe_resolve(area_size, |val, basis| tree.calc(val, basis)).maybe_add(box_sizing_adjustment);
+    let raw_min = child_style
         .min_size()
         .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment)
-        .or(padding_border_sum.map(Some))
-        .maybe_max(padding_border_sum);
-    let max_size = child_style
+        .maybe_add(box_sizing_adjustment);
+    let raw_max = child_style
         .max_size()
         .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
         .maybe_add(box_sizing_adjustment);
+    let constraints = resolve_size_constraints(SizeConstraintInput {
+        size: raw_size.maybe_clamp(raw_min, raw_max),
+        min_size: raw_min,
+        max_size: raw_max,
+        size_is_auto: size_style.map(|v| v.is_auto()),
+        writing_mode: item_writing_mode,
+        block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+        transferred_sizes_mode: TransferredSizesMode::Normal,
+        aspect_ratio,
+        padding_border: padding_border_sum,
+    });
+    let style_size = constraints.size;
+    let mut min_size = constraints.min_size.or(padding_border_sum.map(Some)).maybe_max(padding_border_sum);
+    let max_size = constraints.max_size;
     let mut known_dimensions = style_size.maybe_clamp(min_size, max_size);
 
     let is_replaced = child_style.is_replaced();
     let is_table = child_style.is_table();
     let item_direction = child_style.direction();
-    // Taffy only supports the `horizontal-tb` writing mode, so only the inline axis can be reversed.
-    // `auto` (`None`) behaves as `normal` for absolutely positioned boxes: it does not defer to the
-    // `*-items` properties of the containing block.
-    let justify_self =
-        child_style.justify_self().unwrap_or(AlignSelf::NORMAL).resolve_self_relative(item_direction, direction, true);
-    let align_self =
-        child_style.align_self().unwrap_or(AlignSelf::NORMAL).resolve_self_relative(item_direction, direction, false);
+    // `auto` behaves as `normal` and does not inherit the containing block's
+    // alignment. Resolve self-relative edges before mapping logical to physical axes.
+    let justify_axis =
+        if parent_writing_mode.is_horizontal() { AbsoluteAxis::Horizontal } else { AbsoluteAxis::Vertical };
+    let align_axis = justify_axis.other_axis();
+    let justify_self = child_style.justify_self().unwrap_or(AlignSelf::NORMAL).resolve_self_relative_in_writing_mode(
+        item_writing_mode,
+        item_direction,
+        parent_writing_mode,
+        direction,
+        justify_axis,
+    );
+    let align_self = child_style.align_self().unwrap_or(AlignSelf::NORMAL).resolve_self_relative_in_writing_mode(
+        item_writing_mode,
+        item_direction,
+        parent_writing_mode,
+        direction,
+        align_axis,
+    );
+    let (horizontal_alignment, vertical_alignment) =
+        if parent_writing_mode.is_horizontal() { (justify_self, align_self) } else { (align_self, justify_self) };
     let overflow = child_style.overflow();
     #[cfg(feature = "content_size")]
     let contain = child_style.contain();
@@ -558,10 +583,10 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
         inset: Line { start: left, end: right },
         margin: Line { start: margin.left, end: margin.right },
         static_position: static_position.x,
-        alignment: OofAlignment::from_resolved(justify_self),
-        safety: justify_self.safety,
-        is_inline: true,
-        reversed: direction.is_rtl(),
+        alignment: OofAlignment::from_resolved(horizontal_alignment),
+        safety: horizontal_alignment.safety,
+        is_inline: parent_writing_mode.is_horizontal(),
+        reversed: parent_writing_mode.is_axis_flow_reversed(AbsoluteAxis::Horizontal, direction),
         is_scroll_axis: container_overflow.x.is_scroll_container(),
     };
     let vertical = OofAxis {
@@ -569,10 +594,10 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
         inset: Line { start: top, end: bottom },
         margin: Line { start: margin.top, end: margin.bottom },
         static_position: static_position.y,
-        alignment: OofAlignment::from_resolved(align_self),
-        safety: align_self.safety,
-        is_inline: false,
-        reversed: false,
+        alignment: OofAlignment::from_resolved(vertical_alignment),
+        safety: vertical_alignment.safety,
+        is_inline: !parent_writing_mode.is_horizontal(),
+        reversed: parent_writing_mode.is_axis_flow_reversed(AbsoluteAxis::Vertical, direction),
         is_scroll_axis: container_overflow.y.is_scroll_container(),
     };
     let stretch_fit_size = Size { width: horizontal.stretch_fit_size(), height: vertical.stretch_fit_size() };
@@ -603,7 +628,9 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
             margin,
             SizingMode::ContentSize,
         );
-        known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        known_dimensions = known_dimensions
+            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+            .maybe_clamp(min_size, max_size);
     }
 
     // Resolve automatic sizes <https://www.w3.org/TR/css-position-3/#abspos-auto-size>
@@ -627,8 +654,13 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
             min_size.width = Some(f32_max(min_size.width.unwrap_or(0.0), stretch_fit_size.width));
         } else {
             known_dimensions.width = Some(stretch_fit_size.width);
-            known_dimensions =
-                known_dimensions.maybe_apply_aspect_ratio(stretch_aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(
+                    stretch_aspect_ratio,
+                    BoxSizing::BorderBox,
+                    padding_border_sum,
+                )
+                .maybe_clamp(min_size, max_size);
         }
     }
     if known_dimensions.height.is_none() && stretch_height {
@@ -636,8 +668,13 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
             min_size.height = Some(f32_max(min_size.height.unwrap_or(0.0), stretch_fit_size.height));
         } else {
             known_dimensions.height = Some(stretch_fit_size.height);
-            known_dimensions =
-                known_dimensions.maybe_apply_aspect_ratio(stretch_aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_with_box_sizing(
+                    stretch_aspect_ratio,
+                    BoxSizing::BorderBox,
+                    padding_border_sum,
+                )
+                .maybe_clamp(min_size, max_size);
         }
     }
 
@@ -664,6 +701,13 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
             Some(stretch_fit_size.width.max(min).min(max).maybe_clamp(min_size.width, max_size.width));
     }
 
+    // Fit-content establishes the inline size before ratio-dependent auto sizing.
+    // Use the resolved ratio (including a replaced element's natural ratio) in
+    // the border-box coordinate space of known_dimensions.
+    known_dimensions = known_dimensions
+        .maybe_apply_aspect_ratio_with_box_sizing(stretch_aspect_ratio, BoxSizing::BorderBox, padding_border_sum)
+        .maybe_clamp(min_size, max_size);
+
     let final_size = match (known_dimensions.width, known_dimensions.height) {
         (Some(width), Some(height)) => Size { width, height },
         _ => {
@@ -682,7 +726,10 @@ pub(crate) fn layout_oof_box<Tree: LayoutContainingBlock>(
 
     let layout_input = LayoutInput {
         known_dimensions: final_size.map(Some),
-        known_dimensions_are_definite: Size { width: true, height: style_size.height.is_some() || stretch_height },
+        known_dimensions_are_definite: Size {
+            width: true,
+            height: style_size.height.is_some() || stretch_height || size_style.height.is_stretch(),
+        },
         parent_size: area_size.map(Some),
         parent_writing_mode,
         available_space,
