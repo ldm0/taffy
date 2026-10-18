@@ -737,3 +737,24 @@ fn wrapped_column_stretch_cross_size_uses_definite_container_width_during_measur
         assert_eq!(tree.layout(second).unwrap().location.x, if wider_sibling { 156.0 } else { 100.0 });
     }
 }
+
+#[test]
+fn zero_flex_grow_does_not_add_a_positive_intrinsic_flex_fraction() {
+    let mut tree = TaffyTree::<()>::new();
+    let child = tree
+        .new_leaf(Style {
+            size: Size { width: length(200.0), height: auto() },
+            flex_basis: length(0.0),
+            flex_grow: 0.0,
+            ..Style::default()
+        })
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style { display: Display::Flex, size: Size { width: auto(), height: length(100.0) }, ..Style::default() },
+            &[child],
+        )
+        .unwrap();
+    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+    assert_eq!(tree.layout(root).unwrap().size.width, 0.0);
+}

@@ -1865,7 +1865,11 @@ fn determine_container_main_size(
                             // let flex_fraction = line_flex_fraction;
 
                             let flex_contribution = if item.content_flex_fraction > 0.0 {
-                                f32_max(1.0, item.flex_grow) * flex_fraction
+                                if item.flex_grow == 0.0 {
+                                    0.0
+                                } else {
+                                    f32_max(1.0, item.flex_grow) * flex_fraction
+                                }
                             } else if item.content_flex_fraction < 0.0 {
                                 let scaled_shrink_factor = f32_max(1.0, item.flex_shrink) * item.inner_flex_basis;
                                 if scaled_shrink_factor == 0.0 {
@@ -1876,7 +1880,10 @@ fn determine_container_main_size(
                             } else {
                                 0.0
                             };
-                            let size = item.flex_basis + flex_contribution + item.margin.main_axis_sum(constants.dir);
+                            let minimum = item.min_size.main(dir).unwrap_or(item.resolved_minimum_main_size);
+                            let size = (item.flex_basis + flex_contribution)
+                                .maybe_clamp(Some(minimum), item.max_size.main(dir))
+                                + item.margin.main_axis_sum(constants.dir);
                             if floor_by_largest_item {
                                 largest_item_size = f32_max(largest_item_size, size);
                             }
