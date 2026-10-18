@@ -53,9 +53,6 @@ struct FlexFlow {
     /// Whether flex-start lies at the physical high coordinate of the cross
     /// axis after applying `wrap-reverse`.
     cross_axis_flex_start_reversed: bool,
-    /// Whether the physical cross axis is reversed after combining its base
-    /// writing-mode direction with `wrap-reverse`.
-    cross_axis_reversed: bool,
 }
 
 impl FlexFlow {
@@ -95,7 +92,6 @@ impl FlexFlow {
         };
         let horizontal_axis_reversed = if main_is_horizontal { base_main_reversed } else { base_cross_reversed };
         let horizontal_direction = if horizontal_axis_reversed { Direction::Rtl } else { Direction::Ltr };
-        let cross_axis_reversed = authored_cross_reversed ^ (main_is_horizontal && base_cross_reversed);
 
         Self {
             direction,
@@ -105,7 +101,16 @@ impl FlexFlow {
             cross_axis_start_reversed: base_cross_reversed,
             main_axis_flex_start_reversed: base_main_reversed ^ authored_main_reversed,
             cross_axis_flex_start_reversed: base_cross_reversed ^ authored_cross_reversed,
-            cross_axis_reversed,
+        }
+    }
+
+    /// Project the flex start corner into physical scroll-origin axes.
+    #[cfg(feature = "content_size")]
+    fn scroll_origin_is_reversed(self) -> Size<bool> {
+        if self.direction.is_row() {
+            Size { width: self.main_axis_flex_start_reversed, height: self.cross_axis_flex_start_reversed }
+        } else {
+            Size { width: self.cross_axis_flex_start_reversed, height: self.main_axis_flex_start_reversed }
         }
     }
 }
@@ -755,7 +760,7 @@ fn compute_constants(
     let is_row = dir.is_row();
     let is_column = dir.is_column();
     let is_wrap = flex_wrap.is_multi_line();
-    let is_wrap_reverse = flow.cross_axis_reversed;
+    let is_wrap_reverse = flex_wrap.is_reverse();
     #[cfg(feature = "flexbox_balance")]
     let is_balance = flex_wrap.is_balance();
     #[cfg(feature = "flexbox_balance")]
@@ -2751,6 +2756,23 @@ fn align_flex_lines_per_align_content(flex_lines: &mut [FlexLine], constants: &A
     let free_space = constants.inner_container_size.cross(constants.dir) - total_cross_size - total_cross_axis_gap;
 
     let align_content_mode = apply_alignment_fallback(free_space, num_lines, constants.align_content);
+    // Default content distribution in a scrollable axis retains flex-start
+    // overflow. The lines remain reachable from the flex scroll origin.
+    #[cfg(feature = "content_size")]
+    let align_content_mode = if constants.is_scroll_container
+        && constants.align_content.safety == crate::AlignmentSafety::Default
+        && free_space <= 0.0
+        && matches!(
+            constants.align_content.keyword,
+            AlignContentKeyword::Stretch
+                | AlignContentKeyword::SpaceBetween
+                | AlignContentKeyword::SpaceAround
+                | AlignContentKeyword::SpaceEvenly
+        ) {
+        AlignContentKeyword::FlexStart
+    } else {
+        align_content_mode
+    };
 
     let align_line = |(i, line): (usize, &mut FlexLine)| {
         line.offset_cross =
@@ -2806,10 +2828,10 @@ fn calculate_flex_item(
     } = layout_output;
 
     let is_rtl_row = direction.is_row() && layout_direction.is_rtl();
-    let is_rtl_column = direction.is_column() && layout_direction.is_rtl();
+    let cross_start_reversed = constants.flow.cross_axis_start_reversed;
     let main_relative_inset = item.relative_inset.main(direction);
     let cross_relative_inset = item.relative_inset.cross(direction);
-    let effective_line_offset_cross = if is_rtl_column { 0.0 } else { line_offset_cross };
+    let effective_line_offset_cross = if cross_start_reversed { 0.0 } else { line_offset_cross };
 
     let offset_main = if is_rtl_row {
         *total_offset_main - item.offset_main - item.margin.main_end(direction) - main_relative_inset - size.width
@@ -2879,17 +2901,7 @@ fn calculate_flex_item(
 
     #[cfg(feature = "content_size")]
     {
-        let reversed = if direction.is_row() {
-            Size {
-                width: constants.flow.main_axis_flex_start_reversed,
-                height: constants.flow.cross_axis_start_reversed,
-            }
-        } else {
-            Size {
-                width: constants.flow.cross_axis_start_reversed,
-                height: constants.flow.main_axis_flex_start_reversed,
-            }
-        };
+        let reversed = constants.flow.scroll_origin_is_reversed();
         let contribution_location = Point {
             x: if reversed.width {
                 container_size.width - location.x - size.width - border.right - constants.scrollbar_insets.right
@@ -2934,8 +2946,8 @@ fn calculate_layout_line(
     };
     let line_offset_cross = line.offset_cross;
 
-    let is_rtl_column = layout_direction.is_rtl() && direction.is_column();
-    if is_rtl_column {
+    let cross_start_reversed = constants.flow.cross_axis_start_reversed;
+    if cross_start_reversed {
         *total_offset_cross -= line_offset_cross + line.cross_size;
     }
 
@@ -2971,7 +2983,7 @@ fn calculate_layout_line(
         }
     }
 
-    if !is_rtl_column {
+    if !cross_start_reversed {
         *total_offset_cross += line_offset_cross + line.cross_size;
     }
 }
@@ -2983,8 +2995,8 @@ fn final_layout_pass(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) -> Rect<f32> {
-    let mut total_offset_cross = if constants.is_column && constants.layout_direction.is_rtl() {
-        constants.container_size.width - constants.content_box_inset.cross_end(constants.dir)
+    let mut total_offset_cross = if constants.flow.cross_axis_start_reversed {
+        constants.container_size.cross(constants.dir) - constants.content_box_inset.cross_end(constants.dir)
     } else {
         constants.content_box_inset.cross_start(constants.dir)
     };
@@ -3025,13 +3037,17 @@ fn final_layout_pass(
     // containers do not extend their overflow region by their own padding.
     #[cfg(feature = "content_size")]
     if constants.is_scroll_container {
-        overflow_rect.right += if constants.layout_direction.is_rtl() {
+        let reversed = constants.flow.scroll_origin_is_reversed();
+        overflow_rect.right += if reversed.width {
             constants.content_box_inset.left - constants.border.left - constants.scrollbar_gutter.x
         } else {
             constants.content_box_inset.right - constants.border.right - constants.scrollbar_gutter.x
         };
-        overflow_rect.bottom +=
-            constants.content_box_inset.bottom - constants.border.bottom - constants.scrollbar_gutter.y;
+        overflow_rect.bottom += if reversed.height {
+            constants.content_box_inset.top - constants.border.top - constants.scrollbar_gutter.y
+        } else {
+            constants.content_box_inset.bottom - constants.border.bottom - constants.scrollbar_gutter.y
+        };
     }
 
     overflow_rect
@@ -3061,12 +3077,8 @@ fn collect_oof_candidates(
     let container_size = constants.container_size;
     let content_box_inset = constants.content_box_inset;
 
-    let main_axis_is_horizontal = constants.is_row;
-    let cross_axis_is_horizontal = !constants.is_row;
-    let main_is_rtl = main_axis_is_horizontal && constants.layout_direction.is_rtl();
-    let cross_is_rtl = cross_axis_is_horizontal && constants.layout_direction.is_rtl();
-    let main_axis_flex_start_reversed = dir.is_reverse() ^ main_is_rtl;
-    let cross_axis_flex_start_reversed = constants.is_wrap_reverse ^ cross_is_rtl;
+    let main_axis_flex_start_reversed = constants.flow.main_axis_flex_start_reversed;
+    let cross_axis_flex_start_reversed = constants.flow.cross_axis_flex_start_reversed;
 
     // The static-position area in each axis is the container's content box
     let main_area = Line {

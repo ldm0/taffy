@@ -264,3 +264,75 @@ fn flex_scroll_origins_follow_reversed_main_and_cross_flows() {
         }
     }
 }
+
+#[test]
+fn wrapped_flex_scroll_extent_keeps_padding_in_both_vertical_directions() {
+    use taffy::WritingMode;
+    let mut failures = Vec::new();
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in
+                [FlexDirection::Row, FlexDirection::RowReverse, FlexDirection::Column, FlexDirection::ColumnReverse]
+            {
+                for wrap in [FlexWrap::NoWrap, FlexWrap::Wrap, FlexWrap::WrapReverse] {
+                    let mut tree = TaffyTree::<()>::new();
+                    let items: Vec<_> = (0..3)
+                        .map(|_| {
+                            tree.new_leaf(Style {
+                                min_size: Size { width: length(110.0), height: length(110.0) },
+                                ..Style::default()
+                            })
+                            .unwrap()
+                        })
+                        .collect();
+                    let root = tree
+                        .new_with_children(
+                            Style {
+                                display: Display::Flex,
+                                direction,
+                                flex_direction,
+                                flex_wrap: wrap,
+                                align_items: AlignItems::START,
+                                gap: Size { width: length(10.0), height: length(10.0) },
+                                padding: Rect::length(10.0),
+                                border: Rect::length(3.0),
+                                box_sizing: BoxSizing::ContentBox,
+                                size: Size::from_lengths(100.0, 100.0),
+                                overflow: Point { x: Overflow::Scroll, y: Overflow::Scroll },
+                                ..Style::default()
+                            },
+                            &items,
+                        )
+                        .unwrap();
+                    tree.set_writing_mode(root, mode).unwrap();
+                    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                    let main_horizontal = matches!(flex_direction, FlexDirection::Row | FlexDirection::RowReverse)
+                        == mode.is_horizontal();
+                    let long_width = main_horizontal == (wrap == FlexWrap::NoWrap);
+                    let expected = if long_width { (370.0, 130.0) } else { (130.0, 370.0) };
+                    let layout = tree.layout(root).unwrap();
+                    let actual = (layout.scrollable_overflow_rect.right, layout.scrollable_overflow_rect.bottom);
+                    if actual != expected {
+                        failures.push(format!(
+                            "{mode:?}/{direction:?}/{flex_direction:?}/{wrap:?}: {actual:?} != {expected:?}"
+                        ));
+                    }
+                    if !mode.is_horizontal()
+                        && direction == Direction::Rtl
+                        && flex_direction == FlexDirection::Column
+                        && wrap != FlexWrap::NoWrap
+                    {
+                        let expected_y =
+                            if wrap == FlexWrap::Wrap { [3.0, -117.0, -237.0] } else { [13.0, 133.0, 253.0] };
+                        let actual_y: Vec<_> =
+                            items.iter().map(|item| tree.layout(*item).unwrap().location.y).collect();
+                        if actual_y != expected_y {
+                            failures.push(format!("{mode:?}/{wrap:?} positions: {actual_y:?} != {expected_y:?}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
