@@ -798,6 +798,9 @@ pub enum SizingPurpose {
     /// Compute a min/max-content contribution for an ancestor whose size may
     /// depend on this node.
     IntrinsicContribution,
+    /// Measure raw content for an aspect-ratio automatic minimum without
+    /// replacing the node's inherent-size cache entries.
+    ContentProbe,
 }
 
 /// How an authored `auto` size behaves in the logical block axis.

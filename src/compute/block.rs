@@ -6,7 +6,7 @@ use crate::style::{
 };
 use crate::style_helpers::TaffyMaxContent;
 use crate::tree::{
-    AxisStaticPosition, LayoutPartialTree, LayoutPartialTreeExt, NodeId, OofCandidate, OofCandidates,
+    AxisStaticPosition, ChildLayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, OofCandidate, OofCandidates,
     OofPositioningArea,
 };
 use crate::tree::{Baselines, CollapsibleMarginSet, Layout, LayoutInput, LayoutOutput, RunMode, SizingMode};
@@ -16,8 +16,8 @@ use crate::util::sys::Vec;
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{
-    BlockContainerStyle, BlockItemStyle, BoxGenerationMode, BoxSizing, Contain, Dimension, Direction,
-    LayoutBlockContainer, RequestedAxis, TextAlign,
+    AutoSizeBehavior, BlockContainerStyle, BlockItemStyle, BoxGenerationMode, BoxSizing, Contain, Dimension, Direction,
+    LayoutBlockContainer, RequestedAxis, TextAlign, WritingMode,
 };
 
 #[cfg(feature = "float_layout")]
@@ -314,6 +314,10 @@ impl BlockContext<'_> {
 }
 
 use super::common::alignment::{apply_alignment_fallback, child_first_baseline, compute_alignment_offset};
+use super::common::aspect_ratio::{
+    resolve_size_constraints, ResolvedAxisConstraints, SizeConstraintInput, TransferredSizesMode,
+};
+use super::common::intrinsic_size::{measure_content_based_block_size, BlockSizeProperties, ContentBasedBlockSize};
 #[cfg(feature = "content_size")]
 use super::common::scrollable_overflow::compute_scrollable_overflow_contribution;
 use super::common::sizing_keyword::{resolve_sizing_keyword, SizingKeywordResolution};
@@ -357,6 +361,10 @@ struct BlockItem {
     min_size: Size<Option<f32>>,
     /// The maximum allowable size of this item
     max_size: Size<Option<f32>>,
+    /// Authored and transferred block constraints retained for the automatic minimum.
+    block_axis_constraints: ResolvedAxisConstraints,
+    /// Whether the item's content measurement depends on its containing block.
+    depends_on_block_constraints: bool,
 
     /// The overflow style of the item
     overflow: Point<Overflow>,
@@ -435,25 +443,30 @@ pub fn compute_block_layout(
     let box_sizing_adjustment =
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let min_size = style
-        .min_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let clamped_style_size = if inputs.sizing_mode == SizingMode::InherentSize {
-        style
-            .size()
-            .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-            .maybe_add(box_sizing_adjustment)
-            .maybe_clamp(min_size, max_size)
+    let (min_size, max_size, clamped_style_size) = if inputs.sizing_mode == SizingMode::InherentSize {
+        let raw_size = style.size();
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: raw_size
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            min_size: style
+                .min_size()
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            max_size: style
+                .max_size()
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            size_is_auto: raw_size.map(|value| value.is_auto()),
+            writing_mode: tree.get_writing_mode(node_id),
+            block_auto_behavior: inputs.block_auto_behavior,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio,
+            padding_border: padding_border_size,
+        });
+        (resolved.min_size, resolved.max_size, resolved.size.maybe_clamp(resolved.min_size, resolved.max_size))
     } else {
-        Size::NONE
+        (Size::NONE, Size::NONE, Size::NONE)
     };
 
     drop(style);
@@ -551,21 +564,32 @@ fn compute_inner(
 
     let box_sizing_adjustment =
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-    let size = style
-        .size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let min_size = style
-        .min_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
+    let aspect_ratio = if inputs.sizing_mode == SizingMode::InherentSize { aspect_ratio } else { None };
+    let (size, min_size, max_size) = if inputs.sizing_mode == SizingMode::InherentSize {
+        let raw_size = style.size();
+        let resolved = resolve_size_constraints(SizeConstraintInput {
+            size: raw_size
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            min_size: style
+                .min_size()
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            max_size: style
+                .max_size()
+                .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
+                .maybe_add(box_sizing_adjustment),
+            size_is_auto: raw_size.map(|value| value.is_auto()),
+            writing_mode: tree.get_writing_mode(node_id),
+            block_auto_behavior: inputs.block_auto_behavior,
+            transferred_sizes_mode: TransferredSizesMode::Normal,
+            aspect_ratio,
+            padding_border: padding_border_size,
+        });
+        (resolved.size, resolved.min_size, resolved.max_size)
+    } else {
+        (Size::NONE, Size::NONE, Size::NONE)
+    };
 
     // css-sizing-4: a definite size in one axis transfers through `aspect-ratio`
     // to make the other definite. Deriving it from `known_dimensions` self-gates
@@ -863,6 +887,7 @@ fn compute_inner(
         margins_can_collapse_through: can_be_collapsed_through,
         oof_candidates: OofCandidates::NONE,
         oof_positioning_area: None,
+        depends_on_block_constraints: items.iter().any(|item| item.depends_on_block_constraints),
 
         ..LayoutOutput::HIDDEN
     };
@@ -1021,6 +1046,25 @@ fn generate_item_list(
                 && !contain.establishes_independent_formatting_context()
                 && child_style.align_content().keyword == AlignContentKeyword::Normal;
 
+            let raw_size = child_style.size();
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size.maybe_resolve(node_inner_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment),
+                min_size: child_style
+                    .min_size()
+                    .maybe_resolve(minimum_parent_size, |v, b| tree.calc(v, b))
+                    .maybe_add(box_sizing_adjustment),
+                max_size: child_style
+                    .max_size()
+                    .maybe_resolve(node_inner_size, |v, b| tree.calc(v, b))
+                    .maybe_add(box_sizing_adjustment),
+                size_is_auto: raw_size.map(|value| value.is_auto()),
+                writing_mode: tree.get_writing_mode(child_node_id),
+                block_auto_behavior: AutoSizeBehavior::FitContent,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio,
+                padding_border: pb_sum,
+            });
+
             BlockItem {
                 node_id: child_node_id,
                 order: order as u32,
@@ -1032,21 +1076,11 @@ fn generate_item_list(
                 #[cfg(feature = "float_layout")]
                 clear: child_style.clear(),
                 size_style: child_style.size(),
-                size: child_style
-                    .size()
-                    .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, child_style.box_sizing(), pb_sum)
-                    .maybe_add(box_sizing_adjustment),
-                min_size: child_style
-                    .min_size()
-                    .maybe_resolve(minimum_parent_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, child_style.box_sizing(), pb_sum)
-                    .maybe_add(box_sizing_adjustment),
-                max_size: child_style
-                    .max_size()
-                    .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, child_style.box_sizing(), pb_sum)
-                    .maybe_add(box_sizing_adjustment),
+                size: resolved.size,
+                min_size: resolved.min_size,
+                max_size: resolved.max_size,
+                block_axis_constraints: resolved.block_axis_constraints(tree.get_writing_mode(child_node_id)),
+                depends_on_block_constraints: false,
                 overflow,
                 contain,
                 position,
@@ -1180,6 +1214,74 @@ fn determine_content_based_container_width(
     }
 
     max_child_width
+}
+
+/// Resolve the preferred ratio after measuring a content-based automatic minimum.
+fn resolve_block_item_known_dimensions(
+    tree: &mut impl LayoutBlockContainer,
+    item: &mut BlockItem,
+    known_dimensions: Size<Option<f32>>,
+    parent_size: Size<Option<f32>>,
+    parent_writing_mode: WritingMode,
+    available_space: Size<AvailableSpace>,
+    vertical_margins_are_collapsible: Line<bool>,
+) -> Size<Option<f32>> {
+    let child_writing_mode = tree.get_writing_mode(item.node_id);
+    let aspect_ratio = tree.get_resolved_aspect_ratio(item.node_id);
+    let (properties, is_scroll_container) = {
+        let style = tree.get_block_child_style(item.node_id);
+        let size = child_writing_mode.to_logical(style.size());
+        let min_size = child_writing_mode.to_logical(style.min_size());
+        let max_size = child_writing_mode.to_logical(style.max_size());
+        let overflow = style.overflow();
+        (
+            BlockSizeProperties::new(size.block_size, min_size.block_size.into(), max_size.block_size.into()),
+            overflow.x.is_scroll_container() || overflow.y.is_scroll_container(),
+        )
+    };
+    let auto_size_is_content_based = AutoSizeBehavior::FitContent.is_content_based(aspect_ratio.is_some());
+    let resolver = ContentBasedBlockSize::new(
+        properties,
+        aspect_ratio,
+        item.padding_border_sum,
+        auto_size_is_content_based,
+        is_scroll_container,
+    );
+    if !resolver.requires_intrinsic_measurement() {
+        return known_dimensions;
+    }
+
+    let mut measurement_dimensions = child_writing_mode.to_logical(known_dimensions);
+    if properties.preferred_is_content_based(auto_size_is_content_based) {
+        measurement_dimensions.block_size = None;
+    }
+    let measurement_dimensions = child_writing_mode.to_physical(measurement_dimensions);
+    let intrinsic = measure_content_based_block_size(
+        tree,
+        item.node_id,
+        ChildLayoutInput::new(
+            measurement_dimensions,
+            parent_size,
+            parent_writing_mode,
+            available_space,
+            SizingMode::ContentSize,
+            vertical_margins_are_collapsible,
+        )
+        .with_block_auto_behavior(AutoSizeBehavior::FitContent),
+        resolver,
+    );
+    item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+
+    let logical_size = child_writing_mode.to_logical(item.size);
+    let resolved = intrinsic.resolve_against(logical_size.block_size, item.block_axis_constraints);
+    let minimum_border_box_size = child_writing_mode.to_logical(item.padding_border_sum).block_size;
+    let mut used_size = child_writing_mode.to_logical(measurement_dimensions);
+    used_size.block_size = used_size
+        .block_size
+        .or(resolved.preferred)
+        .maybe_clamp(resolved.min, resolved.max)
+        .maybe_max(Some(minimum_border_box_size));
+    child_writing_mode.to_physical(used_size)
 }
 
 /// Compute each child's final size and position
@@ -1475,11 +1577,28 @@ fn perform_final_layout_on_in_flow_children(
             let ratio = tree.get_resolved_aspect_ratio(item.node_id);
             let adjustment =
                 if child_style.box_sizing() == BoxSizing::ContentBox { item.padding_border_sum } else { Size::ZERO };
-            item.size = child_style
-                .size()
-                .maybe_resolve(parent_size, |v, b| tree.calc(v, b))
-                .maybe_apply_aspect_ratio_with_box_sizing(ratio, child_style.box_sizing(), item.padding_border_sum)
-                .maybe_add(adjustment);
+            let raw_size = child_style.size();
+            let resolved = resolve_size_constraints(SizeConstraintInput {
+                size: raw_size.maybe_resolve(parent_size, |v, b| tree.calc(v, b)).maybe_add(adjustment),
+                min_size: child_style
+                    .min_size()
+                    .maybe_resolve(parent_size, |v, b| tree.calc(v, b))
+                    .maybe_add(adjustment),
+                max_size: child_style
+                    .max_size()
+                    .maybe_resolve(parent_size, |v, b| tree.calc(v, b))
+                    .maybe_add(adjustment),
+                size_is_auto: raw_size.map(|value| value.is_auto()),
+                writing_mode: tree.get_writing_mode(item.node_id),
+                block_auto_behavior: AutoSizeBehavior::FitContent,
+                transferred_sizes_mode: TransferredSizesMode::Normal,
+                aspect_ratio: ratio,
+                padding_border: item.padding_border_sum,
+            });
+            item.size = resolved.size;
+            item.min_size = resolved.min_size;
+            item.max_size = resolved.max_size;
+            item.block_axis_constraints = resolved.block_axis_constraints(tree.get_writing_mode(item.node_id));
             let intrinsic_bounds = child_style.min_size().width.is_intrinsic()
                 || child_style.max_size().width.is_intrinsic()
                 || child_style.min_size().width.is_stretch()
@@ -1577,6 +1696,16 @@ fn perform_final_layout_on_in_flow_children(
             };
 
             //
+
+            let known_dimensions = resolve_block_item_known_dimensions(
+                tree,
+                item,
+                known_dimensions,
+                parent_size,
+                tree.get_parent_writing_mode(item.node_id),
+                available_space.map_width(|_| AvailableSpace::Definite(stretch_width)),
+                if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
+            );
 
             let inputs = LayoutInput {
                 run_mode,

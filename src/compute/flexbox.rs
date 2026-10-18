@@ -218,6 +218,21 @@ impl FlexItem {
         }
     }
 
+    /// Transfer ratio constraints only onto axes whose authored size is auto.
+    fn ratio_constraints(&self, writing_mode: WritingMode) -> super::common::aspect_ratio::ResolvedSizeConstraints {
+        super::common::aspect_ratio::resolve_size_constraints(super::common::aspect_ratio::SizeConstraintInput {
+            size: self.size,
+            min_size: self.min_size,
+            max_size: self.max_size,
+            size_is_auto: self.size_style.map(|value| value.is_auto()),
+            writing_mode,
+            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: super::common::aspect_ratio::TransferredSizesMode::Normal,
+            aspect_ratio: self.aspect_ratio,
+            padding_border: (self.padding + self.border).sum_axes(),
+        })
+    }
+
     /// Returns true if the item is a <https://www.w3.org/TR/css-overflow-3/#scroll-container>
     fn is_scroll_container(&self) -> bool {
         self.overflow.x.is_scroll_container() | self.overflow.y.is_scroll_container()
@@ -1067,16 +1082,9 @@ fn determine_flex_base_size(
         // Available space for child sizing (excluding the child's margins)
         // Min/max sizes transferred through the aspect ratio are taken into account here
         // https://github.com/w3c/csswg-drafts/issues/10997
-        let transferred_min_size = child.min_size.maybe_apply_aspect_ratio_with_box_sizing(
-            child.aspect_ratio,
-            BoxSizing::BorderBox,
-            (child.padding + child.border).sum_axes(),
-        );
-        let transferred_max_size = child.max_size.maybe_apply_aspect_ratio_with_box_sizing(
-            child.aspect_ratio,
-            BoxSizing::BorderBox,
-            (child.padding + child.border).sum_axes(),
-        );
+        let transferred = child.ratio_constraints(tree.get_writing_mode(child.node));
+        let transferred_min_size = transferred.min_size;
+        let transferred_max_size = transferred.max_size;
         let child_min_cross = transferred_min_size.cross(dir);
         let child_max_cross = transferred_max_size.cross(dir);
 
@@ -1723,16 +1731,9 @@ fn determine_container_main_size(
                                     // Clamp the definite cross size by the cross min/max sizes, as
                                     // `determine_flex_base_size` does: an item measured wider than its
                                     // max-width wraps onto fewer lines and under-reports its height.
-                                    let transferred_min_size = item.min_size.maybe_apply_aspect_ratio_with_box_sizing(
-                                        item.aspect_ratio,
-                                        BoxSizing::BorderBox,
-                                        (item.padding + item.border).sum_axes(),
-                                    );
-                                    let transferred_max_size = item.max_size.maybe_apply_aspect_ratio_with_box_sizing(
-                                        item.aspect_ratio,
-                                        BoxSizing::BorderBox,
-                                        (item.padding + item.border).sum_axes(),
-                                    );
+                                    let transferred = item.ratio_constraints(tree.get_writing_mode(item.node));
+                                    let transferred_min_size = transferred.min_size;
+                                    let transferred_max_size = transferred.max_size;
                                     ckd.set_cross(
                                         dir,
                                         ckd.cross(dir).maybe_clamp(
@@ -2112,22 +2113,9 @@ fn determine_hypothetical_cross_size(
 
         // Sizes transferred through the aspect ratio clamp the hypothetical cross size
         // https://github.com/w3c/csswg-drafts/issues/10997
-        let transferred_min_cross = child
-            .min_size
-            .maybe_apply_aspect_ratio_with_box_sizing(
-                child.aspect_ratio,
-                BoxSizing::BorderBox,
-                (child.padding + child.border).sum_axes(),
-            )
-            .cross(constants.dir);
-        let transferred_max_cross = child
-            .max_size
-            .maybe_apply_aspect_ratio_with_box_sizing(
-                child.aspect_ratio,
-                BoxSizing::BorderBox,
-                (child.padding + child.border).sum_axes(),
-            )
-            .cross(constants.dir);
+        let transferred = child.ratio_constraints(tree.get_writing_mode(child.node));
+        let transferred_min_cross = transferred.min_size.cross(constants.dir);
+        let transferred_max_cross = transferred.max_size.cross(constants.dir);
 
         let ratio_cross = Size::NONE
             .with_main(constants.dir, Some(child.target_size.main(constants.dir)))

@@ -384,7 +384,10 @@ where
     debug_push_node!(node);
 
     // First we check if we have a cached result for the given input
-    let cache_entry = tree.cache_get(node, &inputs);
+    // Raw aspect-ratio probes use ContentSize before the same node's normal
+    // InherentSize layout. They must not evict that layout's cache bank.
+    let use_cache = inputs.sizing_purpose != crate::SizingPurpose::ContentProbe;
+    let cache_entry = use_cache.then(|| tree.cache_get(node, &inputs)).flatten();
     if let Some(cached_size_and_baselines) = cache_entry {
         debug_log_node!(inputs);
         debug_log!("RESULT (CACHED)", dbg:cached_size_and_baselines.size);
@@ -400,7 +403,9 @@ where
     computed_size_and_baselines.set_block_constraint_dependency(dependency);
 
     // Cache result
-    tree.cache_store(node, &inputs, computed_size_and_baselines.clone());
+    if use_cache {
+        tree.cache_store(node, &inputs, computed_size_and_baselines.clone());
+    }
 
     debug_log!("RESULT", dbg:computed_size_and_baselines.size);
     debug_pop_node!();

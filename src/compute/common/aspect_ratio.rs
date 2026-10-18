@@ -68,6 +68,13 @@ impl ResolvedSizeConstraints {
     }
 }
 
+impl ResolvedSizeConstraints {
+    /// Preserve authored and transferred sources for the logical block axis.
+    pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
+        writing_mode.to_logical(self.constraint_sources).block_size
+    }
+}
+
 /// Controls whether min/max constraints from the opposite axis participate in
 /// the current sizing operation.
 ///
