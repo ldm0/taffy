@@ -71,3 +71,98 @@ fn orthogonal_grid_items_resolve_self_alignment_in_their_own_writing_mode() {
         }
     }
 }
+
+#[test]
+fn grid_track_constraints_keep_the_authored_minimum() {
+    for horizontal in [true, false] {
+        let mut tree = TaffyTree::<()>::new();
+        let first = tree.new_leaf(Style::default()).unwrap();
+        let second = tree.new_leaf(Style::default()).unwrap();
+        let fractional = vec![minmax(length(10.0), fr(1.0)), minmax(length(10.0), fr(4.0))];
+        let grid = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    box_sizing: BoxSizing::ContentBox,
+                    min_size: if horizontal {
+                        Size { width: length(70.0), height: auto() }
+                    } else {
+                        Size { width: auto(), height: length(70.0) }
+                    },
+                    max_size: if horizontal {
+                        Size { width: length(60.0), height: auto() }
+                    } else {
+                        Size { width: auto(), height: length(60.0) }
+                    },
+                    grid_template_columns: if horizontal { fractional.clone() } else { vec![length(50.0)] },
+                    grid_template_rows: if horizontal { vec![length(50.0)] } else { fractional },
+                    gap: if horizontal {
+                        Size { width: length(33.0), height: length(0.0) }
+                    } else {
+                        Size { width: length(0.0), height: length(33.0) }
+                    },
+                    padding: Rect::length(2.0),
+                    border: Rect::length(5.0),
+                    ..Style::default()
+                },
+                &[first, second],
+            )
+            .unwrap();
+        tree.compute_layout(grid, Size::MAX_CONTENT).unwrap();
+        let size = tree.layout(second).unwrap().size;
+        assert_eq!(if horizontal { size.width } else { size.height }, 27.0);
+    }
+}
+
+#[test]
+fn grid_ratio_transfer_follows_authored_axis_clamping() {
+    use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
+    let cases = [
+        (
+            Size { width: auto(), height: length(25.0) },
+            Size { width: auto(), height: length(30.0) },
+            Size { width: auto(), height: auto() },
+            Size { width: 60.0, height: 30.0 },
+        ),
+        (
+            Size { width: length(60.0), height: auto() },
+            Size { width: length(80.0), height: auto() },
+            Size { width: auto(), height: auto() },
+            Size { width: 80.0, height: 40.0 },
+        ),
+        (
+            Size { width: length(120.0), height: auto() },
+            Size { width: auto(), height: auto() },
+            Size { width: auto(), height: length(25.0) },
+            Size { width: 120.0, height: 25.0 },
+        ),
+        (
+            Size { width: length(25.0), height: auto() },
+            Size { width: auto(), height: length(100.0) },
+            Size { width: auto(), height: auto() },
+            Size { width: 25.0, height: 100.0 },
+        ),
+    ];
+    for (size, min_size, max_size, expected) in cases {
+        let mut tree = new_test_tree();
+        let child = tree
+            .new_leaf_with_context(
+                Style { item_is_replaced: true, aspect_ratio: Some(2.0), size, min_size, max_size, ..Style::default() },
+                TestNodeContext::aspect_ratio(100.0, 0.5),
+            )
+            .unwrap();
+        let grid = tree
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: Size { width: Dimension::min_content(), height: auto() },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        tree.compute_layout_with_measure_output(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+        assert_eq!(tree.layout(child).unwrap().size, expected);
+        assert_eq!(tree.layout(grid).unwrap().size, expected);
+    }
+}

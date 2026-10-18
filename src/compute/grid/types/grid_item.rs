@@ -347,24 +347,11 @@ impl GridItem {
         let padding_border_size = (padding + border).sum_axes();
         let box_sizing_adjustment =
             if self.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
-        let inherent_size = self
-            .size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, self.box_sizing, padding_border_size)
-            .maybe_add(box_sizing_adjustment);
-        let mut min_size = self
-            .min_size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, self.box_sizing, padding_border_size)
-            .maybe_add(box_sizing_adjustment)
-            // The size of the item is floored by its padding and border
-            .or(padding_border_size.map(Some))
-            .maybe_max(padding_border_size);
-        let mut max_size = self
-            .max_size
-            .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, self.box_sizing, padding_border_size)
-            .maybe_add(box_sizing_adjustment);
+        let raw_size = self.size.maybe_resolve(grid_area_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
+        let mut min_size =
+            self.min_size.maybe_resolve(grid_area_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
+        let mut max_size =
+            self.max_size.maybe_resolve(grid_area_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
 
         if self.min_size.width.is_intrinsic() || self.max_size.width.is_intrinsic() {
             let bounds = super::super::super::common::intrinsic_size::measure_intrinsic_width_constraints(
@@ -382,6 +369,23 @@ impl GridItem {
             min_size.width = bounds.min.or(min_size.width);
             max_size.width = bounds.max.or(max_size.width);
         }
+
+        let resolved = super::super::super::common::aspect_ratio::resolve_size_constraints(
+            super::super::super::common::aspect_ratio::SizeConstraintInput {
+                size: raw_size,
+                min_size,
+                max_size,
+                size_is_auto: self.size.map(|v| v.is_auto()),
+                writing_mode: tree.get_writing_mode(self.node),
+                block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+                transferred_sizes_mode: super::super::super::common::aspect_ratio::TransferredSizesMode::Normal,
+                aspect_ratio,
+                padding_border: padding_border_size,
+            },
+        );
+        let inherent_size = resolved.size;
+        min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
+        max_size = resolved.max_size;
 
         let grid_area_minus_item_margins_size = grid_area_size.maybe_sub(margins).maybe_max(Size::ZERO);
 

@@ -158,24 +158,55 @@ pub(super) fn align_and_position_item(
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
     let size_style = style.size();
-    let inherent_size = size_style
-        .maybe_resolve(containing_block_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
-    let mut min_size = style
-        .min_size()
-        .maybe_resolve(containing_block_size, |val, basis| tree.calc(val, basis))
-        .maybe_add(box_sizing_adjustment)
-        .or(padding_border_size.map(Some))
-        .maybe_max(padding_border_size)
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size);
-    let mut max_size = style
-        .max_size()
-        .maybe_resolve(containing_block_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, style.box_sizing(), padding_border_size)
-        .maybe_add(box_sizing_adjustment);
+    let raw_size =
+        size_style.maybe_resolve(containing_block_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
+    let mut min_size =
+        style.min_size().maybe_resolve(containing_block_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
+    let mut max_size =
+        style.max_size().maybe_resolve(containing_block_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment);
 
     let intrinsic_bounds = style.min_size().width.is_intrinsic() || style.max_size().width.is_intrinsic();
+    // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
+    // resolve against the WIDTH of the grid area.
+    let margin = style
+        .margin()
+        .map(|margin| margin.resolve_to_option(containing_block_size.width, |val, basis| tree.calc(val, basis)));
+
+    drop(style);
+
+    if intrinsic_bounds {
+        let bounds = super::super::common::intrinsic_size::measure_intrinsic_width_constraints(
+            tree,
+            node,
+            crate::LayoutInput {
+                parent_size: containing_block_size.map(Some),
+                parent_writing_mode: tree.get_parent_writing_mode(node),
+                available_space: grid_area_size.map(AvailableSpace::Definite),
+                sizing_mode: SizingMode::InherentSize,
+                ..crate::LayoutInput::HIDDEN
+            },
+        );
+        min_size.width = bounds.min.or(min_size.width);
+        max_size.width = bounds.max.or(max_size.width);
+    }
+
+    let resolved = super::super::common::aspect_ratio::resolve_size_constraints(
+        super::super::common::aspect_ratio::SizeConstraintInput {
+            size: raw_size,
+            min_size,
+            max_size,
+            size_is_auto: size_style.map(|v| v.is_auto()),
+            writing_mode: item_writing_mode,
+            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            transferred_sizes_mode: super::super::common::aspect_ratio::TransferredSizesMode::Normal,
+            aspect_ratio,
+            padding_border: padding_border_size,
+        },
+    );
+    let inherent_size = resolved.size;
+    min_size = resolved.min_size.or(padding_border_size.map(Some)).maybe_max(padding_border_size);
+    max_size = resolved.max_size;
+
     // Resolve `normal` alignment (the default if alignment is set on neither the parent or the node itself)
     // Note: if the child has a preferred aspect ratio but neither width or height are set, then the width is stretched
     // and the then height is calculated from the width according the aspect ratio
@@ -207,30 +238,6 @@ pub(super) fn align_and_position_item(
             _ => align_self,
         },
     };
-
-    // Note: This is not a bug. It is part of the CSS spec that both horizontal and vertical margins
-    // resolve against the WIDTH of the grid area.
-    let margin = style
-        .margin()
-        .map(|margin| margin.resolve_to_option(containing_block_size.width, |val, basis| tree.calc(val, basis)));
-
-    drop(style);
-
-    if intrinsic_bounds {
-        let bounds = super::super::common::intrinsic_size::measure_intrinsic_width_constraints(
-            tree,
-            node,
-            crate::LayoutInput {
-                parent_size: containing_block_size.map(Some),
-                parent_writing_mode: tree.get_parent_writing_mode(node),
-                available_space: grid_area_size.map(AvailableSpace::Definite),
-                sizing_mode: SizingMode::InherentSize,
-                ..crate::LayoutInput::HIDDEN
-            },
-        );
-        min_size.width = bounds.min.or(min_size.width);
-        max_size.width = bounds.max.or(max_size.width);
-    }
 
     let grid_area_minus_item_margins_size = Size {
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right).max(0.0),

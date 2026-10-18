@@ -105,7 +105,6 @@ fn compute_container_constants<Tree: LayoutGridContainer>(
 
     // 1. Compute "available grid space"
     // https://www.w3.org/TR/css-grid-1/#available-grid-space
-    let aspect_ratio = style.aspect_ratio();
     let padding = style
         .padding()
         .resolve_or_zero(inputs.parent_writing_mode.to_logical(parent_size).inline_size, |val, basis| {
@@ -120,25 +119,32 @@ fn compute_container_constants<Tree: LayoutGridContainer>(
     let box_sizing_adjustment =
         if style.box_sizing() == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
 
-    let min_size = style
-        .min_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
-    let max_size = style
-        .max_size()
-        .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
-        .maybe_add(box_sizing_adjustment);
-    let preferred_size = if inputs.sizing_mode == SizingMode::InherentSize {
-        style
-            .size()
-            .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(style.aspect_ratio())
-            .maybe_add(box_sizing_adjustment)
-    } else {
-        Size::NONE
-    };
+    let raw_size = style.size();
+    let resolved =
+        super::common::aspect_ratio::resolve_size_constraints(super::common::aspect_ratio::SizeConstraintInput {
+            size: if inputs.sizing_mode == SizingMode::InherentSize {
+                raw_size.maybe_resolve(parent_size, |v, b| tree.calc(v, b)).maybe_add(box_sizing_adjustment)
+            } else {
+                Size::NONE
+            },
+            min_size: style
+                .min_size()
+                .maybe_resolve(parent_size, |v, b| tree.calc(v, b))
+                .maybe_add(box_sizing_adjustment),
+            max_size: style
+                .max_size()
+                .maybe_resolve(parent_size, |v, b| tree.calc(v, b))
+                .maybe_add(box_sizing_adjustment),
+            size_is_auto: raw_size.map(|v| v.is_auto()),
+            writing_mode: tree.get_writing_mode(node),
+            block_auto_behavior: inputs.block_auto_behavior,
+            transferred_sizes_mode: super::common::aspect_ratio::TransferredSizesMode::Normal,
+            aspect_ratio: tree.get_resolved_aspect_ratio(node),
+            padding_border: padding_border_size,
+        });
+    let min_size = resolved.min_size;
+    let max_size = resolved.max_size;
+    let preferred_size = resolved.size;
 
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
