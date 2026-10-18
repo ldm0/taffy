@@ -110,20 +110,26 @@ pub(super) fn align_and_position_item(
     let aspect_ratio = tree.get_resolved_aspect_ratio(node);
     let is_replaced = style.is_replaced();
     // Fall back to the container's justify-items/align-items if unset (`None`), and then resolve
-    // writing-mode-relative self-start/self-end keywords against the item's own direction.
-    // The horizontal axis is the inline axis (Taffy only supports horizontal-tb); the vertical
-    // (block) axis resolves them to plain start/end.
+    // writing-mode-relative self-start/self-end keywords against both writing modes.
+    let item_writing_mode = tree.get_writing_mode(node);
+    let parent_writing_mode = tree.get_parent_writing_mode(node);
     let item_direction = style.direction();
-    let justify_self = style.justify_self().unwrap_or(container_alignment_styles.horizontal).resolve_self_relative(
-        item_direction,
-        direction,
-        true,
-    );
-    let align_self = style.align_self().unwrap_or(container_alignment_styles.vertical).resolve_self_relative(
-        item_direction,
-        direction,
-        false,
-    );
+    let justify_self =
+        style.justify_self().unwrap_or(container_alignment_styles.horizontal).resolve_self_relative_in_writing_mode(
+            item_writing_mode,
+            item_direction,
+            parent_writing_mode,
+            direction,
+            AbsoluteAxis::Horizontal,
+        );
+    let align_self =
+        style.align_self().unwrap_or(container_alignment_styles.vertical).resolve_self_relative_in_writing_mode(
+            item_writing_mode,
+            item_direction,
+            parent_writing_mode,
+            direction,
+            AbsoluteAxis::Vertical,
+        );
 
     let position = style.position();
     let inset_horizontal = style

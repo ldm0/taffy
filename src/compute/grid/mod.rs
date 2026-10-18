@@ -793,13 +793,23 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         if child_style.position().is_out_of_flow() {
             let position = child_style.position();
             let item_direction = child_style.direction();
-            let justify_self = child_style.justify_self().unwrap_or(justify_items).resolve_self_relative(
+            let item_writing_mode = tree.get_writing_mode(child);
+            let parent_writing_mode = tree.get_parent_writing_mode(child);
+            let justify_self =
+                child_style.justify_self().unwrap_or(justify_items).resolve_self_relative_in_writing_mode(
+                    item_writing_mode,
+                    item_direction,
+                    parent_writing_mode,
+                    direction,
+                    AbsoluteAxis::Horizontal,
+                );
+            let align_self = child_style.align_self().unwrap_or(align_items).resolve_self_relative_in_writing_mode(
+                item_writing_mode,
                 item_direction,
+                parent_writing_mode,
                 direction,
-                true,
+                AbsoluteAxis::Vertical,
             );
-            let align_self =
-                child_style.align_self().unwrap_or(align_items).resolve_self_relative(item_direction, direction, false);
 
             // The static-position rectangle: the grid area determined by the grid-placement
             // properties when this grid is the child's containing block, and otherwise the
