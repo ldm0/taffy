@@ -302,3 +302,31 @@ mod baseline {
         assert_eq!(taffy.layout(child_b).unwrap().location.y, 0.0);
     }
 }
+
+#[test]
+fn block_last_baseline_requires_an_in_flow_line_box() {
+    use super::test_tree::{TestNode, TestTree};
+    use taffy::prelude::*;
+    use taffy::{LayoutInput, LayoutPartialTree, RunMode, SizingMode};
+    let root = TestNode::container(
+        Display::Block,
+        Style { size: Size { width: length(100.0), height: length(100.0) }, ..Style::default() },
+        Rect::ZERO,
+    );
+    let child = TestNode::leaf(
+        Style { display: Display::Block, size: Size { width: length(15.0), height: length(15.0) }, ..Style::default() },
+        Size { width: 15.0, height: 15.0 },
+    );
+    let mut tree = TestTree::new(root, child);
+    let output = tree.compute_child_layout(
+        NodeId::from(0_usize),
+        LayoutInput {
+            known_dimensions: Size { width: Some(100.0), height: Some(100.0) },
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: SizingMode::InherentSize,
+            ..LayoutInput::HIDDEN
+        },
+    );
+    assert_eq!(output.baselines.first, None);
+    assert_eq!(output.baselines.last, None);
+}

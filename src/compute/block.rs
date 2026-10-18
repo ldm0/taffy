@@ -338,6 +338,9 @@ struct BlockItem {
     /// being stretch-sized <https://www.w3.org/TR/CSS22/visudet.html#block-replaced-width>
     is_compressible_replaced: bool,
 
+    /// Whether normal-flow descendants supply this child's block baseline.
+    uses_block_layout: bool,
+
     /// Whether the child is a non-independent block or inline node
     is_in_same_bfc: bool,
 
@@ -1070,6 +1073,7 @@ fn generate_item_list(
                 order: order as u32,
                 is_table,
                 is_compressible_replaced,
+                uses_block_layout: child_style.uses_block_layout(),
                 is_in_same_bfc,
                 #[cfg(feature = "float_layout")]
                 float,
@@ -1973,13 +1977,22 @@ fn perform_final_layout_on_in_flow_children(
                 first_baseline = child_baseline.map(|baseline| location.y - inset_offset.y + baseline);
             }
 
-            let child_last_baseline = if item.overflow.y.is_scroll_container() {
-                // Inline/block synthesis for scroll containers uses the margin edge.
-                item_layout.size.height + item_non_auto_margin.bottom
-            } else {
-                item_layout.baselines.last.or(item_layout.baselines.first).unwrap_or(item_layout.size.height)
-            };
-            last_baseline = Some(location.y - inset_offset.y + child_last_baseline);
+            // Inline-block synthesis belongs to the inline formatting context.
+            // An empty normal-flow block has no line box to propagate here.
+            if !item.is_table {
+                let child_last_baseline = if item.uses_block_layout && !item.is_compressible_replaced {
+                    if item.overflow.x.is_scroll_container() || item.overflow.y.is_scroll_container() {
+                        Some(item_layout.size.height + item_non_auto_margin.bottom)
+                    } else {
+                        item_layout.baselines.last
+                    }
+                } else {
+                    item_layout.baselines.first
+                };
+                if let Some(baseline) = child_last_baseline {
+                    last_baseline = Some(location.y - inset_offset.y + baseline);
+                }
+            }
 
             // Used auto margins include float-avoidance offsets, unlike the alignment margins above.
             #[cfg(feature = "float_layout")]
