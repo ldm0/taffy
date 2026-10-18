@@ -821,3 +821,49 @@ fn orthogonal_flex_basis_keywords_measure_the_item_block_axis() {
         assert_eq!(tree.layout(child).unwrap().size.width, 100.0, "{basis:?}");
     }
 }
+
+#[test]
+fn block_intrinsic_width_stays_resolved_for_vertical_float_grid_descendants() {
+    for writing_mode in
+        [taffy::WritingMode::HorizontalTb, taffy::WritingMode::VerticalRl, taffy::WritingMode::VerticalLr]
+    {
+        for (keyword, expected_width) in [(Dimension::min_content(), 100.0), (Dimension::max_content(), 200.0)] {
+            let mut tree = new_test_tree();
+            let cell = tree.new_leaf(Style { size: Size::from_lengths(0.0, 0.0), ..Style::default() }).unwrap();
+            let grid = tree
+                .new_with_children(
+                    Style {
+                        display: Display::Grid,
+                        float: Float::Left,
+                        grid_template_columns: vec![minmax(length(100.0), length(200.0))],
+                        grid_template_rows: vec![minmax(length(50.0), length(100.0))],
+                        ..Style::default()
+                    },
+                    &[cell],
+                )
+                .unwrap();
+            let parent = tree
+                .new_with_children(
+                    Style {
+                        display: Display::Block,
+                        size: Size { width: keyword, height: keyword },
+                        ..Style::default()
+                    },
+                    &[grid],
+                )
+                .unwrap();
+            let root = tree
+                .new_with_children(
+                    Style { display: Display::Block, size: Size::from_lengths(800.0, 600.0), ..Style::default() },
+                    &[parent],
+                )
+                .unwrap();
+            for node in [root, parent, grid, cell] {
+                tree.set_writing_mode(node, writing_mode).unwrap();
+            }
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            assert_eq!(tree.layout(parent).unwrap().size.width, expected_width, "{writing_mode:?} parent");
+            assert_eq!(tree.layout(grid).unwrap().size.width, expected_width, "{writing_mode:?} float grid");
+        }
+    }
+}

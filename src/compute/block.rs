@@ -1289,7 +1289,13 @@ fn resolve_block_item_known_dimensions(
     }
 
     let mut measurement_dimensions = child_writing_mode.to_logical(known_dimensions);
-    if properties.preferred_is_content_based(auto_size_is_content_based) {
+    // The horizontal keyword pass already resolves authored intrinsic widths.
+    // Preserve that used width when it is the child's logical block size;
+    // content probes still measure raw limits without replacing the result.
+    let has_resolved_intrinsic_width = child_writing_mode.block_axis() == crate::AbsoluteAxis::Horizontal
+        && item.size_style.width.is_intrinsic()
+        && known_dimensions.width.is_some();
+    if properties.preferred_is_content_based(auto_size_is_content_based) && !has_resolved_intrinsic_width {
         measurement_dimensions.block_size = None;
     }
     let measurement_dimensions = child_writing_mode.to_physical(measurement_dimensions);
