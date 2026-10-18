@@ -2149,7 +2149,7 @@ fn determine_hypothetical_cross_size(
                 (child.padding + child.border).sum_axes(),
             )
             .cross(constants.dir);
-        let child_cross = (if child.content_basis {
+        let mut child_cross = (if child.content_basis {
             child.untransferred_size.maybe_add(if child.box_sizing == BoxSizing::ContentBox {
                 (child.padding + child.border).sum_axes()
             } else {
@@ -2173,8 +2173,8 @@ fn determine_hypothetical_cross_size(
 
         // A cross size that is a sizing keyword (min-content, max-content, fit-content,
         // fit-content(...)) determines the available space constraint the item is measured under.
-        // The `stretch` keyword is not resolved here: it stretches to the flex line, which is
-        // handled in `determine_used_cross_size`
+        // A definite stretch-fit width participates in the hypothetical measurement.
+        // The final stretch still uses the flex line and may grow beyond this size.
         let cross_stretch_size = constants
             .node_inner_size
             .cross(constants.dir)
@@ -2188,6 +2188,11 @@ fn determine_hypothetical_cross_size(
             |val, basis| tree.calc(val, basis),
         ) {
             Some(SizingKeywordResolution::Measure(available)) => available,
+            Some(SizingKeywordResolution::Exact(size)) => {
+                child_cross =
+                    Some(size).maybe_clamp(transferred_min_cross, transferred_max_cross).maybe_max(padding_border_sum);
+                child_available_cross
+            }
             _ => child_available_cross,
         };
 

@@ -692,3 +692,48 @@ fn orthogonal_flex_item_intrinsic_maximum_caps_its_flex_basis() {
     tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
     assert_eq!(tree.layout(child).unwrap().size.width, 100.0);
 }
+
+#[test]
+fn wrapped_column_stretch_cross_size_uses_definite_container_width_during_measurement() {
+    for wider_sibling in [false, true] {
+        let mut tree = new_test_tree();
+        let item_style = Style {
+            size: Size { width: Dimension::stretch(), height: length(75.0) },
+            border: Rect::length(3.0),
+            box_sizing: BoxSizing::ContentBox,
+            ..Style::default()
+        };
+        let first = tree.new_leaf_with_context(item_style.clone(), TestNodeContext::fixed(20.0, 20.0)).unwrap();
+        let second = tree.new_leaf_with_context(item_style, TestNodeContext::fixed(20.0, 20.0)).unwrap();
+        let mut items = vec![first];
+        if wider_sibling {
+            items.push(
+                tree.new_leaf(Style {
+                    size: Size { width: length(150.0), height: auto() },
+                    border: Rect::length(3.0),
+                    box_sizing: BoxSizing::ContentBox,
+                    ..Style::default()
+                })
+                .unwrap(),
+            );
+        }
+        items.push(second);
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    flex_wrap: FlexWrap::Wrap,
+                    align_content: AlignContent::START,
+                    size: Size { width: length(100.0), height: length(100.0) },
+                    ..Style::default()
+                },
+                &items,
+            )
+            .unwrap();
+        tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        assert_eq!(tree.layout(first).unwrap().size.width, if wider_sibling { 156.0 } else { 100.0 });
+        assert_eq!(tree.layout(second).unwrap().size.width, 100.0);
+        assert_eq!(tree.layout(second).unwrap().location.x, if wider_sibling { 156.0 } else { 100.0 });
+    }
+}
