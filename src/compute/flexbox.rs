@@ -2756,19 +2756,13 @@ fn align_flex_lines_per_align_content(flex_lines: &mut [FlexLine], constants: &A
     let free_space = constants.inner_container_size.cross(constants.dir) - total_cross_size - total_cross_axis_gap;
 
     let align_content_mode = apply_alignment_fallback(free_space, num_lines, constants.align_content);
-    // Default content distribution in a scrollable axis retains flex-start
-    // overflow. The lines remain reachable from the flex scroll origin.
-    #[cfg(feature = "content_size")]
-    let align_content_mode = if constants.is_scroll_container
-        && constants.align_content.safety == crate::AlignmentSafety::Default
+    // Stretch and space-between fall back to flex-start even when the cross
+    // axis or line order is reversed. This also applies to visible overflow;
+    // scrollability does not change the lines' alignment.
+    let align_content_mode = if constants.align_content.safety == crate::AlignmentSafety::Default
         && free_space <= 0.0
-        && matches!(
-            constants.align_content.keyword,
-            AlignContentKeyword::Stretch
-                | AlignContentKeyword::SpaceBetween
-                | AlignContentKeyword::SpaceAround
-                | AlignContentKeyword::SpaceEvenly
-        ) {
+        && matches!(constants.align_content.keyword, AlignContentKeyword::Stretch | AlignContentKeyword::SpaceBetween)
+    {
         AlignContentKeyword::FlexStart
     } else {
         align_content_mode

@@ -336,3 +336,95 @@ fn wrapped_flex_scroll_extent_keeps_padding_in_both_vertical_directions() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn overflowing_flex_lines_keep_the_distribution_fallback_in_every_writing_mode() {
+    use taffy::WritingMode;
+    let mut failures = Vec::new();
+    // Chromium's three-line geometry is the same for visible, clipped, and scrollable
+    // overflow. Stretch/space-between fall back to flex-start; space-around/evenly
+    // retain their safe center fallback to logical start.
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in
+                [FlexDirection::Row, FlexDirection::RowReverse, FlexDirection::Column, FlexDirection::ColumnReverse]
+            {
+                for wrap in [FlexWrap::Wrap, FlexWrap::WrapReverse] {
+                    for overflow in [Overflow::Visible, Overflow::Clip, Overflow::Hidden, Overflow::Scroll] {
+                        for align_content in [
+                            AlignContent::STRETCH,
+                            AlignContent::SPACE_BETWEEN,
+                            AlignContent::SPACE_AROUND,
+                            AlignContent::SPACE_EVENLY,
+                        ] {
+                            let mut tree = TaffyTree::<()>::new();
+                            let items: Vec<_> = (0..3)
+                                .map(|_| {
+                                    tree.new_leaf(Style {
+                                        min_size: Size { width: length(110.0), height: length(110.0) },
+                                        ..Style::default()
+                                    })
+                                    .unwrap()
+                                })
+                                .collect();
+                            let root = tree
+                                .new_with_children(
+                                    Style {
+                                        display: Display::Flex,
+                                        direction,
+                                        flex_direction,
+                                        flex_wrap: wrap,
+                                        align_content,
+                                        align_items: AlignItems::START,
+                                        gap: Size { width: length(10.0), height: length(10.0) },
+                                        padding: Rect::length(10.0),
+                                        border: Rect::length(3.0),
+                                        box_sizing: BoxSizing::ContentBox,
+                                        size: Size::from_lengths(100.0, 100.0),
+                                        overflow: Point { x: overflow, y: overflow },
+                                        ..Style::default()
+                                    },
+                                    &items,
+                                )
+                                .unwrap();
+                            tree.set_writing_mode(root, mode).unwrap();
+                            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                            let is_row = matches!(flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+                            let cross_horizontal = is_row != mode.is_horizontal();
+                            let logical_start_reversed =
+                                if is_row { mode == WritingMode::VerticalRl } else { direction == Direction::Rtl };
+                            let flex_start_reversed = logical_start_reversed ^ (wrap == FlexWrap::WrapReverse);
+                            let group_start_reversed =
+                                if matches!(align_content, AlignContent::STRETCH | AlignContent::SPACE_BETWEEN) {
+                                    flex_start_reversed
+                                } else {
+                                    logical_start_reversed
+                                };
+                            let low = if group_start_reversed { -237.0 } else { 13.0 };
+                            let expected: Vec<_> = (0..3)
+                                .map(|i| low + 120.0 * if flex_start_reversed { 2 - i } else { i } as f32)
+                                .collect();
+                            let actual: Vec<_> = items
+                                .iter()
+                                .map(|item| {
+                                    let point = tree.layout(*item).unwrap().location;
+                                    if cross_horizontal {
+                                        point.x
+                                    } else {
+                                        point.y
+                                    }
+                                })
+                                .collect();
+                            if actual != expected {
+                                failures.push(format!(
+                                    "{mode:?}/{direction:?}/{flex_direction:?}/{wrap:?}/{overflow:?}/{align_content:?}: {actual:?} != {expected:?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
