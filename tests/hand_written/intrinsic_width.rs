@@ -618,3 +618,77 @@ fn grid_max_content_with_percentage_maximum_contributes_wrapped_height() {
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 200.0, height: 20.0 });
     assert_eq!(tree.layout(root).unwrap().size.height, 20.0);
 }
+
+#[test]
+fn intrinsic_child_bounds_constrain_parent_content_width() {
+    for (width, min_width, max_width, parent_width) in [
+        (
+            length(600.0),
+            taffy::LengthPercentageAuto::auto(),
+            taffy::LengthPercentageAuto::min_content(),
+            Dimension::min_content(),
+        ),
+        (
+            length(10.0),
+            taffy::LengthPercentageAuto::fit_content(),
+            taffy::LengthPercentageAuto::auto(),
+            Dimension::fit_content(),
+        ),
+    ] {
+        let mut tree = new_test_tree();
+        let child = tree
+            .new_leaf_with_context(
+                Style {
+                    display: Display::Block,
+                    size: Size { width, height: auto() },
+                    min_size: Size { width: min_width, height: auto() },
+                    max_size: Size { width: max_width, height: auto() },
+                    ..Style::default()
+                },
+                TestNodeContext::ahem_text("XXXXXXXXXX".to_owned(), WritingMode::Horizontal),
+            )
+            .unwrap();
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: parent_width, height: auto() },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        assert_eq!(tree.layout(root).unwrap().size.width, 100.0);
+        assert_eq!(tree.layout(child).unwrap().size.width, 100.0);
+    }
+}
+
+#[test]
+fn orthogonal_flex_item_intrinsic_maximum_caps_its_flex_basis() {
+    let mut tree = new_test_tree();
+    let child = tree
+        .new_leaf_with_context(
+            Style {
+                display: Display::Block,
+                flex_basis: length(200.0),
+                max_size: Size { width: taffy::LengthPercentageAuto::min_content(), height: auto() },
+                ..Style::default()
+            },
+            TestNodeContext::ahem_text("XXXXXXXXXX".to_owned(), WritingMode::Horizontal),
+        )
+        .unwrap();
+    tree.set_writing_mode(child, taffy::WritingMode::VerticalRl).unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: length(200.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(child).unwrap().size.width, 100.0);
+}

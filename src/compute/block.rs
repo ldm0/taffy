@@ -655,6 +655,38 @@ fn compute_inner(
 
     // 1. Generate items
     let mut items = generate_item_list(tree, node_id, container_content_box_size);
+    for item in items.iter_mut().filter(|item| !item.position.is_out_of_flow()) {
+        let style = tree.get_block_child_style(item.node_id);
+        let intrinsic_bounds = style.min_size().width.is_intrinsic()
+            || style.max_size().width.is_intrinsic()
+            || style.min_size().width.is_stretch()
+            || style.max_size().width.is_stretch();
+        drop(style);
+        if !intrinsic_bounds {
+            continue;
+        }
+        let intrinsic = super::common::intrinsic_size::measure_intrinsic_width_constraints(
+            tree,
+            item.node_id,
+            LayoutInput {
+                parent_size: container_content_box_size,
+                parent_writing_mode: tree.get_writing_mode(node_id),
+                available_space: Size {
+                    width: container_content_box_size
+                        .width
+                        .map(AvailableSpace::Definite)
+                        .unwrap_or(available_space.width),
+                    height: available_space.height,
+                },
+                sizing_mode: SizingMode::InherentSize,
+                vertical_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
+                ..LayoutInput::HIDDEN
+            },
+        );
+        item.min_size.width = item.min_size.width.or(intrinsic.min);
+        item.max_size.width = item.max_size.width.or(intrinsic.max);
+        item.depends_on_block_constraints |= intrinsic.depends_on_block_constraints;
+    }
 
     // 2. Compute container width
     let container_outer_width = known_dimensions.width.unwrap_or_else(|| {
@@ -1201,6 +1233,7 @@ fn determine_content_based_container_width(
             )
         });
 
+        let width = width.maybe_clamp(item.min_size.width, item.max_size.width);
         let width = f32_max(width, item.padding_border_sum.width) + item_x_margin_sum;
 
         #[cfg(feature = "float_layout")]

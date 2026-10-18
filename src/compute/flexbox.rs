@@ -488,6 +488,30 @@ fn compute_preliminary(tree: &mut impl LayoutFlexboxContainer, node: NodeId, inp
     // 2. Determine the available main and cross space for the flex items
     debug_log!("determine_available_space");
     let available_space = determine_available_space(known_dimensions, available_space, &constants);
+    for item in &mut flex_items {
+        let style = tree.get_flexbox_child_style(item.node);
+        let intrinsic_bounds = style.min_size().width.is_intrinsic()
+            || style.max_size().width.is_intrinsic()
+            || style.min_size().width.is_stretch()
+            || style.max_size().width.is_stretch();
+        drop(style);
+        if !intrinsic_bounds {
+            continue;
+        }
+        let intrinsic = super::common::intrinsic_size::measure_intrinsic_width_constraints(
+            tree,
+            item.node,
+            LayoutInput {
+                parent_size: constants.node_inner_size,
+                parent_writing_mode: constants.writing_mode,
+                available_space,
+                sizing_mode: SizingMode::InherentSize,
+                ..LayoutInput::HIDDEN
+            },
+        );
+        item.min_size.width = item.min_size.width.or(intrinsic.min);
+        item.max_size.width = item.max_size.width.or(intrinsic.max);
+    }
 
     // 3. Determine the flex base size and hypothetical main size of each item.
     debug_log!("determine_flex_base_size");
