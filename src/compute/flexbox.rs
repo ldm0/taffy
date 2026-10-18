@@ -2879,21 +2879,31 @@ fn calculate_flex_item(
 
     #[cfg(feature = "content_size")]
     {
-        let contribution_location = if layout_direction.is_rtl() {
-            Point { x: container_size.width - (location.x + size.width) - border.right, y: location.y - border.top }
+        let reversed = if direction.is_row() {
+            Size {
+                width: constants.flow.main_axis_flex_start_reversed,
+                height: constants.flow.cross_axis_start_reversed,
+            }
         } else {
-            Point { x: location.x - border.left, y: location.y - border.top }
+            Size {
+                width: constants.flow.cross_axis_start_reversed,
+                height: constants.flow.main_axis_flex_start_reversed,
+            }
+        };
+        let contribution_location = Point {
+            x: if reversed.width {
+                container_size.width - location.x - size.width - border.right - constants.scrollbar_insets.right
+            } else {
+                location.x - border.left - constants.scrollbar_insets.left
+            },
+            y: if reversed.height {
+                container_size.height - location.y - size.height - border.bottom - constants.scrollbar_insets.bottom
+            } else {
+                location.y - border.top - constants.scrollbar_insets.top
+            },
         };
         *total_overflow_rect = total_overflow_rect.union(compute_scrollable_overflow_contribution(
-            Point {
-                x: contribution_location.x
-                    - if layout_direction.is_rtl() {
-                        constants.scrollbar_insets.right
-                    } else {
-                        constants.scrollbar_insets.left
-                    },
-                y: contribution_location.y - constants.scrollbar_insets.top,
-            },
+            contribution_location,
             size,
             scrollable_overflow_rect,
             item.overflow,

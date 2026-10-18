@@ -209,3 +209,58 @@ fn end_side_overflow_is_captured_for_rtl_scroll_containers() {
         assert_eq!(layout.scroll_width(), CHILD, "{display:?}");
     }
 }
+
+#[test]
+fn flex_scroll_origins_follow_reversed_main_and_cross_flows() {
+    use taffy::WritingMode;
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl, WritingMode::VerticalLr] {
+        for direction in [Direction::Ltr, Direction::Rtl] {
+            for flex_direction in
+                [FlexDirection::Row, FlexDirection::RowReverse, FlexDirection::Column, FlexDirection::ColumnReverse]
+            {
+                for wrap in [FlexWrap::NoWrap, FlexWrap::Wrap, FlexWrap::WrapReverse] {
+                    let mut tree = TaffyTree::<()>::new();
+                    let items: Vec<_> = (0..3)
+                        .map(|_| {
+                            tree.new_leaf(Style {
+                                min_size: Size { width: length(110.0), height: length(110.0) },
+                                ..Style::default()
+                            })
+                            .unwrap()
+                        })
+                        .collect();
+                    let root = tree
+                        .new_with_children(
+                            Style {
+                                display: Display::Flex,
+                                direction,
+                                flex_direction,
+                                flex_wrap: wrap,
+                                align_items: AlignItems::START,
+                                gap: Size { width: length(10.0), height: length(10.0) },
+                                size: Size::from_lengths(100.0, 100.0),
+                                overflow: Point { x: Overflow::Scroll, y: Overflow::Scroll },
+                                ..Style::default()
+                            },
+                            &items,
+                        )
+                        .unwrap();
+                    tree.set_writing_mode(root, mode).unwrap();
+                    tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                    let main_horizontal = matches!(flex_direction, FlexDirection::Row | FlexDirection::RowReverse)
+                        == mode.is_horizontal();
+                    let long_width = main_horizontal == (wrap == FlexWrap::NoWrap);
+                    let rect = tree.layout(root).unwrap().scrollable_overflow_rect;
+                    let label = format!("{mode:?}/{direction:?}/{flex_direction:?}/{wrap:?}");
+                    // The overflowing item's short axis must remain 110px.
+                    // This is the previously passing assertion lost by filtering
+                    // negative main-axis contributions in the new shared pass.
+                    assert_eq!(if long_width { rect.bottom } else { rect.right }, 110.0, "{label}");
+                    if wrap == FlexWrap::NoWrap {
+                        assert_eq!(if long_width { rect.right } else { rect.bottom }, 350.0, "{label}");
+                    }
+                }
+            }
+        }
+    }
+}
