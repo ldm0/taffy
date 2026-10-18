@@ -758,3 +758,32 @@ fn zero_flex_grow_does_not_add_a_positive_intrinsic_flex_fraction() {
     tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
     assert_eq!(tree.layout(root).unwrap().size.width, 0.0);
 }
+
+#[test]
+fn definite_main_stretch_caps_the_automatic_minimum() {
+    let mut tree = new_test_tree();
+    let child = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::stretch(), height: auto() },
+                margin: Rect::length(5.0),
+                padding: Rect::length(2.0),
+                border: Rect::length(3.0),
+                ..Style::default()
+            },
+            TestNodeContext::fixed(100.0, 20.0),
+        )
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                size: Size { width: length(100.0), height: length(100.0) },
+                ..Style::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(child).unwrap().size.width, 90.0);
+}

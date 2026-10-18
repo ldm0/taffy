@@ -1224,6 +1224,7 @@ fn determine_flex_base_size(
                         |val, basis| tree.calc(val, basis),
                     ) {
                         Some(SizingKeywordResolution::Exact(size)) => {
+                            child.size.set_main(dir, Some(size));
                             child.flex_basis_is_definite = true;
                             break 'flex_basis size;
                         }
