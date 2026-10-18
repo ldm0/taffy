@@ -272,7 +272,7 @@ impl OofAxis {
                 let sp = self.static_position;
                 let margin_box_size = size + margin.start + margin.end;
                 let offset = if sp.align.safety == AlignmentSafety::Safe && margin_box_size > imcb.end - imcb.start {
-                    align_in_line(imcb, margin_box_size, self.start_edge())
+                    align_in_line(imcb, margin_box_size, sp.align.fallback)
                 } else {
                     align_in_line(sp.area, margin_box_size, sp.align.keyword)
                 };

@@ -235,3 +235,43 @@ fn grid_absolute_safe_overflow_matches_start_in_vertical_writing_modes() {
         }
     }
 }
+
+#[test]
+fn absolute_grid_start_alignment_matches_regular_physical_track_coordinates() {
+    for mode in [taffy::WritingMode::HorizontalTb, taffy::WritingMode::VerticalRl, taffy::WritingMode::VerticalLr] {
+        for direction in [taffy::Direction::Ltr, taffy::Direction::Rtl] {
+            let mut positions = Vec::new();
+            for position in [Position::Relative, Position::Absolute] {
+                let mut tree = TaffyTree::<()>::new();
+                let child = tree
+                    .new_leaf(Style {
+                        position,
+                        justify_self: Some(AlignSelf::START),
+                        align_self: Some(AlignSelf::START),
+                        size: Size::from_lengths(70.0, 20.0),
+                        ..Style::default()
+                    })
+                    .unwrap();
+                tree.set_writing_mode(child, mode).unwrap();
+                let root = tree
+                    .new_with_children(
+                        Style {
+                            display: Display::Grid,
+                            position: Position::Relative,
+                            direction,
+                            grid_template_columns: vec![length(100.0)],
+                            grid_template_rows: vec![length(50.0)],
+                            size: Size::from_lengths(200.0, 100.0),
+                            ..Style::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap();
+                tree.set_writing_mode(root, mode).unwrap();
+                tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                positions.push(tree.layout(child).unwrap().location);
+            }
+            assert_eq!(positions[0], positions[1], "{mode:?}/{direction:?}");
+        }
+    }
+}
