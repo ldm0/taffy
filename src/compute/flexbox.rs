@@ -2236,10 +2236,9 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
-    // Only compute baselines for flex rows because we only support baseline alignment in the cross axis
-    // where that axis is also the inline axis
-    // TODO: this may need revisiting if/when we support vertical writing modes
-    if !constants.is_row {
+    // The reported baseline is physical y. Only share it for a horizontal
+    // inline main axis; a vertical column's physical row is not that axis.
+    if !constants.flow.main_axis_is_inline || !constants.is_row {
         return;
     }
 

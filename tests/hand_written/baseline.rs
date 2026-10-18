@@ -21,6 +21,41 @@ mod baseline {
         LayoutOutput::from_sizes_and_baselines(context.size, Rect::ZERO, Baselines::from_first(context.baseline_y))
     }
 
+    #[test]
+    fn vertical_column_does_not_share_horizontal_row_baseline_groups() {
+        let mut tree = TaffyTree::<BaselineContext>::new();
+        let mut items = Vec::new();
+        for (width, height, baseline) in [(150.0, 60.0, Some(24.0)), (100.0, 40.0, Some(16.0)), (40.0, 40.0, None)] {
+            items.push(
+                tree.new_leaf_with_context(
+                    Style {
+                        size: Size { width: length(width), height: length(height) },
+                        margin: Rect { left: length(11.0), right: length(7.0), top: length(5.0), bottom: length(9.0) },
+                        ..Style::default()
+                    },
+                    BaselineContext { size: Size { width, height }, baseline_y: baseline },
+                )
+                .unwrap(),
+            );
+        }
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::BASELINE,
+                    size: Size { width: auto(), height: length(200.0) },
+                    border: Rect::length(3.0),
+                    ..Style::default()
+                },
+                &items,
+            )
+            .unwrap();
+        tree.set_writing_mode(root, taffy::WritingMode::VerticalRl).unwrap();
+        tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, baseline_measure_function).unwrap();
+        assert_eq!(tree.layout(items[0]).unwrap().location.y, 8.0);
+    }
+
     /// Two flex items with different intrinsic baselines are aligned along their baselines
     /// when the container uses `align-items: baseline`. The item with the smaller distance
     /// from its top to its baseline should be shifted down so that both baselines coincide.
