@@ -801,22 +801,30 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             let item_direction = child_style.direction();
             let item_writing_mode = tree.get_writing_mode(child);
             let parent_writing_mode = tree.get_parent_writing_mode(child);
+            let justify_axis =
+                if parent_writing_mode.is_horizontal() { AbsoluteAxis::Horizontal } else { AbsoluteAxis::Vertical };
+            let align_axis = justify_axis.other_axis();
             let justify_self =
                 child_style.justify_self().unwrap_or(justify_items).resolve_self_relative_in_writing_mode(
                     item_writing_mode,
                     item_direction,
                     parent_writing_mode,
                     direction,
-                    AbsoluteAxis::Horizontal,
+                    justify_axis,
                 );
             let align_self = child_style.align_self().unwrap_or(align_items).resolve_self_relative_in_writing_mode(
                 item_writing_mode,
                 item_direction,
                 parent_writing_mode,
                 direction,
-                AbsoluteAxis::Vertical,
+                align_axis,
             );
 
+            let (horizontal_alignment, vertical_alignment) = if parent_writing_mode.is_horizontal() {
+                (justify_self, align_self)
+            } else {
+                (align_self, justify_self)
+            };
             // The static-position rectangle: the grid area determined by the grid-placement
             // properties when this grid is the child's containing block, and otherwise the
             // grid's content box, as if the child were the sole grid item in a grid area
@@ -852,14 +860,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 position,
                 static_position: Point {
                     x: AxisStaticPosition::from_alignment(
-                        justify_self,
+                        horizontal_alignment,
                         Line { start: area.left, end: area.right },
-                        direction.is_rtl(),
+                        parent_writing_mode.is_axis_flow_reversed(AbsoluteAxis::Horizontal, direction),
                     ),
                     y: AxisStaticPosition::from_alignment(
-                        align_self,
+                        vertical_alignment,
                         Line { start: area.top, end: area.bottom },
-                        false,
+                        parent_writing_mode.is_axis_flow_reversed(AbsoluteAxis::Vertical, direction),
                     ),
                 },
             });

@@ -166,3 +166,72 @@ fn grid_ratio_transfer_follows_authored_axis_clamping() {
         assert_eq!(tree.layout(grid).unwrap().size, expected);
     }
 }
+
+#[test]
+fn grid_replaced_alignment_changes_recompute_the_used_size() {
+    use taffy_test_helpers::{new_test_tree, test_measure_function, TestNodeContext};
+    let mut tree = new_test_tree();
+    let child = tree
+        .new_leaf_with_context(
+            Style { item_is_replaced: true, aspect_ratio: Some(1.0), ..Style::default() },
+            TestNodeContext::aspect_ratio(100.0, 1.0),
+        )
+        .unwrap();
+    let style = Style {
+        display: Display::Grid,
+        grid_template_columns: vec![length(100.0)],
+        grid_template_rows: vec![length(200.0)],
+        align_items: AlignItems::STRETCH,
+        ..Style::default()
+    };
+    let root = tree.new_with_children(style.clone(), &[child]).unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(child).unwrap().size, Size { width: 200.0, height: 200.0 });
+    tree.set_style(root, Style { align_items: AlignItems::START, ..style }).unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(child).unwrap().size, Size { width: 100.0, height: 100.0 });
+    tree.mark_dirty(child).unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(child).unwrap().size, Size { width: 100.0, height: 100.0 });
+}
+
+#[test]
+fn grid_absolute_safe_overflow_matches_start_in_vertical_writing_modes() {
+    for mode in [taffy::WritingMode::HorizontalTb, taffy::WritingMode::VerticalRl, taffy::WritingMode::VerticalLr] {
+        for child_width in [21.0, 33.0] {
+            let mut positions = Vec::new();
+            for safe in [false, true] {
+                let mut tree = TaffyTree::<()>::new();
+                let child = tree
+                    .new_leaf(Style {
+                        position: Position::Absolute,
+                        grid_row: Line { start: line(2), end: line(3) },
+                        grid_column: Line { start: line(2), end: line(3) },
+                        justify_self: Some(if safe { AlignSelf::SAFE_END } else { AlignSelf::START }),
+                        align_self: Some(if safe { AlignSelf::SAFE_CENTER } else { AlignSelf::START }),
+                        size: Size::from_lengths(child_width, child_width),
+                        ..Style::default()
+                    })
+                    .unwrap();
+                tree.set_writing_mode(child, mode).unwrap();
+                let root = tree
+                    .new_with_children(
+                        Style {
+                            display: Display::Grid,
+                            position: Position::Relative,
+                            grid_template_columns: vec![length(2.0), length(20.0), length(2.0)],
+                            grid_template_rows: vec![length(3.0), length(14.0), length(3.0)],
+                            size: Size::from_lengths(30.0, 25.0),
+                            ..Style::default()
+                        },
+                        &[child],
+                    )
+                    .unwrap();
+                tree.set_writing_mode(root, mode).unwrap();
+                tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+                positions.push(tree.layout(child).unwrap().location);
+            }
+            assert_eq!(positions[0], positions[1], "{mode:?}/{child_width}");
+        }
+    }
+}
