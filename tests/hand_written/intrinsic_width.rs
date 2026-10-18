@@ -787,3 +787,37 @@ fn definite_main_stretch_caps_the_automatic_minimum() {
     tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
     assert_eq!(tree.layout(child).unwrap().size.width, 90.0);
 }
+
+#[test]
+fn orthogonal_flex_basis_keywords_measure_the_item_block_axis() {
+    for basis in [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content()] {
+        let mut tree = TaffyTree::<()>::new();
+        let floats: Vec<_> = (0..2)
+            .map(|_| {
+                tree.new_leaf(Style { float: Float::Left, size: Size::from_lengths(50.0, 50.0), ..Style::default() })
+                    .unwrap()
+            })
+            .collect();
+        let child = tree
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    flex_basis: basis,
+                    flex_shrink: 0.0,
+                    min_size: Size { width: length(0.0), height: length(0.0) },
+                    ..Style::default()
+                },
+                &floats,
+            )
+            .unwrap();
+        tree.set_writing_mode(child, taffy::WritingMode::VerticalRl).unwrap();
+        let root = tree
+            .new_with_children(
+                Style { display: Display::Flex, size: Size::from_lengths(75.0, 75.0), ..Style::default() },
+                &[child],
+            )
+            .unwrap();
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        assert_eq!(tree.layout(child).unwrap().size.width, 100.0, "{basis:?}");
+    }
+}

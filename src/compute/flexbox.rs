@@ -1236,6 +1236,17 @@ fn determine_flex_base_size(
                 }
             };
 
+            // Min/max-content coincide in the item's block axis. Fit-content
+            // in that axis is content-based too, even when the physical main
+            // axis is horizontal (an orthogonal flex item).
+            let keyword_main_available_space = keyword_main_available_space.map(|available| {
+                if tree.get_writing_mode(child.node).block_axis() == dir.main_axis() {
+                    AvailableSpace::MaxContent
+                } else {
+                    available
+                }
+            });
+
             // C. If the used flex basis is content or depends on its available space,
             //    and the flex container is being sized under a min-content or max-content
             //    constraint (e.g. when performing automatic table layout [CSS21]),
