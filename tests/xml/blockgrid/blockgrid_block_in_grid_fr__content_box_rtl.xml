@@ -1,15 +1,15 @@
 <test name="blockgrid_block_in_grid_fr__content_box_rtl" use-rounding="true">
   <viewport width="max-content" height="max-content"/>
   <input>
-    <div display="grid" box-sizing="content-box" direction="rtl" grid-template-columns="1fr">
-      <text display="block" box-sizing="content-box" direction="rtl">
+    <div display="grid" box-sizing="content-box" direction="rtl" position="absolute" grid-template-columns="1fr">
+      <text display="block" box-sizing="content-box" direction="rtl" position="relative">
         HH​HH
       </text>
-      <div display="block" box-sizing="content-box" direction="rtl"/>
+      <div display="block" box-sizing="content-box" direction="rtl" position="relative"/>
     </div>
   </input>
   <expectations>
-    <node x="0" y="0" width="40" height="10">
+    <node x="0" y="0" width="40" height="10" resolved-rows="10px 0px" resolved-columns="40px">
       <node x="0" y="0" width="40" height="10"/>
       <node x="0" y="10" width="40" height="0"/>
     </node>

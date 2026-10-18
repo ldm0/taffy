@@ -48,6 +48,16 @@ impl<R: Rng, G: GenStyle<TaffyStyle>> BuildTree<R, G> for YogaTreeBuilder<R, G> 
         )
     }
 
+    fn mark_all_dirty(&mut self) {
+        // Yoga only allows nodes with a measure function to be marked as dirty directly. But it also marks nodes
+        // as dirty when their style changes, so we change a style and then immediately change it back.
+        for node in self.tree.values_mut() {
+            let flex_grow = node.get_flex_grow();
+            node.set_flex_grow(flex_grow + 1.0);
+            node.set_flex_grow(flex_grow);
+        }
+    }
+
     fn random_usize(&mut self, range: impl SampleRange<usize>) -> usize {
         self.rng.random_range(range)
     }
@@ -60,6 +70,10 @@ impl<R: Rng, G: GenStyle<TaffyStyle>> BuildTree<R, G> for YogaTreeBuilder<R, G> 
     fn create_container_node(&mut self, children: &[Self::Node]) -> Self::Node {
         let style = self.style_generator.create_container_style(&mut self.rng);
         create_yg_node(&mut self.tree, &style, &children)
+    }
+
+    fn create_node_with_style(&mut self, style: TaffyStyle, children: &[Self::Node]) -> Self::Node {
+        create_yg_node(&mut self.tree, &style, children)
     }
 
     fn set_root_children(&mut self, children: &[Self::Node]) {
@@ -133,7 +147,7 @@ fn into_yg_units(dim: impl Into<tf::Dimension>) -> yg::StyleUnit {
     match dim.into_raw().tag() {
         tf::CompactLength::AUTO_TAG => yg::StyleUnit::Auto,
         tf::CompactLength::LENGTH_TAG => yg::StyleUnit::Point(yg::OrderedFloat(val)),
-        tf::CompactLength::PERCENT_TAG => yg::StyleUnit::Percent(yg::OrderedFloat(val)),
+        tf::CompactLength::PERCENT_TAG => yg::StyleUnit::Percent(yg::OrderedFloat(val * 100.0)),
         _ => unreachable!(),
     }
 }
@@ -142,11 +156,11 @@ fn into_pixels(dim: impl Into<tf::Dimension>) -> f32 {
     dim.into().into_option().unwrap_or(0.0)
 }
 
-fn items_into_align(align: Option<tf::AlignSelf>) -> yg::Align {
+fn items_into_align(align: tf::AlignSelf) -> yg::Align {
     // Yoga has no safe/unsafe overflow-position concept — drop the safety field and dispatch
     // on the bare keyword. Safe and unsafe alike fold to the same yoga keyword.
-    let Some(align) = align else { return yg::Align::Auto };
     match align.keyword {
+        tf::AlignItemsKeyword::Normal => yg::Align::Auto,
         tf::AlignItemsKeyword::FlexStart => yg::Align::FlexStart,
         tf::AlignItemsKeyword::FlexEnd => yg::Align::FlexEnd,
         tf::AlignItemsKeyword::Center => yg::Align::Center,
@@ -159,9 +173,9 @@ fn items_into_align(align: Option<tf::AlignSelf>) -> yg::Align {
     }
 }
 
-fn content_into_align(align: Option<tf::AlignContent>) -> yg::Align {
-    let Some(align) = align else { return yg::Align::Auto };
+fn content_into_align(align: tf::AlignContent) -> yg::Align {
     match align.keyword {
+        tf::AlignContentKeyword::Normal => yg::Align::Auto,
         tf::AlignContentKeyword::FlexStart | tf::AlignContentKeyword::Start => yg::Align::FlexStart,
         tf::AlignContentKeyword::FlexEnd | tf::AlignContentKeyword::End => yg::Align::FlexEnd,
         tf::AlignContentKeyword::Center => yg::Align::Center,
@@ -172,9 +186,9 @@ fn content_into_align(align: Option<tf::AlignContent>) -> yg::Align {
     }
 }
 
-fn content_into_justify(align: Option<tf::JustifyContent>) -> yg::Justify {
-    let Some(align) = align else { return yg::Justify::FlexStart };
+fn content_into_justify(align: tf::JustifyContent) -> yg::Justify {
     match align.keyword {
+        tf::AlignContentKeyword::Normal => yg::Justify::FlexStart,
         tf::AlignContentKeyword::FlexStart | tf::AlignContentKeyword::Start => yg::Justify::FlexStart,
         tf::AlignContentKeyword::FlexEnd | tf::AlignContentKeyword::End => yg::Justify::FlexEnd,
         tf::AlignContentKeyword::Center => yg::Justify::Center,
@@ -202,8 +216,11 @@ fn apply_taffy_style(node: &mut yg::Node, style: &tf::Style) {
 
     // position
     node.set_position_type(match style.position {
+        tf::Position::Static => yg::PositionType::Static,
         tf::Position::Relative => yg::PositionType::Relative,
         tf::Position::Absolute => yg::PositionType::Absolute,
+        tf::Position::Fixed => yg::PositionType::Absolute,
+        tf::Position::Sticky => yg::PositionType::Static,
     });
     // inset
     node.set_position(yg::Edge::Left, into_yg_units(style.inset.left));
@@ -240,7 +257,7 @@ fn apply_taffy_style(node: &mut yg::Node, style: &tf::Style) {
 
     // alignment
     node.set_align_items(items_into_align(style.align_items));
-    node.set_align_self(items_into_align(style.align_self));
+    node.set_align_self(style.align_self.map(items_into_align).unwrap_or(yg::Align::Auto));
     node.set_align_content(content_into_align(style.align_content));
     node.set_justify_content(content_into_justify(style.justify_content));
 
@@ -259,6 +276,9 @@ fn apply_taffy_style(node: &mut yg::Node, style: &tf::Style) {
         tf::FlexWrap::NoWrap => yg::Wrap::NoWrap,
         tf::FlexWrap::Wrap => yg::Wrap::Wrap,
         tf::FlexWrap::WrapReverse => yg::Wrap::WrapReverse,
+        // Yoga has no equivalent of `flex-wrap: balance`
+        tf::FlexWrap::Balance => yg::Wrap::Wrap,
+        tf::FlexWrap::BalanceReverse => yg::Wrap::WrapReverse,
     });
     node.set_flex_basis(into_yg_units(style.flex_basis));
     node.set_flex_grow(style.flex_grow);

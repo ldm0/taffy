@@ -127,6 +127,9 @@ async fn main() {
         if name.starts_with("grid") {
             writeln!(&mut mod_file, r#"#[cfg(feature = "grid")]"#).unwrap();
         }
+        if name.starts_with("balance") {
+            writeln!(&mut mod_file, r#"#[cfg(feature = "flexbox_balance")]"#).unwrap();
+        }
         writeln!(
             &mut mod_file,
             "#[test]
@@ -608,6 +611,13 @@ fn generate_assertions(w: &mut XmlWriter, node: &Value, use_rounding: bool) {
         w.write_attribute("scroll_height", &scroll_height);
     }
 
+    if let Some(resolved_rows) = node["resolvedGridTemplateRows"].as_str() {
+        w.write_attribute("resolved-rows", &resolved_rows);
+    }
+    if let Some(resolved_columns) = node["resolvedGridTemplateColumns"].as_str() {
+        w.write_attribute("resolved-columns", &resolved_columns);
+    }
+
     if let Value::Array(ref value) = node["children"] {
         for child in value {
             generate_assertions(w, child, use_rounding);
@@ -645,11 +655,12 @@ fn generate_node(w: &mut XmlWriter, node: &Value) {
     maybe_write(w, "box-sizing", get_str_attr(&style["boxSizing"], Some("border-box")));
     maybe_write(w, "direction", get_str_attr(&style["direction"], None));
     maybe_write(w, "writing-mode", get_str_attr(&style["writingMode"], None));
-    maybe_write(w, "position", get_str_attr(&style["position"], Some("relative")));
+    maybe_write(w, "position", get_str_attr(&style["position"], Some("static")));
     maybe_write(w, "float", get_str_attr(&style["cssFloat"], None));
     maybe_write(w, "clear", get_str_attr(&style["clear"], None));
     maybe_write(w, "flex-direction", get_str_attr(&style["flexDirection"], Some("row")));
     maybe_write(w, "flex-wrap", get_str_attr(&style["flexWrap"], Some("nowrap")));
+    maybe_write(w, "flex-line-count", get_num_attr(&style["flexLineCount"], Some(1.0)));
     maybe_write(w, "overflow-x", get_str_attr(&style["overflowX"], Some("visible")));
     maybe_write(w, "overflow-y", get_str_attr(&style["overflowY"], Some("visible")));
 
@@ -658,6 +669,8 @@ fn generate_node(w: &mut XmlWriter, node: &Value) {
     if overflow_x.is_some() || overflow_y.is_some() {
         maybe_write(w, "scrollbar-width", get_num_attr(&style["scrollbarWidth"], None));
     }
+
+    maybe_write(w, "contain", get_str_attr(&style["contain"], Some("none")));
 
     maybe_write(w, "text-align", get_str_attr(&style["textAlign"], None));
     maybe_write(w, "align-items", get_str_attr(&style["alignItems"], None));
@@ -705,12 +718,8 @@ fn generate_node(w: &mut XmlWriter, node: &Value) {
     maybe_write(w, "right", get_dim_attr(&style["inset"]["right"], None));
 
     maybe_write(w, "grid-auto-flow", serialize_grid_auto_flow(&style["gridAutoFlow"]));
-    maybe_write(w, "grid-template-rows", serialize_array(&style["gridTemplateRows"], ' ', serialize_track_definition));
-    maybe_write(
-        w,
-        "grid-template-columns",
-        serialize_array(&style["gridTemplateColumns"], ' ', serialize_track_definition),
-    );
+    maybe_write(w, "grid-template-rows", get_str_attr(&style["gridTemplateRows"], None));
+    maybe_write(w, "grid-template-columns", get_str_attr(&style["gridTemplateColumns"], None));
     maybe_write(w, "grid-auto-rows", serialize_array(&style["gridAutoRows"], ' ', serialize_track_definition));
     maybe_write(w, "grid-auto-columns", serialize_array(&style["gridAutoColumns"], ' ', serialize_track_definition));
 
@@ -774,6 +783,16 @@ fn serialize_dimension(obj: &serde_json::Value) -> Option<Cow<'static, str>> {
                     "auto" => Cow::from("auto"),
                     "max-content" => Cow::from("max-content"),
                     "min-content" => Cow::from("min-content"),
+                    "fit-content" => Cow::from("fit-content"),
+                    "stretch" => Cow::from("stretch"),
+                    "content" => Cow::from("content"),
+                    "fit-content-px" => {
+                        Cow::from(format!("fit-content({}px)", value.expect("Expected value for fit-content(px) unit")))
+                    }
+                    "fit-content-percent" => Cow::from(format!(
+                        "fit-content({}%)",
+                        value.expect("Expected value for fit-content(%) unit") * 100.0
+                    )),
                     "px" => Cow::from(format!("{}px", value.expect("Expected value for px unit"))),
                     "percent" => Cow::from(format!("{}%", value.expect("Expected value for % unit") * 100.0)),
                     "fraction" => Cow::from(format!("{}fr", value.expect("Expected value for fr unit"))),
@@ -815,6 +834,7 @@ fn serialize_grid_position(grid_position: &serde_json::Value) -> Option<Cow<'sta
                 "auto" => None, //Some(Cow::from("auto")),
                 "span" => Some(Cow::from(format!("span {}", value()))),
                 "line" => Some(Cow::from((value() as i32).to_string())),
+                "named" => Some(Cow::from(grid_position.get("value").unwrap().as_str().unwrap().to_string())),
                 _ => unreachable!(),
             },
             _ => unreachable!(),

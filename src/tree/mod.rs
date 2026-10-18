@@ -9,15 +9,17 @@ mod layout;
 mod node;
 pub mod traits;
 
+#[doc(hidden)]
+#[cfg(all(debug_assertions, feature = "std"))]
+pub use cache::cache_mode_change_evictions;
 pub use cache::{Cache, ClearState};
-pub(crate) use layout::ChildLayoutInput;
 pub use layout::{
-    AutoSizeBehavior, CollapsibleMarginSet, ConstraintSpace, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput,
-    RequestedAxis, RunMode, SizingMode, SizingPurpose,
+    AxisStaticAlign, AxisStaticEdge, AxisStaticPosition, Baselines, CollapsibleMarginSet, Layout, LayoutInput,
+    LayoutOutput, OofCandidate, OofCandidates, OofPositioningArea, RequestedAxis, RunMode, SizingMode,
 };
 pub use node::NodeId;
 pub(crate) use traits::LayoutPartialTreeExt;
-pub use traits::{LayoutPartialTree, PrintTree, RoundTree, TraversePartialTree, TraverseTree};
+pub use traits::{LayoutContainingBlock, LayoutPartialTree, PrintTree, RoundTree, TraversePartialTree, TraverseTree};
 
 #[cfg(feature = "flexbox")]
 pub use traits::LayoutFlexboxContainer;
@@ -33,5 +35,7 @@ mod taffy_tree;
 #[cfg(feature = "taffy_tree")]
 pub use taffy_tree::{TaffyError, TaffyResult, TaffyTree};
 
-#[cfg(feature = "detailed_layout_info")]
 pub use layout::DetailedLayoutInfo;
+
+pub(crate) use layout::ChildLayoutInput;
+pub use layout::{AutoSizeBehavior, ConstraintSpace, IntrinsicSizeResult, SizingPurpose};

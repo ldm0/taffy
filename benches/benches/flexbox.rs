@@ -5,7 +5,9 @@ use taffy::prelude::*;
 use taffy::style::Dimension;
 use taffy::style::Style as TaffyStyle;
 
-use taffy_benchmarks::{BuildTreeExt, FixedStyleGenerator, GenStyle, TaffyTreeBuilder};
+use taffy_benchmarks::{
+    bench_layout, benchmark_group, BuildTree, BuildTreeExt, FixedStyleGenerator, GenStyle, TaffyTreeBuilder,
+};
 
 #[cfg(feature = "taffy03")]
 use taffy_benchmarks::taffy_03_helpers::Taffy03TreeBuilder;
@@ -31,18 +33,56 @@ impl GenStyle<TaffyStyle> for RandomStyleGenerator {
     }
 }
 
+fn random_inset(rng: &mut impl Rng) -> LengthPercentageAuto {
+    match rng.random_range(0.0..=1.0) {
+        rand if rand < 0.4 => auto(),
+        rand if rand < 0.8 => length(rng.random_range(0.0..500.0)),
+        _ => percent(rng.random_range(0.0..1.0)),
+    }
+}
+
+/// Generates absolutely positioned leaf nodes (with random insets) inside relatively positioned containers,
+/// so that the out-of-flow positioning pass does the bulk of the work.
+#[derive(Clone)]
+pub struct RandomAbsoluteStyleGenerator;
+impl GenStyle<TaffyStyle> for RandomAbsoluteStyleGenerator {
+    fn create_leaf_style(&mut self, rng: &mut impl Rng) -> TaffyStyle {
+        TaffyStyle {
+            position: Position::Absolute,
+            inset: Rect {
+                left: random_inset(rng),
+                right: random_inset(rng),
+                top: random_inset(rng),
+                bottom: random_inset(rng),
+            },
+            size: Size { width: random_dimension(rng), height: random_dimension(rng) },
+            ..Default::default()
+        }
+    }
+    fn create_container_style(&mut self, rng: &mut impl Rng) -> TaffyStyle {
+        TaffyStyle {
+            position: Position::Relative,
+            size: Size { width: random_dimension(rng), height: random_dimension(rng) },
+            ..Default::default()
+        }
+    }
+}
+
 macro_rules! run_benchmark {
     ($TreeBuilder: ty, $tree_builder_name: literal, $benchmark_name: expr, $group: ident, $builder: ident, $params: expr, $generate_style: expr, $generate_tree: expr) => {
         let benchmark_id = BenchmarkId::new(format!("{} {}", $tree_builder_name, $benchmark_name), $params);
+        let mut tree = None;
         $group.bench_with_input(benchmark_id, $params, |b, _params| {
-            b.iter_batched(
+            bench_layout(
+                b,
+                &mut tree,
                 || -> $TreeBuilder {
                     let mut $builder = <$TreeBuilder>::new($generate_style());
                     $generate_tree;
                     $builder
                 },
-                |mut builder| builder.compute_layout(None, None),
-                criterion::BatchSize::SmallInput,
+                |builder| builder.mark_all_dirty(),
+                |builder| builder.compute_layout(None, None),
             )
         });
     };
@@ -55,7 +95,7 @@ macro_rules! benchmark_each_library {
         #[cfg(feature = "taffy03")]
         run_benchmark!(Taffy03TreeBuilder<_, _>, "Taffy 0.3", $benchmark_name, $group, $builder, $params, $generate_style, $generate_tree);
 
-        run_benchmark!(TaffyTreeBuilder<_, _>, "Taffy 0.7", $benchmark_name, $group, $builder, $params, $generate_style, $generate_tree);
+        run_benchmark!(TaffyTreeBuilder<_, _>, "Taffy main", $benchmark_name, $group, $builder, $params, $generate_style, $generate_tree);
     };
 }
 
@@ -68,7 +108,7 @@ fn huge_nested_benchmarks(c: &mut Criterion) {
         100_000,
     ];
 
-    let mut group = c.benchmark_group("yoga 'huge nested'");
+    let mut group = benchmark_group(c, "yoga 'huge nested'");
     let style = Style { size: length(10.0), flex_grow: 1.0, ..Default::default() };
     for node_count in node_counts.iter() {
         benchmark_each_library!(
@@ -92,8 +132,7 @@ fn wide_benchmarks(c: &mut Criterion) {
         100_000,
     ];
 
-    let mut group = c.benchmark_group("Wide tree");
-    group.sample_size(10); // Decrease sample size, because the tasks take longer
+    let mut group = benchmark_group(c, "Wide tree");
     for node_count in node_counts.iter() {
         benchmark_each_library!(
             "(2-level hierarchy)",
@@ -107,10 +146,31 @@ fn wide_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
+fn absolute_benchmarks(c: &mut Criterion) {
+    let node_counts = [
+        #[cfg(feature = "small")]
+        1_000u32,
+        10_000,
+        #[cfg(feature = "large")]
+        100_000,
+    ];
+
+    let mut group = benchmark_group(c, "Absolutely positioned leaves");
+    for node_count in node_counts.iter() {
+        benchmark_each_library!(
+            "(2-level hierarchy)",
+            group,
+            builder,
+            node_count,
+            || RandomAbsoluteStyleGenerator,
+            builder.build_flat_hierarchy(*node_count)
+        );
+    }
+    group.finish();
+}
+
 fn deep_random_benchmarks(c: &mut Criterion) {
-    // Decrease sample size, because the tasks take longer
-    let mut group = c.benchmark_group("Deep tree (random size)");
-    group.sample_size(10);
+    let mut group = benchmark_group(c, "Deep tree (random size)");
     let benches = [
         (4000, "(12-level hierarchy)"),
         (10_000, "(14-level hierarchy)"),
@@ -139,8 +199,7 @@ fn deep_auto_benchmarks(c: &mut Criterion) {
     ];
     let style = Style { flex_grow: 1.0, margin: length(10.0), ..Default::default() };
 
-    let mut group = c.benchmark_group("Deep tree (auto size)");
-    group.sample_size(10); // Decrease sample size, because the tasks take longer
+    let mut group = benchmark_group(c, "Deep tree (auto size)");
     for (node_count, label) in benches.iter() {
         benchmark_each_library!(
             label,
@@ -176,8 +235,7 @@ fn super_deep_benchmarks(c: &mut Criterion) {
         }
     }
 
-    let mut group = c.benchmark_group("super deep");
-    group.sample_size(10);
+    let mut group = benchmark_group(c, "super deep");
 
     for depth in benches.iter() {
         // Yoga is particularly slow at these benchmarks, so we gate them behind a separate feature flag
@@ -206,7 +264,7 @@ fn super_deep_benchmarks(c: &mut Criterion) {
 
         run_benchmark!(
             TaffyTreeBuilder<_,_>,
-            "Taffy 0.7",
+            "Taffy main",
             "",
             group,
             builder,
@@ -221,10 +279,11 @@ fn super_deep_benchmarks(c: &mut Criterion) {
 fn taffy_benchmarks(c: &mut Criterion) {
     huge_nested_benchmarks(c);
     wide_benchmarks(c);
+    absolute_benchmarks(c);
     deep_auto_benchmarks(c);
     deep_random_benchmarks(c);
     super_deep_benchmarks(c);
 }
 
-criterion_group!(benches, taffy_benchmarks);
+criterion_group!(name = benches; config = taffy_benchmarks::criterion_config(); targets = taffy_benchmarks);
 criterion_main!(benches);

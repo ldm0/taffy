@@ -9,7 +9,7 @@ fn output(tree: &mut TestTree) -> LayoutOutput {
         NodeId::from(0_usize),
         LayoutInput {
             known_dimensions: Size::NONE,
-            definite_dimensions: Size::NONE,
+            known_dimensions_are_definite: Size { width: false, height: false },
             parent_size: Size::NONE,
             parent_writing_mode: WritingMode::HorizontalTb,
             available_space: Size::MAX_CONTENT,
@@ -30,6 +30,7 @@ fn block_content_end_excludes_positioned_overflow_and_tracks_percentages() {
             let root = TestNode::container(
                 Display::Block,
                 Style {
+                    position: Position::Relative,
                     size: Size { width: length(100.0), height: length(120.0) },
                     padding: Rect::length(5.0),
                     border: Rect::length(5.0),
@@ -43,6 +44,7 @@ fn block_content_end_excludes_positioned_overflow_and_tracks_percentages() {
                         width: length(10.0),
                         height: if percent_height { percent(0.5) } else { length(10.0) },
                     },
+                    position: Position::Relative,
                     inset: Rect { top: if relative { percent(0.5) } else { auto() }, ..Rect::auto() },
                     ..Style::default()
                 },
@@ -60,7 +62,7 @@ fn block_content_end_excludes_positioned_overflow_and_tracks_percentages() {
             assert_eq!(tree.layout(1).location.y, 10.0 + if relative { 50.0 } else { 0.0 });
             assert_eq!(tree.layout(2).size.height, 110.0);
             #[cfg(feature = "content_size")]
-            assert!(result.content_size.height > result.block_content_end.unwrap());
+            assert!(result.scrollable_overflow_rect.bottom > result.block_content_end.unwrap());
         }
     }
 }
@@ -74,10 +76,11 @@ fn table_cell_alignment_moves_floats_but_not_absolute_children() {
                 let mut root = TestNode::container(
                     Display::Block,
                     Style {
+                        position: Position::Relative,
                         size: Size { width: length(100.0), height: length(120.0) },
                         padding: Rect::length(5.0),
                         border: Rect::length(5.0),
-                        align_content: Some(alignment),
+                        align_content: alignment,
                         ..Style::default()
                     },
                     Rect::ZERO,

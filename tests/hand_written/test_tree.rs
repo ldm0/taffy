@@ -16,6 +16,7 @@ pub(super) struct TestNode {
     leaf: bool,
     measured_size: Size<f32>,
     layout: Layout,
+    hoisted_children: Vec<NodeId>,
 }
 
 impl TestNode {
@@ -30,6 +31,7 @@ impl TestNode {
             leaf: false,
             measured_size: Size::ZERO,
             layout: Layout::with_order(0),
+            hoisted_children: Vec::new(),
         }
     }
 
@@ -44,6 +46,7 @@ impl TestNode {
             leaf: true,
             measured_size,
             layout: Layout::with_order(0),
+            hoisted_children: Vec::new(),
         }
     }
 }
@@ -142,12 +145,16 @@ impl LayoutPartialTree for TestTree {
             );
         }
 
-        match style.display {
+        let mut result = match style.display {
             Display::Block | Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
             Display::Flex => compute_flexbox_layout(self, node_id, inputs),
             Display::Grid => compute_grid_layout(self, node_id, inputs),
             Display::None => unreachable!("hidden layout is not needed by these tests"),
+        };
+        if inputs.run_mode == taffy::RunMode::PerformLayout {
+            taffy::compute_oof_layout(self, node_id, &mut result);
         }
+        result
     }
 }
 
@@ -218,5 +225,28 @@ impl LayoutGridContainer for TestTree {
 
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_> {
         self.get_core_container_style(child_node_id)
+    }
+}
+
+impl taffy::CacheTree for TestTree {
+    fn cache_get(&mut self, _: NodeId, _: &LayoutInput) -> Option<LayoutOutput> {
+        None
+    }
+    fn cache_store(&mut self, _: NodeId, _: &LayoutInput, _: LayoutOutput) {}
+    fn cache_clear(&mut self, _: NodeId) {}
+}
+impl taffy::LayoutContainingBlock for TestTree {
+    type OofItemStyle<'a>
+        = &'a Style
+    where
+        Self: 'a;
+    fn get_oof_item_style(&self, id: NodeId) -> &Style {
+        &self.nodes[usize::from(id)].style
+    }
+    fn clear_hoisted_children(&mut self, id: NodeId) {
+        self.nodes[usize::from(id)].hoisted_children.clear();
+    }
+    fn add_hoisted_children(&mut self, id: NodeId, children: &[NodeId]) {
+        self.nodes[usize::from(id)].hoisted_children.extend_from_slice(children);
     }
 }

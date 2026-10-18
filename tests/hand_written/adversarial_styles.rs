@@ -67,6 +67,40 @@ mod adversarial_styles {
         assert!((width - 202.44017).abs() < 0.001, "track width: {width}");
     }
 
+    /// Placement clamps in logical coordinates before RTL maps tracks to
+    /// physical positions. A second clamp after mirroring used to discard this
+    /// far-edge implicit track when the explicit grid was already large.
+    #[test]
+    fn overlarge_implicit_tracks_preserve_the_rtl_physical_edge() {
+        for (direction, expected_x) in [(Direction::Ltr, 0.0), (Direction::Rtl, 18_999.0)] {
+            let mut tree = new_test_tree();
+            let child = tree
+                .new_leaf(Style {
+                    grid_column: Line { start: line(-19_005), end: auto() },
+                    size: Size { width: auto(), height: length(1.0) },
+                    ..Default::default()
+                })
+                .unwrap();
+            let root = tree
+                .new_with_children(
+                    Style {
+                        display: Display::Grid,
+                        direction,
+                        grid_template_columns: vec![length(1.0); 9_000],
+                        grid_auto_columns: vec![length(1.0)],
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            assert_eq!(tree.layout(root).unwrap().size.width, 19_000.0);
+            let layout = tree.layout(child).unwrap();
+            assert_eq!(layout.location.x, expected_x, "{direction:?}");
+            assert_eq!(layout.size.width, 1.0, "{direction:?}");
+        }
+    }
+
     /// A `NaN` flex factor makes every comparison in the "find the size of an fr" algorithm false,
     /// which used to prevent that algorithm from ever finding a valid hypothetical fr size.
     #[test]

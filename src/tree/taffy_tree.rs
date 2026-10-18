@@ -7,20 +7,18 @@ use slotmap::{DefaultKey, SlotMap};
 
 #[cfg(feature = "block_layout")]
 use crate::block::BlockContext;
-use crate::geometry::{Size, WritingMode};
+use crate::geometry::Size;
 use crate::style::{AvailableSpace, Display, Style};
 use crate::sys::DefaultCheapStr;
 use crate::tree::{
-    Cache, ClearState, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
+    Cache, ClearState, Layout, LayoutContainingBlock, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, PrintTree,
     RoundTree, RunMode, TraversePartialTree, TraverseTree,
 };
 use crate::util::debug::{debug_log, debug_log_node};
-use crate::util::sys::{new_vec_with_capacity, ChildrenVec, Vec};
-use crate::ResolvedAspectRatio;
+use crate::util::sys::{new_const_children_vec, new_vec_with_capacity, Box, ChildrenVec, Vec};
 
 use crate::compute::{
-    compute_cached_layout, compute_cached_size, compute_hidden_layout,
-    compute_leaf_layout_with_aspect_ratio_and_writing_mode, compute_root_layout, round_layout,
+    compute_cached_layout, compute_hidden_layout, compute_oof_layout, compute_root_layout, round_layout,
 };
 use crate::CacheTree;
 
@@ -31,9 +29,8 @@ use crate::{compute::compute_flexbox_layout, LayoutFlexboxContainer};
 #[cfg(feature = "grid")]
 use crate::{compute::compute_grid_layout, LayoutGridContainer};
 
-#[cfg(all(feature = "detailed_layout_info", feature = "grid"))]
+#[cfg(feature = "grid")]
 use crate::compute::grid::DetailedGridInfo;
-#[cfg(feature = "detailed_layout_info")]
 use crate::tree::layout::DetailedLayoutInfo;
 
 /// The error Taffy generates on invalid operations
@@ -97,8 +94,7 @@ impl Default for TaffyConfig {
 struct NodeData {
     /// The layout strategy used by this node
     pub(crate) style: Style,
-
-    /// The inherited writing mode that owns this node's logical axes.
+    /// Inherited writing mode supplied at the tree boundary.
     pub(crate) writing_mode: WritingMode,
 
     /// The always unrounded results of the layout computation. We must store this separately from the rounded
@@ -112,11 +108,14 @@ struct NodeData {
     /// Whether the node has context data associated with it or not
     pub(crate) has_context: bool,
 
+    /// Out-of-flow (absolute/fixed) boxes whose containing block is this node,
+    /// as recorded by the out-of-flow positioning pass
+    pub(crate) hoisted_children: ChildrenVec<NodeId>,
+
     /// The cached results of the layout computation
     pub(crate) cache: Cache,
 
     /// The computation result from layout algorithm
-    #[cfg(feature = "detailed_layout_info")]
     pub(crate) detailed_layout_info: DetailedLayoutInfo,
 }
 
@@ -131,7 +130,7 @@ impl NodeData {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             has_context: false,
-            #[cfg(feature = "detailed_layout_info")]
+            hoisted_children: new_const_children_vec(),
             detailed_layout_info: DetailedLayoutInfo::None,
         }
     }
@@ -216,20 +215,12 @@ impl<NodeContext> TraverseTree for TaffyTree<NodeContext> {}
 
 // CacheTree impl for TaffyTree
 impl<NodeContext> CacheTree for TaffyTree<NodeContext> {
-    fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
+    fn cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
         self.nodes[node_id.into()].cache.get(input)
     }
 
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput) {
         self.nodes[node_id.into()].cache.store(input, layout_output)
-    }
-
-    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.nodes[node_id.into()].cache.get_size(input)
-    }
-
-    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.nodes[node_id.into()].cache.store_size(input, result)
     }
 
     fn cache_clear(&mut self, node_id: NodeId) {
@@ -322,11 +313,8 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
-        let resolved = crate::compute::resolve_used_width_inputs(self, node_id, inputs);
+        let resolved = crate::resolve_used_width_inputs(self, node_id, inputs);
         let inputs = resolved.inputs;
-        let intrinsic_dependency = resolved.depends_on_block_constraints;
-        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
-
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
         //   - Else call the passed closure (below) to compute the result
@@ -340,7 +328,7 @@ where
             debug_log_node!(inputs);
 
             // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-            let output = match (display_mode, has_children) {
+            let mut output = match (display_mode, has_children) {
                 (Display::None, _) => compute_hidden_layout(tree, node_id),
                 #[cfg(feature = "block_layout")]
                 (Display::Block, true) => compute_block_layout(tree, node_id, inputs, block_ctx),
@@ -351,58 +339,28 @@ where
                 #[cfg(feature = "grid")]
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
+                    let writing_mode = tree.get_writing_mode(node_id);
                     let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
                     let node_key = node_id.into();
-                    let writing_mode = tree.taffy.nodes[node_key].writing_mode;
                     let style = &tree.taffy.nodes[node_key].style;
                     let has_context = tree.taffy.nodes[node_key].has_context;
                     let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
                     (tree.measure_function)(inputs, writing_mode, aspect_ratio, node_id, node_context, style)
                 }
             };
-            output
-                .with_block_constraint_dependency(intrinsic_dependency)
-                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
-        })
-    }
 
-    /// Operation-specific intrinsic sizing path used by parent formatting
-    /// contexts. The formatting algorithms still return a transitional combined
-    /// result internally; only its measurement projection crosses this seam.
-    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
-        debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
-        let resolved = crate::compute::resolve_used_width_inputs(self, node_id, inputs);
-        let inputs = resolved.inputs;
-        let intrinsic_dependency = resolved.depends_on_block_constraints;
-        let intrinsic_applied_aspect_ratio = resolved.applied_aspect_ratio;
+            // Lay out any out-of-flow candidates for which this node is the containing block.
+            // The rest bubble up via `output.oof_candidates`. This runs inside the cache-miss
+            // closure so that cached outputs already contain the processed candidate list.
+            // Only full layout passes run it: measure passes must not write hoisted box layouts
+            // (which would not be rewritten if the final layout pass is a cache hit).
+            if inputs.run_mode == RunMode::PerformLayout {
+                compute_oof_layout(tree, node_id, &mut output);
+            }
 
-        compute_cached_size(self, node_id, inputs, |tree, node_id, inputs| {
-            let display_mode = tree.taffy.nodes[node_id.into()].style.display;
-            let has_children = tree.child_count(node_id) > 0;
-            let output = match (display_mode, has_children) {
-                (Display::None, _) => compute_hidden_layout(tree, node_id),
-                #[cfg(feature = "block_layout")]
-                (Display::Block, true) => compute_block_layout(tree, node_id, inputs, None),
-                #[cfg(feature = "block_layout")]
-                (Display::FlowRoot, true) => compute_block_layout(tree, node_id, inputs, None),
-                #[cfg(feature = "flexbox")]
-                (Display::Flex, true) => compute_flexbox_layout(tree, node_id, inputs),
-                #[cfg(feature = "grid")]
-                (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
-                (_, false) => {
-                    let aspect_ratio = tree.get_resolved_aspect_ratio(node_id);
-                    let node_key = node_id.into();
-                    let writing_mode = tree.taffy.nodes[node_key].writing_mode;
-                    let style = &tree.taffy.nodes[node_key].style;
-                    let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    (tree.measure_function)(inputs, writing_mode, aspect_ratio, node_id, node_context, style)
-                }
-            };
             output
-                .with_block_constraint_dependency(intrinsic_dependency)
-                .with_applied_aspect_ratio(intrinsic_applied_aspect_ratio)
-                .into_intrinsic_size_result()
+                .with_block_constraint_dependency(resolved.depends_on_block_constraints)
+                .with_applied_aspect_ratio(resolved.applied_aspect_ratio)
         })
     }
 }
@@ -472,14 +430,16 @@ where
 
     type CustomIdent = DefaultCheapStr;
 
+    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.taffy.nodes[node_id.into()].writing_mode
+    }
+    fn get_parent_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        let parent = self.taffy.parents[node_id.into()].unwrap_or(node_id);
+        self.get_writing_mode(parent)
+    }
     #[inline(always)]
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_> {
         &self.taffy.nodes[node_id.into()].style
-    }
-
-    #[inline(always)]
-    fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
-        self.taffy.nodes[node_id.into()].writing_mode
     }
 
     #[inline(always)]
@@ -501,10 +461,42 @@ where
             None,
         )
     }
+}
+
+impl<NodeContext, MeasureFunction> LayoutContainingBlock for TaffyView<'_, NodeContext, MeasureFunction>
+where
+    MeasureFunction: FnMut(
+        LayoutInput,
+        WritingMode,
+        Option<ResolvedAspectRatio>,
+        NodeId,
+        Option<&mut NodeContext>,
+        &Style,
+    ) -> LayoutOutput,
+{
+    type OofItemStyle<'a>
+        = &'a Style
+    where
+        Self: 'a;
 
     #[inline(always)]
-    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
-        self.compute_child_size(node_id, inputs)
+    fn get_oof_item_style(&self, node_id: NodeId) -> Self::OofItemStyle<'_> {
+        &self.taffy.nodes[node_id.into()].style
+    }
+
+    #[inline(always)]
+    fn clear_hoisted_children(&mut self, node_id: NodeId) {
+        self.taffy.nodes[node_id.into()].hoisted_children.clear();
+    }
+
+    #[inline(always)]
+    fn add_hoisted_children(&mut self, node_id: NodeId, hoisted: &[NodeId]) {
+        self.taffy.nodes[node_id.into()].hoisted_children.extend_from_slice(hoisted);
+    }
+
+    #[inline(always)]
+    fn get_detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo {
+        &self.taffy.nodes[node_id.into()].detailed_layout_info
     }
 }
 
@@ -519,20 +511,12 @@ where
         &Style,
     ) -> LayoutOutput,
 {
-    fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
+    fn cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
         self.taffy.nodes[node_id.into()].cache.get(input)
     }
 
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput) {
         self.taffy.nodes[node_id.into()].cache.store(input, layout_output)
-    }
-
-    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.taffy.nodes[node_id.into()].cache.get_size(input)
-    }
-
-    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.taffy.nodes[node_id.into()].cache.store_size(input, result)
     }
 
     fn cache_clear(&mut self, node_id: NodeId) {
@@ -646,7 +630,6 @@ where
     }
 
     #[inline(always)]
-    #[cfg(feature = "detailed_layout_info")]
     fn set_detailed_grid_info(&mut self, node_id: NodeId, detailed_grid_info: DetailedGridInfo) {
         self.taffy.nodes[node_id.into()].detailed_layout_info = DetailedLayoutInfo::Grid(Box::new(detailed_grid_info));
     }
@@ -672,6 +655,22 @@ where
     #[inline(always)]
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
         self.taffy.nodes[node_id.into()].final_layout = *layout;
+    }
+
+    #[inline(always)]
+    fn is_out_of_flow(&self, node_id: NodeId) -> bool {
+        let node = &self.taffy.nodes[node_id.into()];
+        node.style.position.is_out_of_flow() && node.style.display != crate::style::Display::None
+    }
+
+    #[inline(always)]
+    fn hoisted_child_count(&self, node_id: NodeId) -> usize {
+        self.taffy.nodes[node_id.into()].hoisted_children.len()
+    }
+
+    #[inline(always)]
+    fn get_hoisted_child_id(&self, node_id: NodeId, index: usize) -> NodeId {
+        self.taffy.nodes[node_id.into()].hoisted_children[index]
     }
 }
 
@@ -753,6 +752,10 @@ impl<NodeContext> TaffyTree<NodeContext> {
         self.nodes.clear();
         self.children.clear();
         self.parents.clear();
+        // A context belongs to the node that owns it. Leaving it behind keeps arbitrary
+        // user data -- for a measure function, a boxed closure and everything it
+        // captures -- alive after the node it belonged to is gone.
+        self.node_context_data.clear();
     }
 
     /// Remove a specific node from the tree and drop it
@@ -777,6 +780,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
         let _ = self.children.remove(key);
         let _ = self.parents.remove(key);
         let _ = self.nodes.remove(key);
+        let _ = self.node_context_data.remove(key);
 
         Ok(node)
     }
@@ -973,6 +977,13 @@ impl<NodeContext> TaffyTree<NodeContext> {
         Ok(self.children[parent.into()].clone())
     }
 
+    /// Returns the out-of-flow (absolute/fixed) boxes whose containing block is `node`, as
+    /// recorded by the last layout. These boxes are laid out by `node` rather than by their
+    /// parent, and their [`Layout::location`] is relative to `node`.
+    pub fn hoisted_children(&self, node: NodeId) -> TaffyResult<&[NodeId]> {
+        Ok(&self.nodes[node.into()].hoisted_children)
+    }
+
     /// Sets the [`Style`] of the provided `node`
     #[inline]
     pub fn set_style(&mut self, node: NodeId, style: Style) -> TaffyResult<()> {
@@ -985,19 +996,6 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn style(&self, node: NodeId) -> TaffyResult<&Style> {
         Ok(&self.nodes[node.into()].style)
-    }
-
-    /// Sets the inherited writing mode used to project this node's logical axes.
-    #[inline]
-    pub fn set_writing_mode(&mut self, node: NodeId, writing_mode: WritingMode) -> TaffyResult<()> {
-        self.nodes[node.into()].writing_mode = writing_mode;
-        self.mark_dirty(node)
-    }
-
-    /// Gets the writing mode used to project this node's logical axes.
-    #[inline]
-    pub fn writing_mode(&self, node: NodeId) -> TaffyResult<WritingMode> {
-        Ok(self.nodes[node.into()].writing_mode)
     }
 
     /// Return this node layout relative to its parent
@@ -1020,7 +1018,6 @@ impl<NodeContext> TaffyTree<NodeContext> {
     ///
     /// Currently this is only implemented for CSS Grid containers where it contains
     /// the computed size of each grid track and the computed placement of each grid item
-    #[cfg(feature = "detailed_layout_info")]
     #[inline]
     pub fn detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo {
         &self.nodes[node_id.into()].detailed_layout_info
@@ -1052,13 +1049,25 @@ impl<NodeContext> TaffyTree<NodeContext> {
         Ok(())
     }
 
+    /// Sets the inherited writing mode used to project this node's logical axes.
+    #[inline]
+    pub fn set_writing_mode(&mut self, node: NodeId, writing_mode: WritingMode) -> TaffyResult<()> {
+        self.nodes[node.into()].writing_mode = writing_mode;
+        self.mark_dirty(node)
+    }
+
+    /// Gets the writing mode used to project this node's logical axes.
+    #[inline]
+    pub fn writing_mode(&self, node: NodeId) -> TaffyResult<WritingMode> {
+        Ok(self.nodes[node.into()].writing_mode)
+    }
+
     /// Indicates whether the layout of this node needs to be recomputed
     #[inline]
     pub fn dirty(&self, node: NodeId) -> TaffyResult<bool> {
         Ok(self.nodes[node.into()].cache.is_empty())
     }
 
-    /// Updates layout using a callback that returns the complete leaf layout,
     /// including baselines, following the upstream measurement protocol.
     pub fn compute_layout_with_measure_output<MeasureFunction>(
         &mut self,
@@ -1162,11 +1171,10 @@ impl<NodeContext> TaffyTree<NodeContext> {
 mod tests {
 
     use super::*;
-    use crate::geometry::{Line, Point, Rect};
-    use crate::style::{Dimension, Display, FlexDirection, Overflow};
+    use crate::compute_leaf_layout;
+    use crate::style::{Dimension, Display, FlexDirection};
     use crate::style_helpers::*;
     use crate::util::sys;
-    use crate::{compute_leaf_layout, RequestedAxis, SizingMode, SizingPurpose};
 
     fn size_measure_function(
         inputs: LayoutInput,
@@ -1330,231 +1338,6 @@ mod tests {
         taffy.set_node_context(node, Some(Size { width: 100.0, height: 100.0 })).unwrap();
         taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, size_measure_function).unwrap();
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
-    }
-
-    #[test]
-    #[cfg(feature = "block_layout")]
-    fn intrinsic_cache_tracks_transitive_block_constraint_dependency() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let child = taffy
-            .new_leaf(Style {
-                display: Display::Block,
-                size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
-                aspect_ratio: Some(1.0),
-                ..Style::default()
-            })
-            .unwrap();
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Block,
-                    size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
-                    ..Style::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        let initial = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::IntrinsicContribution,
-            axis: RequestedAxis::Horizontal,
-            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
-            known_dimensions: Size::NONE,
-            definite_dimensions: Size::NONE,
-            parent_size: Size { width: Some(200.0), height: Some(100.0) },
-            parent_writing_mode: crate::WritingMode::HorizontalTb,
-            available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
-        };
-
-        let mut layout_tree = taffy.as_layout_tree();
-        let first = layout_tree.compute_child_size(parent, initial);
-        let second = layout_tree.compute_child_size(
-            parent,
-            LayoutInput { parent_size: Size { width: Some(200.0), height: Some(50.0) }, ..initial },
-        );
-
-        assert_eq!(first.size.width, 100.0);
-        assert_eq!(second.size.width, 50.0);
-    }
-
-    #[test]
-    fn intrinsic_size_records_when_aspect_ratio_supplies_inline_size() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy
-            .new_leaf(Style {
-                display: Display::Block,
-                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
-                aspect_ratio: Some(2.0),
-                ..Style::default()
-            })
-            .unwrap();
-        let input = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            sizing_purpose: SizingPurpose::IntrinsicContribution,
-            axis: RequestedAxis::Horizontal,
-            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
-            known_dimensions: Size::NONE,
-            definite_dimensions: Size::NONE,
-            parent_size: Size::NONE,
-            parent_writing_mode: crate::WritingMode::HorizontalTb,
-            available_space: Size::MAX_CONTENT,
-            vertical_margins_are_collapsible: Line::FALSE,
-        };
-
-        let mut layout_tree = taffy.as_layout_tree();
-        let ratio_sized = layout_tree.compute_child_size(node, input);
-        let externally_sized = layout_tree.compute_child_size(
-            node,
-            LayoutInput {
-                known_dimensions: Size { width: Some(70.0), height: None },
-                definite_dimensions: Size { width: Some(70.0), height: None },
-                ..input
-            },
-        );
-
-        assert_eq!(ratio_sized.size.width, 80.0);
-        assert!(ratio_sized.applied_aspect_ratio);
-        assert_eq!(externally_sized.size.width, 70.0);
-        assert!(!externally_sized.applied_aspect_ratio);
-    }
-
-    #[test]
-    fn intrinsic_width_candidates_merge_authored_limits_before_height_measurement() {
-        use crate::BoxSizing;
-
-        let cases = [
-            (Dimension::auto(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
-            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
-            (Dimension::max_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 240.0),
-            (Dimension::length(200.0), Dimension::min_content(), BoxSizing::BorderBox, 0.0, 200.0),
-            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::ContentBox, 10.0, 170.0),
-            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 10.0, 150.0),
-        ];
-        for (min, max, box_sizing, padding, expected) in cases {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy
-                .new_leaf(Style {
-                    display: Display::Block,
-                    size: Size { width: Dimension::max_content(), height: Dimension::auto() },
-                    min_size: Size { width: min, height: Dimension::auto() },
-                    max_size: Size { width: max, height: Dimension::auto() },
-                    padding: Rect::length(padding),
-                    box_sizing,
-                    ..Style::default()
-                })
-                .unwrap();
-            let mut layout_tree = TaffyView {
-                taffy: &mut taffy,
-                measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
-                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
-                        inputs,
-                        style,
-                        writing_mode,
-                        aspect_ratio,
-                        |_, _| 0.0,
-                        |known, available| {
-                            let width = known.width.unwrap_or(match available.width {
-                                AvailableSpace::MinContent => 80.0,
-                                AvailableSpace::MaxContent => 240.0,
-                                AvailableSpace::Definite(limit) => limit.clamp(80.0, 240.0),
-                            });
-                            Size { width, height: (240.0 / width).ceil() * 10.0 }
-                        },
-                    )
-                },
-            };
-            let input = LayoutInput {
-                run_mode: RunMode::ComputeSize,
-                sizing_mode: SizingMode::InherentSize,
-                sizing_purpose: SizingPurpose::IntrinsicContribution,
-                axis: RequestedAxis::Vertical,
-                parent_size: Size { width: Some(150.0), height: None },
-                available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
-                ..LayoutInput::HIDDEN
-            };
-            let result = layout_tree.compute_child_size(node, input);
-            assert_eq!(result.size.width, expected, "min={min:?}, max={max:?}, box-sizing={box_sizing:?}");
-            assert_eq!(result.size.height, (240.0 / (expected - padding * 2.0)).ceil() * 10.0 + padding * 2.0);
-            let candidates = crate::compute::measure_intrinsic_width_constraints(&mut layout_tree, node, input);
-            assert_eq!(candidates.preferred, Some(240.0 + padding * 2.0), "raw max-content must remain unconstrained");
-        }
-    }
-
-    #[test]
-    fn intrinsic_width_resolution_preserves_parent_fixed_sizes_and_content_queries() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy
-            .new_leaf(Style {
-                size: Size { width: Dimension::max_content(), height: Dimension::auto() },
-                min_size: Size { width: Dimension::max_content(), height: Dimension::auto() },
-                max_size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
-                ..Style::default()
-            })
-            .unwrap();
-        let mut layout_tree = TaffyView {
-            taffy: &mut taffy,
-            measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
-                compute_leaf_layout_with_aspect_ratio_and_writing_mode(
-                    inputs,
-                    style,
-                    writing_mode,
-                    aspect_ratio,
-                    |_, _| 0.0,
-                    |known, _| Size { width: known.width.unwrap_or(240.0), height: 10.0 },
-                )
-            },
-        };
-        let input = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            known_dimensions: Size { width: Some(120.0), height: None },
-            parent_size: Size { width: Some(150.0), height: None },
-            ..LayoutInput::HIDDEN
-        };
-        assert_eq!(layout_tree.compute_child_size(node, input).size.width, 120.0);
-        let intrinsic = LayoutInput {
-            known_dimensions: Size::NONE,
-            sizing_mode: SizingMode::ContentSize,
-            available_space: Size::MAX_CONTENT,
-            ..input
-        };
-        assert_eq!(layout_tree.compute_child_size(node, intrinsic).size.width, 240.0);
-    }
-
-    #[test]
-    fn intrinsic_width_preferred_source_preserves_aspect_ratio_provenance() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy
-            .new_leaf(Style {
-                size: Size { width: Dimension::stretch(), height: Dimension::length(40.0) },
-                aspect_ratio: Some(2.0),
-                ..Style::default()
-            })
-            .unwrap();
-        let input = LayoutInput {
-            run_mode: RunMode::ComputeSize,
-            sizing_mode: SizingMode::InherentSize,
-            parent_size: Size { width: Some(150.0), height: None },
-            available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
-            ..LayoutInput::HIDDEN
-        };
-        assert_eq!(taffy.as_layout_tree().compute_child_size(node, input).size.width, 150.0);
-
-        let node = taffy
-            .new_leaf(Style {
-                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
-                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
-                aspect_ratio: Some(2.0),
-                ..Style::default()
-            })
-            .unwrap();
-        let result = taffy.as_layout_tree().compute_child_size(node, input);
-        assert_eq!(result.size.width, 80.0);
-        assert!(result.applied_aspect_ratio);
     }
 
     /// Test that adding `add_child()` works
@@ -1823,73 +1606,6 @@ mod tests {
         assert!(layout_result.is_ok());
     }
 
-    #[cfg(feature = "block_layout")]
-    #[test]
-    fn block_layout_synthesizes_last_baseline_at_scroll_child_margin_edge() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let child = taffy
-            .new_leaf(Style {
-                display: Display::Block,
-                size: Size { width: auto(), height: length(30.0) },
-                margin: Rect { left: zero(), right: zero(), top: zero(), bottom: length(10.0) },
-                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
-                ..Style::default()
-            })
-            .unwrap();
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::FlowRoot,
-                    size: Size { width: length(100.0), height: auto() },
-                    padding: Rect { left: zero(), right: zero(), top: length(5.0), bottom: length(5.0) },
-                    ..Style::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        let mut tree = taffy.as_layout_tree();
-        let output =
-            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
-
-        assert_eq!(output.first_baselines.y, None);
-        assert_eq!(output.last_baselines.y, Some(45.0));
-    }
-
-    #[cfg(all(feature = "grid", feature = "flexbox"))]
-    #[test]
-    fn column_flex_propagates_first_and_last_item_baselines() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let first_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
-        let first_grid = taffy
-            .new_with_children(
-                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
-                &[first_leaf],
-            )
-            .unwrap();
-        let second_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
-        let third_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
-        let second_grid = taffy
-            .new_with_children(
-                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
-                &[second_leaf, third_leaf],
-            )
-            .unwrap();
-        let root = taffy
-            .new_with_children(
-                Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Style::default() },
-                &[first_grid, second_grid],
-            )
-            .unwrap();
-
-        let mut tree = taffy.as_layout_tree();
-        let output =
-            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
-
-        assert_eq!(output.first_baselines.y, Some(10.0));
-        assert_eq!(output.last_baselines.y, Some(30.0));
-    }
-
     #[test]
     fn make_sure_layout_location_is_top_left() {
         use crate::prelude::*;
@@ -1944,5 +1660,349 @@ mod tests {
         taffy.set_children(new_parent, &[child]).unwrap();
 
         assert!(taffy.children(old_parent).unwrap().is_empty());
+    }
+
+    /// A context that increments a counter when dropped. Each test owns its own static
+    /// counter so the two can run in parallel.
+    struct DropCounted(&'static core::sync::atomic::AtomicUsize);
+
+    impl Drop for DropCounted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn remove_drops_the_nodes_context() {
+        static DROPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        let mut taffy: TaffyTree<DropCounted> = TaffyTree::new();
+        let node = taffy.new_leaf_with_context(Style::DEFAULT, DropCounted(&DROPS)).unwrap();
+
+        taffy.remove(node).unwrap();
+
+        assert_eq!(
+            DROPS.load(core::sync::atomic::Ordering::SeqCst),
+            1,
+            "removing a node must drop its context rather than strand it in node_context_data"
+        );
+    }
+
+    #[test]
+    fn clear_drops_every_nodes_context() {
+        static DROPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        let mut taffy: TaffyTree<DropCounted> = TaffyTree::new();
+        for _ in 0..8 {
+            taffy.new_leaf_with_context(Style::DEFAULT, DropCounted(&DROPS)).unwrap();
+        }
+
+        taffy.clear();
+
+        assert_eq!(
+            DROPS.load(core::sync::atomic::Ordering::SeqCst),
+            8,
+            "clear() drops all nodes, so it must drop their contexts too"
+        );
+    }
+}
+
+use crate::compute::compute_leaf_layout_with_aspect_ratio_and_writing_mode;
+use crate::{ResolvedAspectRatio, WritingMode};
+
+#[cfg(test)]
+mod moli_regressions {
+    use super::*;
+    use crate::geometry::{Line, Rect};
+    use crate::style_helpers::*;
+    use crate::{Dimension, FlexDirection, Overflow, Point, RequestedAxis, SizingMode, SizingPurpose};
+
+    #[test]
+    fn intrinsic_cache_tracks_transitive_block_constraint_dependency() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+                aspect_ratio: Some(1.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::auto(), height: Dimension::percent(1.0) },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        let initial = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Horizontal,
+            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            known_dimensions: Size::NONE,
+            known_dimensions_are_definite: Size { width: true, height: true },
+            parent_size: Size { width: Some(200.0), height: Some(100.0) },
+            parent_writing_mode: crate::WritingMode::HorizontalTb,
+            available_space: Size::MAX_CONTENT,
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+
+        let mut layout_tree = taffy.as_layout_tree();
+        let first = layout_tree.compute_child_size(parent, initial);
+        let second = layout_tree.compute_child_size(
+            parent,
+            LayoutInput { parent_size: Size { width: Some(200.0), height: Some(50.0) }, ..initial },
+        );
+
+        assert_eq!(first.size.width, 100.0);
+        assert_eq!(second.size.width, 50.0);
+    }
+
+    #[test]
+    fn intrinsic_size_records_when_aspect_ratio_supplies_inline_size() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            sizing_purpose: SizingPurpose::IntrinsicContribution,
+            axis: RequestedAxis::Horizontal,
+            block_auto_behavior: crate::AutoSizeBehavior::FitContent,
+            known_dimensions: Size::NONE,
+            known_dimensions_are_definite: Size { width: true, height: true },
+            parent_size: Size::NONE,
+            parent_writing_mode: crate::WritingMode::HorizontalTb,
+            available_space: Size::MAX_CONTENT,
+            vertical_margins_are_collapsible: Line::FALSE,
+        };
+
+        let mut layout_tree = taffy.as_layout_tree();
+        let ratio_sized = layout_tree.compute_child_size(node, input);
+        let externally_sized = layout_tree.compute_child_size(
+            node,
+            LayoutInput {
+                known_dimensions: Size { width: Some(70.0), height: None },
+                known_dimensions_are_definite: Size { width: true, height: true },
+                ..input
+            },
+        );
+
+        assert_eq!(ratio_sized.size.width, 80.0);
+        assert!(ratio_sized.applied_aspect_ratio);
+        assert_eq!(externally_sized.size.width, 70.0);
+        assert!(!externally_sized.applied_aspect_ratio);
+    }
+
+    #[test]
+    fn intrinsic_width_candidates_merge_authored_limits_before_height_measurement() {
+        use crate::BoxSizing;
+
+        let cases = [
+            (Dimension::auto(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 150.0),
+            (Dimension::max_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 0.0, 240.0),
+            (Dimension::length(200.0), Dimension::min_content(), BoxSizing::BorderBox, 0.0, 200.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::ContentBox, 10.0, 170.0),
+            (Dimension::min_content(), Dimension::percent(1.0), BoxSizing::BorderBox, 10.0, 150.0),
+        ];
+        for (min, max, box_sizing, padding, expected) in cases {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy
+                .new_leaf(Style {
+                    display: Display::Block,
+                    size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                    min_size: Size { width: min, height: Dimension::auto() }.map(Into::into),
+                    max_size: Size { width: max, height: Dimension::auto() }.map(Into::into),
+                    padding: Rect::length(padding),
+                    box_sizing,
+                    ..Style::default()
+                })
+                .unwrap();
+            let mut layout_tree = TaffyView {
+                taffy: &mut taffy,
+                measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
+                    compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                        inputs,
+                        style,
+                        writing_mode,
+                        aspect_ratio,
+                        |_, _| 0.0,
+                        |known, available| {
+                            let width = known.width.unwrap_or(match available.width {
+                                AvailableSpace::MinContent => 80.0,
+                                AvailableSpace::MaxContent => 240.0,
+                                AvailableSpace::Definite(limit) => limit.clamp(80.0, 240.0),
+                            });
+                            Size { width, height: (240.0 / width).ceil() * 10.0 }
+                        },
+                    )
+                },
+            };
+            let input = LayoutInput {
+                run_mode: RunMode::ComputeSize,
+                sizing_mode: SizingMode::InherentSize,
+                sizing_purpose: SizingPurpose::IntrinsicContribution,
+                axis: RequestedAxis::Vertical,
+                parent_size: Size { width: Some(150.0), height: None },
+                available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
+                ..LayoutInput::HIDDEN
+            };
+            let result = layout_tree.compute_child_size(node, input);
+            assert_eq!(result.size.width, expected, "min={min:?}, max={max:?}, box-sizing={box_sizing:?}");
+            assert_eq!(result.size.height, (240.0 / (expected - padding * 2.0)).ceil() * 10.0 + padding * 2.0);
+            let candidates = crate::compute::measure_intrinsic_width_constraints(&mut layout_tree, node, input);
+            assert_eq!(candidates.preferred, Some(240.0 + padding * 2.0), "raw max-content must remain unconstrained");
+        }
+    }
+
+    #[test]
+    fn intrinsic_width_resolution_preserves_parent_fixed_sizes_and_content_queries() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                min_size: Size { width: Dimension::max_content(), height: Dimension::auto() }.map(Into::into),
+                max_size: Size { width: Dimension::percent(1.0), height: Dimension::auto() }.map(Into::into),
+                ..Style::default()
+            })
+            .unwrap();
+        let mut layout_tree = TaffyView {
+            taffy: &mut taffy,
+            measure_function: |inputs, writing_mode, aspect_ratio, _, _, style| {
+                compute_leaf_layout_with_aspect_ratio_and_writing_mode(
+                    inputs,
+                    style,
+                    writing_mode,
+                    aspect_ratio,
+                    |_, _| 0.0,
+                    |known, _| Size { width: known.width.unwrap_or(240.0), height: 10.0 },
+                )
+            },
+        };
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            known_dimensions: Size { width: Some(120.0), height: None },
+            parent_size: Size { width: Some(150.0), height: None },
+            ..LayoutInput::HIDDEN
+        };
+        assert_eq!(layout_tree.compute_child_size(node, input).size.width, 120.0);
+        let intrinsic = LayoutInput {
+            known_dimensions: Size::NONE,
+            sizing_mode: SizingMode::ContentSize,
+            available_space: Size::MAX_CONTENT,
+            ..input
+        };
+        assert_eq!(layout_tree.compute_child_size(node, intrinsic).size.width, 240.0);
+    }
+
+    #[test]
+    fn intrinsic_width_preferred_source_preserves_aspect_ratio_provenance() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::stretch(), height: Dimension::length(40.0) },
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let input = LayoutInput {
+            run_mode: RunMode::ComputeSize,
+            sizing_mode: SizingMode::InherentSize,
+            parent_size: Size { width: Some(150.0), height: None },
+            available_space: Size { width: AvailableSpace::Definite(150.0), height: AvailableSpace::MaxContent },
+            ..LayoutInput::HIDDEN
+        };
+        assert_eq!(taffy.as_layout_tree().compute_child_size(node, input).size.width, 150.0);
+
+        let node = taffy
+            .new_leaf(Style {
+                size: Size { width: Dimension::auto(), height: Dimension::length(40.0) },
+                min_size: Size { width: Dimension::min_content(), height: Dimension::auto() }.map(Into::into),
+                aspect_ratio: Some(2.0),
+                ..Style::default()
+            })
+            .unwrap();
+        let result = taffy.as_layout_tree().compute_child_size(node, input);
+        assert_eq!(result.size.width, 80.0);
+        assert!(result.applied_aspect_ratio);
+    }
+
+    #[test]
+    fn block_layout_synthesizes_last_baseline_at_scroll_child_margin_edge() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let child = taffy
+            .new_leaf(Style {
+                display: Display::Block,
+                size: Size { width: auto(), height: length(30.0) },
+                margin: Rect { left: zero(), right: zero(), top: zero(), bottom: length(10.0) },
+                overflow: Point { x: Overflow::Hidden, y: Overflow::Hidden },
+                ..Style::default()
+            })
+            .unwrap();
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: Display::FlowRoot,
+                    size: Size { width: length(100.0), height: auto() },
+                    padding: Rect { left: zero(), right: zero(), top: length(5.0), bottom: length(5.0) },
+                    ..Style::default()
+                },
+                &[child],
+            )
+            .unwrap();
+
+        let mut tree = taffy.as_layout_tree();
+        let output =
+            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
+
+        // Upstream 0.15 synthesizes the first baseline from a scroll child's
+        // border box; Moli additionally retains its last margin-edge baseline.
+        assert_eq!(output.baselines.first, Some(35.0));
+        assert_eq!(output.baselines.last, Some(45.0));
+    }
+
+    #[test]
+    fn column_flex_propagates_first_and_last_item_baselines() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let first_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let first_grid = taffy
+            .new_with_children(
+                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
+                &[first_leaf],
+            )
+            .unwrap();
+        let second_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let third_leaf = taffy.new_leaf(Style { size: Size::from_lengths(10.0, 10.0), ..Style::default() }).unwrap();
+        let second_grid = taffy
+            .new_with_children(
+                Style { display: Display::Grid, grid_template_columns: vec![length(10.0)], ..Style::default() },
+                &[second_leaf, third_leaf],
+            )
+            .unwrap();
+        let root = taffy
+            .new_with_children(
+                Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Style::default() },
+                &[first_grid, second_grid],
+            )
+            .unwrap();
+
+        let mut tree = taffy.as_layout_tree();
+        let output =
+            tree.compute_child_layout(root, LayoutInput { run_mode: RunMode::PerformLayout, ..LayoutInput::HIDDEN });
+
+        assert_eq!(output.baselines.first, Some(10.0));
+        assert_eq!(output.baselines.last, Some(30.0));
     }
 }

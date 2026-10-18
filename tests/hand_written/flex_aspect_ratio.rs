@@ -9,7 +9,7 @@ fn transferred_max_size_does_not_clamp_the_flexed_main_size() {
     let mut tree = TaffyTree::<()>::new();
     let item = tree
         .new_leaf(Style {
-            max_size: Size { width: Dimension::auto(), height: Dimension::length(100.0) },
+            max_size: Size { width: Dimension::auto().into(), height: Dimension::length(100.0).into() },
             aspect_ratio: Some(0.5),
             flex_basis: Dimension::length(0.0),
             flex_grow: 1.0,

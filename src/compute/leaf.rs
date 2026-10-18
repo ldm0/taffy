@@ -1,55 +1,22 @@
 //! Computes size using styles and measure functions
 
-use crate::geometry::{Rect, Size};
-use crate::style::{resolve_scrollbar_insets, AvailableSpace, Position};
-use crate::tree::RunMode;
+#[cfg(feature = "content_size")]
+use crate::geometry::Rect;
+use crate::geometry::Size;
+use crate::style::{AvailableSpace, Overflow};
+use crate::tree::{Baselines, CollapsibleMarginSet, RunMode};
 use crate::tree::{LayoutInput, LayoutOutput, SizingMode};
 use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
-use crate::{BoxSizing, CoreStyle, ResolvedAspectRatio, WritingMode};
+use crate::{BoxSizing, CoreStyle};
 use core::unreachable;
 
-use super::common::aspect_ratio::{
-    apply_preferred_aspect_ratio, resolve_size_constraints, SizeConstraintInput, TransferredSizesMode,
-};
-use super::common::used_size::{resolve_used_axis, resolve_used_size};
-
-/// Node-level values resolved by the embedding before leaf layout begins.
-///
-/// These values form one adapter boundary so browser integrations do not need
-/// a separate leaf-layout entry point for every combination of inherited and
-/// replaced-element state.
-#[derive(Copy, Clone, Debug)]
-pub struct LeafLayoutContext {
-    /// The inherited writing mode that defines the node's logical axes.
-    writing_mode: WritingMode,
-    /// The node's used preferred ratio, including its sizing-box semantics.
-    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
-    /// Physical space occupied by resolved scrollbar gutters.
-    scrollbar_insets: Rect<f32>,
-}
-
-impl LeafLayoutContext {
-    /// Creates a context from values already resolved at the layout node.
-    pub const fn new(
-        writing_mode: WritingMode,
-        resolved_aspect_ratio: Option<ResolvedAspectRatio>,
-        scrollbar_insets: Rect<f32>,
-    ) -> Self {
-        Self { writing_mode, resolved_aspect_ratio, scrollbar_insets }
-    }
-
-    /// Builds the default context from values exposed directly by the style.
-    fn from_style(style: &impl CoreStyle) -> Self {
-        let resolved_aspect_ratio =
-            style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
-        Self::new(style.writing_mode(), resolved_aspect_ratio, resolve_scrollbar_insets(style))
-    }
-}
-
 /// Compute the size of a leaf node (node with no children)
+///
+/// A definite `inputs.available_space` is treated as the space available to the node's border box:
+/// the caller is expected to have already subtracted the node's margins from it.
 pub fn compute_leaf_layout<MeasureFunction>(
     inputs: LayoutInput,
     style: &impl CoreStyle,
@@ -59,174 +26,62 @@ pub fn compute_leaf_layout<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    compute_leaf_layout_with_context(
-        inputs,
-        style,
-        LeafLayoutContext::from_style(style),
-        resolve_calc_value,
-        measure_function,
-    )
-}
-
-/// Compute the size of a leaf node using a node-level resolved aspect ratio.
-///
-/// Browser integrations should use this entry point when the used ratio may
-/// depend on natural replaced-element sizing or when the ratio constrains a
-/// different sizing box than authored width and height.
-pub fn compute_leaf_layout_with_aspect_ratio<MeasureFunction>(
-    inputs: LayoutInput,
-    style: &impl CoreStyle,
-    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
-    resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    measure_function: MeasureFunction,
-) -> LayoutOutput
-where
-    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
-{
-    compute_leaf_layout_with_context(
-        inputs,
-        style,
-        LeafLayoutContext::new(style.writing_mode(), resolved_aspect_ratio, resolve_scrollbar_insets(style)),
-        resolve_calc_value,
-        measure_function,
-    )
-}
-
-/// Compute the size of a leaf node using scrollbar gutters that have already
-/// been resolved to physical edges by the embedding.
-///
-/// This is the axis-independent counterpart to [`compute_leaf_layout`]. The
-/// legacy entry point remains available and derives conventional end-edge
-/// gutters from the style's scalar scrollbar width.
-pub fn compute_leaf_layout_with_scrollbar_insets<MeasureFunction>(
-    inputs: LayoutInput,
-    style: &impl CoreStyle,
-    scrollbar_insets: Rect<f32>,
-    resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    measure_function: MeasureFunction,
-) -> LayoutOutput
-where
-    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
-{
-    let resolved_aspect_ratio =
-        style.aspect_ratio().and_then(|ratio| ResolvedAspectRatio::new(ratio, style.box_sizing()));
-    compute_leaf_layout_with_context(
-        inputs,
-        style,
-        LeafLayoutContext::new(style.writing_mode(), resolved_aspect_ratio, scrollbar_insets),
-        resolve_calc_value,
-        measure_function,
-    )
-}
-
-/// Compute a leaf layout using an explicit node writing mode.
-///
-/// This is the browser-adapter seam for integrations that retain inherited
-/// properties outside their numeric [`CoreStyle`] projection. The supplied
-/// mode must match [`LayoutPartialTree::get_writing_mode`](crate::LayoutPartialTree::get_writing_mode)
-/// for the same node.
-pub fn compute_leaf_layout_with_aspect_ratio_and_writing_mode<MeasureFunction>(
-    inputs: LayoutInput,
-    style: &impl CoreStyle,
-    writing_mode: WritingMode,
-    resolved_aspect_ratio: Option<ResolvedAspectRatio>,
-    resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    measure_function: MeasureFunction,
-) -> LayoutOutput
-where
-    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
-{
-    compute_leaf_layout_with_context(
-        inputs,
-        style,
-        LeafLayoutContext::new(writing_mode, resolved_aspect_ratio, resolve_scrollbar_insets(style)),
-        resolve_calc_value,
-        measure_function,
-    )
-}
-
-/// Computes a leaf from the complete set of embedding-resolved inputs.
-pub fn compute_leaf_layout_with_context<MeasureFunction>(
-    inputs: LayoutInput,
-    style: &impl CoreStyle,
-    context: LeafLayoutContext,
-    resolve_calc_value: impl Fn(*const (), f32) -> f32,
-    measure_function: MeasureFunction,
-) -> LayoutOutput
-where
-    MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
-{
-    let LeafLayoutContext { writing_mode, resolved_aspect_ratio, scrollbar_insets } = context;
-    let percentage_basis = inputs.constraint_space(writing_mode).margin_padding_percentage_basis();
     let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
-    let margin = style.margin().resolve_or_zero(percentage_basis, &resolve_calc_value);
-    let padding = style.padding().resolve_or_zero(percentage_basis, &resolve_calc_value);
-    let border = style.border().resolve_or_zero(percentage_basis, &resolve_calc_value);
+    // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
+    // This is not a bug, but is how CSS is specified (see: https://developer.mozilla.org/en-US/docs/Web/CSS/padding#values)
+    let padding = style.padding().resolve_or_zero(parent_size.width, &resolve_calc_value);
+    let border = style.border().resolve_or_zero(parent_size.width, &resolve_calc_value);
     let padding_border = padding + border;
     let pb_sum = padding_border.sum_axes();
     let box_sizing_adjustment = if style.box_sizing() == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
 
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
-    let (node_size, node_min_size, node_max_size, aspect_ratio, applied_aspect_ratio) = match sizing_mode {
+    let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
         SizingMode::ContentSize => {
             let node_size = known_dimensions;
             let node_min_size = Size::NONE;
             let node_max_size = Size::NONE;
-            (node_size, node_min_size, node_max_size, None, false)
+            (node_size, node_min_size, node_max_size, None)
         }
         SizingMode::InherentSize => {
-            let raw_size = style.size();
-            let resolved = resolve_size_constraints(SizeConstraintInput {
-                size: raw_size.maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment),
-                min_size: style
-                    .min_size()
-                    .maybe_resolve(parent_size, &resolve_calc_value)
-                    .maybe_add(box_sizing_adjustment),
-                max_size: style
-                    .max_size()
-                    .maybe_resolve(parent_size, &resolve_calc_value)
-                    .maybe_add(box_sizing_adjustment),
-                size_is_auto: raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                block_auto_behavior: inputs.block_auto_behavior,
-                transferred_sizes_mode: TransferredSizesMode::Normal,
-                aspect_ratio: resolved_aspect_ratio,
-                padding_border: pb_sum,
-            });
-            let style_size = resolved.size;
-            let style_min_size = resolved.min_size;
-            let style_max_size = resolved.max_size;
-            let preferred_inline_from_aspect_ratio = resolved.aspect_ratio_applied.width;
+            let aspect_ratio = style.aspect_ratio();
+            let style_size = style
+                .size()
+                .maybe_resolve(parent_size, &resolve_calc_value)
+                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_add(box_sizing_adjustment);
+            let style_min_size = style
+                .min_size()
+                .maybe_resolve(parent_size, &resolve_calc_value)
+                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_add(box_sizing_adjustment);
+            let style_max_size =
+                style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
 
-            // A parent formatting context may make exactly one border-box axis
-            // definite (for example a stretched flex cross size). Resolve the
-            // other axis through the preferred ratio at the leaf boundary just
-            // like an authored one-axis size.
-            let size_before_ratio = known_dimensions.or(style_size);
-            let node_size = apply_preferred_aspect_ratio(
-                size_before_ratio,
-                raw_size.map(|dimension| dimension.is_auto()),
-                writing_mode,
-                inputs.block_auto_behavior,
-                resolved_aspect_ratio,
-                pb_sum,
-            );
-            let applied_aspect_ratio = run_mode == RunMode::ComputeSize
-                && known_dimensions.width.is_none()
-                && (preferred_inline_from_aspect_ratio
-                    || (size_before_ratio.width.is_none() && node_size.width.is_some()));
-            (node_size, style_min_size, style_max_size, resolved_aspect_ratio, applied_aspect_ratio)
+            let node_size = known_dimensions.or(style_size);
+            (node_size, style_min_size, style_max_size, aspect_ratio)
         }
     };
 
-    let content_box_inset = padding_border + scrollbar_insets;
+    // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
+    // However, the axis are switched (transposed) because a node that scrolls vertically needs
+    // *horizontal* space to be reserved for a scrollbar
+    let scrollbar_gutter = style.overflow().transpose().map(|overflow| match overflow {
+        Overflow::Scroll => style.scrollbar_width(),
+        _ => 0.0,
+    });
+    // TODO: make side configurable based on the `direction` property
+    let mut content_box_inset = padding_border;
+    content_box_inset.right += scrollbar_gutter.x;
+    content_box_inset.bottom += scrollbar_gutter.y;
 
     let has_styles_preventing_being_collapsed_through = !style.is_block()
         || style.overflow().x.is_scroll_container()
         || style.overflow().y.is_scroll_container()
-        || style.position() == Position::Absolute
+        || style.position().is_out_of_flow()
+        || style.contain().establishes_independent_formatting_context()
         || padding.top > 0.0
         || padding.bottom > 0.0
         || border.top > 0.0
@@ -241,53 +96,46 @@ where
 
     // Return early if both width and height are known
     if run_mode == RunMode::ComputeSize && has_styles_preventing_being_collapsed_through {
-        let used_size = resolve_used_size(known_dimensions, node_size, node_min_size, node_max_size, pb_sum);
-        if let Size { width: Some(width), height: Some(height) } = used_size {
-            let size = Size { width, height };
-            return LayoutOutput::from_outer_size(size).with_applied_aspect_ratio(applied_aspect_ratio);
+        if let Size { width: Some(width), height: Some(height) } = node_size {
+            let size = Size { width, height }
+                .maybe_clamp(node_min_size, node_max_size)
+                .maybe_max(padding_border.sum_axes().map(Some));
+            return LayoutOutput {
+                size,
+                #[cfg(feature = "content_size")]
+                scrollable_overflow_rect: Rect::ZERO,
+                baselines: Baselines::NONE,
+                top_margin: CollapsibleMarginSet::ZERO,
+                bottom_margin: CollapsibleMarginSet::ZERO,
+                margins_can_collapse_through: false,
+                oof_candidates: crate::tree::OofCandidates::NONE,
+                oof_positioning_area: None,
+
+                ..LayoutOutput::HIDDEN
+            };
         };
     }
 
     // Compute available space
-    let resolve_available_axis = |known_dimension: Option<f32>,
-                                  node_size: Option<f32>,
-                                  available_space: AvailableSpace,
-                                  margin_sum: f32,
-                                  min_size: Option<f32>,
-                                  max_size: Option<f32>,
-                                  minimum_border_box_size: f32,
-                                  content_box_inset: f32| {
-        let resolved_size = resolve_used_axis(known_dimension, node_size, min_size, max_size, minimum_border_box_size);
-        available_space.maybe_sub(margin_sum).maybe_set(resolved_size).map_definite_value(|size| {
-            let outer_size = if resolved_size.is_some() {
-                size
-            } else {
-                size.maybe_clamp(min_size, max_size).max(minimum_border_box_size)
-            };
-            outer_size - content_box_inset
-        })
-    };
     let available_space = Size {
-        width: resolve_available_axis(
-            known_dimensions.width,
-            node_size.width,
-            available_space.width,
-            margin.horizontal_axis_sum(),
-            node_min_size.width,
-            node_max_size.width,
-            pb_sum.width,
-            content_box_inset.horizontal_axis_sum(),
-        ),
-        height: resolve_available_axis(
-            known_dimensions.height,
-            node_size.height,
-            available_space.height,
-            margin.vertical_axis_sum(),
-            node_min_size.height,
-            node_max_size.height,
-            pb_sum.height,
-            content_box_inset.vertical_axis_sum(),
-        ),
+        width: known_dimensions
+            .width
+            .map(AvailableSpace::from)
+            .unwrap_or(available_space.width)
+            .maybe_set(known_dimensions.width)
+            .maybe_set(node_size.width)
+            .map_definite_value(|size| {
+                size.maybe_clamp(node_min_size.width, node_max_size.width) - content_box_inset.horizontal_axis_sum()
+            }),
+        height: known_dimensions
+            .height
+            .map(AvailableSpace::from)
+            .unwrap_or(available_space.height)
+            .maybe_set(known_dimensions.height)
+            .maybe_set(node_size.height)
+            .map_definite_value(|size| {
+                size.maybe_clamp(node_min_size.height, node_max_size.height) - content_box_inset.vertical_axis_sum()
+            }),
     };
 
     // Measure node
@@ -299,30 +147,46 @@ where
         },
         available_space,
     );
-    let measured_outer_size = measured_size + content_box_inset.sum_axes();
-    let used_size = resolve_used_size(
-        known_dimensions,
-        node_size.or(measured_outer_size.map(Some)),
-        node_min_size,
-        node_max_size,
-        pb_sum,
-    )
-    .unwrap_or(measured_outer_size);
-    let ratio_height = Size { width: Some(used_size.width), height: None }
-        .maybe_apply_aspect_ratio_with_box_sizing(aspect_ratio, BoxSizing::BorderBox, pb_sum)
-        .height
-        .unwrap_or(0.0);
+    let clamped_size = known_dimensions
+        .or(node_size)
+        .unwrap_or(measured_size + content_box_inset.sum_axes())
+        .maybe_clamp(node_min_size, node_max_size);
     let size = Size {
-        width: used_size.width,
-        height: if known_dimensions.height.is_some() {
-            used_size.height
-        } else {
-            f32_max(used_size.height, ratio_height)
-        },
+        width: clamped_size.width,
+        height: f32_max(clamped_size.height, aspect_ratio.map(|ratio| clamped_size.width / ratio).unwrap_or(0.0)),
+    };
+    let size = size.maybe_max(padding_border.sum_axes().map(Some));
+
+    // A scroll container's own padding at the end of the content is part of its scrollable
+    // overflow region, so it is included in the overflow rect. Boxes that are not scroll
+    // containers do not extend their overflow region by their own padding.
+    #[cfg(feature = "content_size")]
+    let scrollable_overflow_rect = {
+        let is_scroll_container = style.overflow().x.is_scroll_container() || style.overflow().y.is_scroll_container();
+        let is_rtl = style.direction().is_rtl();
+        let start_padding = if is_rtl { padding.right } else { padding.left };
+        let end_padding = if is_rtl { padding.left } else { padding.right };
+        Rect {
+            left: 0.0,
+            right: start_padding + measured_size.width + if is_scroll_container { end_padding } else { 0.0 },
+            top: 0.0,
+            bottom: padding.top + measured_size.height + if is_scroll_container { padding.bottom } else { 0.0 },
+        }
     };
 
-    let mut output = LayoutOutput::from_sizes(size, measured_size + padding.sum_axes());
-    output.margins_can_collapse_through =
-        !has_styles_preventing_being_collapsed_through && size.height == 0.0 && measured_size.height == 0.0;
-    output.with_applied_aspect_ratio(applied_aspect_ratio)
+    LayoutOutput {
+        size,
+        #[cfg(feature = "content_size")]
+        scrollable_overflow_rect,
+        baselines: Baselines::NONE,
+        top_margin: CollapsibleMarginSet::ZERO,
+        bottom_margin: CollapsibleMarginSet::ZERO,
+        margins_can_collapse_through: !has_styles_preventing_being_collapsed_through
+            && size.height == 0.0
+            && measured_size.height == 0.0,
+        oof_candidates: crate::tree::OofCandidates::NONE,
+        oof_positioning_area: None,
+
+        ..LayoutOutput::HIDDEN
+    }
 }

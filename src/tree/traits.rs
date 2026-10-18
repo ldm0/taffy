@@ -126,11 +126,10 @@
 //! }
 //! ```
 //!
-use super::{ChildLayoutInput, IntrinsicSizeResult, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode};
-#[cfg(feature = "detailed_layout_info")]
+use super::{DetailedLayoutInfo, Layout, LayoutInput, LayoutOutput, NodeId, RequestedAxis, RunMode, SizingMode};
 use crate::debug::debug_log;
-use crate::geometry::{AbsoluteAxis, Rect, Size, WritingMode};
-use crate::style::{resolve_scrollbar_insets, CoreStyle, ResolvedAspectRatio};
+use crate::geometry::{AbsoluteAxis, Line, Rect, Size, WritingMode};
+use crate::style::{resolve_scrollbar_insets, AvailableSpace, CoreStyle, OofItemStyle, ResolvedAspectRatio};
 #[cfg(feature = "flexbox")]
 use crate::style::{FlexboxContainerStyle, FlexboxItemStyle};
 #[cfg(feature = "grid")]
@@ -139,7 +138,7 @@ use crate::CheapCloneStr;
 #[cfg(feature = "block_layout")]
 use crate::{BlockContainerStyle, BlockContext, BlockItemStyle};
 
-#[cfg(all(feature = "grid", feature = "detailed_layout_info"))]
+#[cfg(feature = "grid")]
 use crate::compute::grid::DetailedGridInfo;
 
 /// Taffy's abstraction for downward tree traversal.
@@ -183,6 +182,10 @@ pub trait LayoutPartialTree: TraversePartialTree {
     type CustomIdent: CheapCloneStr;
 
     /// Get core style
+    ///
+    /// Only called for the node being laid out, never for its children (those go through the
+    /// `get_*_child_style` methods), so it may be expressed in the node's own axes while child
+    /// styles are expressed in the axes of the node laying them out.
     fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_>;
 
     /// Get the resolved physical space occupied by scrollbar gutters.
@@ -205,6 +208,11 @@ pub trait LayoutPartialTree: TraversePartialTree {
     /// provided every leaf-layout call receives the same value.
     fn get_writing_mode(&self, node_id: NodeId) -> WritingMode {
         self.get_core_container_style(node_id).writing_mode()
+    }
+
+    /// Writing mode of the containing block used to resolve box percentages.
+    fn get_parent_writing_mode(&self, node_id: NodeId) -> WritingMode {
+        self.get_writing_mode(node_id)
     }
 
     /// Returns the node's used aspect ratio and the sizing box whose dimensions
@@ -232,16 +240,65 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Compute the specified node's size or full layout given the specified constraints
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput;
-
-    /// Measure the specified node while retaining intrinsic sizing provenance.
-    ///
-    /// Implementations with an operation-specific sizing path should override
-    /// this method. The default preserves compatibility with existing custom
-    /// trees while Taffy's combined cached dispatcher is split into independent
-    /// layout and intrinsic-sizing protocols.
-    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> IntrinsicSizeResult {
-        debug_assert_eq!(inputs.run_mode, RunMode::ComputeSize);
+    /// Compute an intrinsic size while retaining dependency provenance.
+    fn compute_child_size(&mut self, node_id: NodeId, inputs: LayoutInput) -> crate::IntrinsicSizeResult {
         self.compute_child_layout(node_id, inputs).into_intrinsic_size_result()
+    }
+}
+
+/// Extends [`LayoutPartialTree`] with the operations needed by the out-of-flow positioning pass
+/// ([`compute_oof_layout`](crate::compute_oof_layout)), which lays out the absolute/fixed boxes
+/// for which a node acts as the containing block.
+///
+/// This trait is required by [`compute_oof_layout`](crate::compute_oof_layout) and
+/// [`compute_root_layout`](crate::compute_root_layout).
+pub trait LayoutContainingBlock: LayoutPartialTree {
+    /// Resolve containing-block claims supplied by the embedding's style and geometry policy.
+    fn get_containing_block_claims(&self, node: NodeId) -> crate::ContainingBlockClaims {
+        self.get_core_container_style(node).is_containing_block()
+    }
+
+    /// The style type representing the styles of an out-of-flow (absolute/fixed) box being
+    /// positioned by its containing block
+    type OofItemStyle<'a>: OofItemStyle<CustomIdent = Self::CustomIdent>
+    where
+        Self: 'a;
+
+    /// Get the style of an out-of-flow box being positioned by its containing block
+    ///
+    /// Interpreted in the containing block's axes (see [`LayoutPartialTree::get_core_container_style`]).
+    fn get_oof_item_style(&self, node_id: NodeId) -> Self::OofItemStyle<'_>;
+
+    /// Clear the list of out-of-flow (absolute/fixed) boxes whose containing block is `node_id`.
+    ///
+    /// This is called (exactly once) for each node laid out with `RunMode::PerformLayout`, before
+    /// the boxes it lays out are recorded with [`add_hoisted_children`](Self::add_hoisted_children),
+    /// so that lists recorded by previous layout runs do not persist.
+    fn clear_hoisted_children(&mut self, node_id: NodeId);
+
+    /// Append to the list of out-of-flow boxes whose containing block is `node_id`.
+    ///
+    /// This is called by each containing block for the boxes it lays out, and by
+    /// [`compute_root_layout`](crate::compute_root_layout) to record boxes (e.g. `position: fixed`
+    /// boxes) which are positioned by the final root positioning pass, which runs after the root
+    /// node's own layout algorithm has already recorded its list. The recorded lists are consumed
+    /// by [`round_layout`](crate::round_layout) (out-of-flow boxes are rounded via their
+    /// containing block rather than via their parent), and are also useful for consumers
+    /// implementing paint/hit-testing traversals.
+    fn add_hoisted_children(&mut self, node_id: NodeId, hoisted: &[NodeId]);
+
+    /// Read back the detailed layout information most recently recorded for `node_id`
+    /// (as stored by [`LayoutGridContainer::set_detailed_grid_info`]).
+    ///
+    /// This is used by the out-of-flow positioning pass to resolve the grid area of absolutely
+    /// positioned boxes whose containing block is a grid container. Implementing this method is
+    /// optional: the default implementation returns [`DetailedLayoutInfo::None`], in which case
+    /// such boxes are positioned relative to the grid container's padding box instead of their
+    /// grid area.
+    #[inline(always)]
+    fn get_detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo<Self::CustomIdent> {
+        let _ = node_id;
+        &DetailedLayoutInfo::None
     }
 }
 
@@ -250,21 +307,10 @@ pub trait LayoutPartialTree: TraversePartialTree {
 /// The `Cache` struct implements a per-node cache that is compatible with this trait.
 pub trait CacheTree {
     /// Try to retrieve a cached result from the cache
-    fn cache_get(&self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput>;
+    fn cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput>;
 
     /// Store a computed size in the cache
     fn cache_store(&mut self, node_id: NodeId, input: &LayoutInput, layout_output: LayoutOutput);
-
-    /// Try to retrieve an intrinsic size result from the node's measurement
-    /// cache.
-    fn cache_get_size(&self, node_id: NodeId, input: &LayoutInput) -> Option<IntrinsicSizeResult> {
-        self.cache_get(node_id, input).map(LayoutOutput::into_intrinsic_size_result)
-    }
-
-    /// Store an intrinsic size result in the node's measurement cache.
-    fn cache_store_size(&mut self, node_id: NodeId, input: &LayoutInput, result: IntrinsicSizeResult) {
-        self.cache_store(node_id, input, LayoutOutput::from_intrinsic_size_result(result));
-    }
 
     /// Clear all cache entries for the node
     fn cache_clear(&mut self, node_id: NodeId);
@@ -279,6 +325,19 @@ pub trait RoundTree: TraverseTree {
     fn get_unrounded_layout(&self, node_id: NodeId) -> Layout;
     /// Get a reference to the node's final layout
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout);
+    /// Whether the node is an out-of-flow (absolute/fixed) box. Out-of-flow boxes are hoisted to
+    /// their containing block, so [`round_layout`](crate::round_layout) skips them when visiting a
+    /// node's children and instead visits them via their containing block's hoisted child list.
+    ///
+    /// This should return `true` for box-generating nodes whose position style is `absolute` or
+    /// `fixed`, and `false` otherwise (including for `display: none` nodes).
+    fn is_out_of_flow(&self, node_id: NodeId) -> bool;
+    /// The number of out-of-flow boxes whose containing block is `node_id`
+    /// (as recorded by [`LayoutContainingBlock::add_hoisted_children`])
+    fn hoisted_child_count(&self, node_id: NodeId) -> usize;
+    /// Get the nth out-of-flow box whose containing block is `node_id`
+    /// (as recorded by [`LayoutContainingBlock::add_hoisted_children`])
+    fn get_hoisted_child_id(&self, node_id: NodeId, index: usize) -> NodeId;
 }
 
 /// Trait used by the `print_tree` method which prints a debug representation
@@ -307,6 +366,8 @@ pub trait LayoutFlexboxContainer: LayoutPartialTree {
     fn get_flexbox_container_style(&self, node_id: NodeId) -> Self::FlexboxContainerStyle<'_>;
 
     /// Get the child's styles
+    ///
+    /// Interpreted in the container's axes (see [`LayoutPartialTree::get_core_container_style`]).
     fn get_flexbox_child_style(&self, child_node_id: NodeId) -> Self::FlexboxItemStyle<'_>;
 }
 
@@ -327,14 +388,15 @@ pub trait LayoutGridContainer: LayoutPartialTree {
     fn get_grid_container_style(&self, node_id: NodeId) -> Self::GridContainerStyle<'_>;
 
     /// Get the child's styles
+    ///
+    /// Interpreted in the container's axes (see [`LayoutPartialTree::get_core_container_style`]).
     fn get_grid_child_style(&self, child_node_id: NodeId) -> Self::GridItemStyle<'_>;
 
     /// Set the node's detailed grid information
     ///
     /// Implementing this method is optional. Doing so allows you to access details about the the grid such as
     /// the computed size of each grid track and the computed placement of each grid item.
-    #[cfg(feature = "detailed_layout_info")]
-    fn set_detailed_grid_info(&mut self, _node_id: NodeId, _detailed_grid_info: DetailedGridInfo) {
+    fn set_detailed_grid_info(&mut self, _node_id: NodeId, _detailed_grid_info: DetailedGridInfo<Self::CustomIdent>) {
         debug_log!("LayoutGridContainer::set_detailed_grid_info called");
     }
 }
@@ -342,6 +404,14 @@ pub trait LayoutGridContainer: LayoutPartialTree {
 #[cfg(feature = "block_layout")]
 /// Extends [`LayoutPartialTree`] with getters for the styles required for CSS Block layout
 pub trait LayoutBlockContainer: LayoutPartialTree {
+    /// Percentage block-size basis resolved by the embedding.
+    fn get_block_percentage_resolution_height(&self, _node_id: NodeId, height: Option<f32>) -> Option<f32> {
+        height
+    }
+    /// Whether block alignment includes floated content.
+    fn block_alignment_includes_floats(&self, _node_id: NodeId) -> bool {
+        true
+    }
     /// The style type representing the CSS Block container's styles
     type BlockContainerStyle<'a>: BlockContainerStyle
     where
@@ -355,26 +425,9 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
     fn get_block_container_style(&self, node_id: NodeId) -> Self::BlockContainerStyle<'_>;
 
     /// Get the child's styles
-    fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
-
-    /// Resolve the block container's border-box height used as a percentage basis.
     ///
-    /// A browser's table layout may assign a cell its final row height without
-    /// making that height definite for normal-flow descendants. Returning `None`
-    /// preserves that distinction while absolutely positioned descendants still
-    /// use the container's final geometry. Content-box insets are subtracted by
-    /// the block algorithm after this hook.
-    fn get_block_percentage_resolution_height(&self, _node_id: NodeId, height: Option<f32>) -> Option<f32> {
-        height
-    }
-
-    /// Whether block alignment should move contained floats together with the
-    /// normal-flow content. Table-cell embedders need this for vertical alignment;
-    /// ordinary block `align-content` leaves floated boxes in their original positions.
-    #[cfg(feature = "float_layout")]
-    fn block_alignment_includes_floats(&self, _node_id: NodeId) -> bool {
-        false
-    }
+    /// Interpreted in the container's axes (see [`LayoutPartialTree::get_core_container_style`]).
+    fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
 
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
@@ -394,33 +447,108 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
 /// A private trait which allows us to add extra convenience methods to types which implement
 /// LayoutTree without making those methods public.
 pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
-    /// Measure a child while retaining intrinsic sizing dependency metadata.
-    #[inline(always)]
+    /// Measure an embedding request with its intrinsic provenance.
     fn measure_child_size_with_metadata(
         &mut self,
         node_id: NodeId,
-        inputs: ChildLayoutInput,
+        inputs: crate::tree::ChildLayoutInput,
         axis: RequestedAxis,
-    ) -> IntrinsicSizeResult {
+    ) -> crate::IntrinsicSizeResult {
         self.compute_child_size(node_id, inputs.into_measurement(axis))
     }
-
     /// Compute the size of the node given the specified constraints
     #[inline(always)]
-    fn measure_child_size(&mut self, node_id: NodeId, inputs: ChildLayoutInput, axis: AbsoluteAxis) -> f32 {
-        self.measure_child_size_with_metadata(node_id, inputs, axis.into()).size.get_abs(axis)
+    #[allow(clippy::too_many_arguments)]
+    fn measure_child_size(
+        &mut self,
+        node_id: NodeId,
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        axis: AbsoluteAxis,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> f32 {
+        self.compute_child_layout(
+            node_id,
+            LayoutInput {
+                known_dimensions,
+                known_dimensions_are_definite: Size { width: true, height: true },
+                parent_size,
+                parent_writing_mode: self.get_parent_writing_mode(node_id),
+                available_space,
+                sizing_mode,
+                axis: axis.into(),
+                run_mode: RunMode::ComputeSize,
+                sizing_purpose: crate::SizingPurpose::IntrinsicContribution,
+                vertical_margins_are_collapsible,
+
+                ..LayoutInput::HIDDEN
+            },
+        )
+        .size
+        .get_abs(axis)
     }
 
     /// Compute the size of the node given the specified constraints
     #[inline(always)]
-    fn measure_child_size_both(&mut self, node_id: NodeId, inputs: ChildLayoutInput) -> Size<f32> {
-        self.measure_child_size_with_metadata(node_id, inputs, RequestedAxis::Both).size
+    #[allow(clippy::too_many_arguments)]
+    fn measure_child_size_both(
+        &mut self,
+        node_id: NodeId,
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> Size<f32> {
+        self.compute_child_layout(
+            node_id,
+            LayoutInput {
+                known_dimensions,
+                known_dimensions_are_definite: Size { width: true, height: true },
+                parent_size,
+                parent_writing_mode: self.get_parent_writing_mode(node_id),
+                available_space,
+                sizing_mode,
+                axis: RequestedAxis::Both,
+                run_mode: RunMode::ComputeSize,
+                sizing_purpose: crate::SizingPurpose::IntrinsicContribution,
+                vertical_margins_are_collapsible,
+
+                ..LayoutInput::HIDDEN
+            },
+        )
+        .size
     }
 
     /// Perform a full layout on the node given the specified constraints
     #[inline(always)]
-    fn perform_child_layout(&mut self, node_id: NodeId, inputs: ChildLayoutInput) -> LayoutOutput {
-        self.compute_child_layout(node_id, inputs.into_layout())
+    fn perform_child_layout(
+        &mut self,
+        node_id: NodeId,
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        vertical_margins_are_collapsible: Line<bool>,
+    ) -> LayoutOutput {
+        self.compute_child_layout(
+            node_id,
+            LayoutInput {
+                known_dimensions,
+                known_dimensions_are_definite: Size { width: true, height: true },
+                parent_size,
+                parent_writing_mode: self.get_parent_writing_mode(node_id),
+                available_space,
+                sizing_mode,
+                axis: RequestedAxis::Both,
+                run_mode: RunMode::PerformLayout,
+                vertical_margins_are_collapsible,
+
+                ..LayoutInput::HIDDEN
+            },
+        )
     }
 
     /// Alias to `resolve_calc_value` with a shorter function name
@@ -438,4 +566,4 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
     }
 }
 
-impl<T: LayoutPartialTree + ?Sized> LayoutPartialTreeExt for T {}
+impl<T: LayoutPartialTree> LayoutPartialTreeExt for T {}

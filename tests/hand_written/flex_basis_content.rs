@@ -21,7 +21,7 @@ fn content_basis_ignores_preferred_main_size() {
         .new_with_children(
             Style {
                 size: fixed_size(10.0, 10.0),
-                min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+                min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
                 flex_basis: Dimension::content(),
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
@@ -35,7 +35,7 @@ fn content_basis_ignores_preferred_main_size() {
             Style {
                 display: Display::Flex,
                 size: fixed_size(200.0, 40.0),
-                align_items: Some(AlignItems::FLEX_START),
+                align_items: AlignItems::FLEX_START,
                 ..Style::default()
             },
             &[item],
@@ -53,7 +53,7 @@ fn content_basis_uses_only_an_independently_definite_cross_size_for_aspect_ratio
     let plain = tree
         .new_leaf(Style {
             size: Size { width: Dimension::length(20.0), height: Dimension::auto() },
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,
@@ -65,7 +65,7 @@ fn content_basis_uses_only_an_independently_definite_cross_size_for_aspect_ratio
     let explicit_cross = tree
         .new_leaf(Style {
             size: fixed_size(20.0, 30.0),
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,
@@ -77,7 +77,7 @@ fn content_basis_uses_only_an_independently_definite_cross_size_for_aspect_ratio
     let stretched = tree
         .new_leaf(Style {
             size: Size { width: Dimension::length(20.0), height: Dimension::auto() },
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,
@@ -106,7 +106,7 @@ fn content_basis_aspect_ratio_respects_the_box_sizing_edge() {
     let content_box_start = tree
         .new_leaf(Style {
             size: fixed_size(20.0, 30.0),
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,
@@ -121,7 +121,7 @@ fn content_basis_aspect_ratio_respects_the_box_sizing_edge() {
     let content_box_stretch = tree
         .new_leaf(Style {
             size: Size { width: Dimension::length(20.0), height: Dimension::auto() },
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,
@@ -136,7 +136,7 @@ fn content_basis_aspect_ratio_respects_the_box_sizing_edge() {
     let border_box_start = tree
         .new_leaf(Style {
             size: fixed_size(20.0, 30.0),
-            min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+            min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
             flex_basis: Dimension::content(),
             flex_grow: 0.0,
             flex_shrink: 0.0,

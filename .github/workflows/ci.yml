@@ -45,15 +45,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --examples
 
-  # cosmic_text example is excluded from the workspace as it breaks compilation of all crates
-  # in the workspace with our MSRV compiler
-  build-cosmic-text-example:
-    name: "Build cosmic-text example"
+  # The Parley example is excluded from the workspace as its dependencies require a newer Rust version
+  # than Taffy's MSRV
+  build-parley-example:
+    name: "Build Parley example"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cd examples/cosmic_text && cargo build
+      - name: Install fontconfig
+        run: sudo apt-get update && sudo apt-get install libfontconfig-dev
+      - run: cd examples/parley && cargo build
 
   # No features
   test-features-none:
@@ -196,7 +198,7 @@ jobs:
       - run: cargo build --no-default-features --features flexbox,detailed_layout_info,std,taffy_tree
       - run: cargo test --tests --no-default-features --features flexbox,detailed_layout_info,std,taffy_tree
 
-  # With alloc feature
+  # no_std (alloc only, no std). The `alloc` feature is a deprecated no-op kept for compatibility.
 
   test-features-grid-with-alloc:
     name: "Test Suite [alloc + no algorithms]"
@@ -205,7 +207,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --no-default-features --features alloc
-      - run: cargo build --no-default-features --features alloc,taffy_tree
+      - run: cargo build --no-default-features --features alloc,taffy_tree,serde
       - run: cargo test --tests --no-default-features --features alloc,taffy_tree
 
   test-features-alloc:
@@ -214,9 +216,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --no-default-features --features alloc,grid,flexbox,block_layout
-      - run: cargo build --no-default-features --features alloc,grid,flexbox,block_layout,taffy_tree
-      - run: cargo test --tests  --no-default-features --features alloc,grid,flexbox,block_layout,taffy_tree
+      - run: cargo build --no-default-features --features grid,flexbox,block_layout
+      - run: cargo build --no-default-features --features grid,flexbox,block_layout,taffy_tree
+      - run: cargo test --tests  --no-default-features --features grid,flexbox,block_layout,taffy_tree
 
   fmt:
     name: Rustfmt
@@ -304,8 +306,7 @@ jobs:
             exit 1
           fi
 
-  # benches is excluded from the workspace as it depends on cosmic-text which breaks compilation
-  # of all crates in the workspace with our MSRV compiler
+  # benches is excluded from the workspace as Parley requires a newer Rust version than Taffy's MSRV
   benchmarks:
     name: Build Benchmarks
     runs-on: ubuntu-latest

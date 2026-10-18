@@ -12,7 +12,7 @@ mod measure {
     fn measure_root() {
         let mut taffy = new_test_tree();
         let node = taffy.new_leaf_with_context(Style::default(), HUNDRED_HUNDRED).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(node).unwrap().size.height, 100.0);
@@ -25,7 +25,7 @@ mod measure {
         let child = taffy.new_leaf_with_context(Style::default(), HUNDRED_HUNDRED).unwrap();
 
         let node = taffy.new_with_children(Style::default(), &[child]).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(node).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(node).unwrap().size.height, 100.0);
@@ -46,7 +46,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         // Parent
         assert_eq!(taffy.layout(node).unwrap().size.width, 50.0);
@@ -76,7 +76,7 @@ mod measure {
                 &[child],
             )
             .unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(node).unwrap().location.x, 0.0);
         assert_eq!(taffy.layout(node).unwrap().location.y, 0.0);
@@ -108,7 +108,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child1).unwrap().size.width, 50.0);
         assert_eq!(taffy.layout(child1).unwrap().size.height, 50.0);
@@ -134,7 +134,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child1).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child1).unwrap().size.height, 50.0);
@@ -161,14 +161,14 @@ mod measure {
             .new_with_children(
                 Style {
                     size: Size { width: Dimension::from_length(100.0), height: auto() },
-                    align_items: Some(AlignItems::START),
+                    align_items: AlignItems::START,
                     ..Default::default()
                 },
                 &[child0, child1],
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child1).unwrap().size.width, 50.0);
         assert_eq!(taffy.layout(child1).unwrap().size.height, 100.0);
@@ -192,14 +192,14 @@ mod measure {
             .new_with_children(
                 Style {
                     size: Size { width: Dimension::from_length(100.0), height: auto() },
-                    align_items: Some(AlignItems::START),
+                    align_items: AlignItems::START,
                     ..Default::default()
                 },
                 &[child0, child1],
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child1).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child1).unwrap().size.height, 200.0);
@@ -256,7 +256,7 @@ mod measure {
             .unwrap();
 
         let node = taffy.new_with_children(Style::default(), &[child]).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 50.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 100.0);
@@ -273,7 +273,7 @@ mod measure {
             .unwrap();
 
         let node = taffy.new_with_children(Style::default(), &[child]).unwrap();
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 50.0);
@@ -303,7 +303,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child0).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child0).unwrap().size.height, 100.0);
@@ -326,10 +326,34 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 50.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 100.0);
+    }
+
+    #[test]
+    fn explicit_min_main_size_skips_min_content_measurement() {
+        fn assert_not_min_content(
+            inputs: LayoutInput,
+            _node_id: NodeId,
+            _context: Option<&mut ()>,
+            _style: &Style,
+        ) -> LayoutOutput {
+            assert_ne!(inputs.available_space.width, AvailableSpace::MinContent);
+            LayoutOutput::from_outer_size(Size { width: 10.0, height: 10.0 })
+        }
+
+        let mut taffy = TaffyTree::new();
+        let child = taffy
+            .new_leaf_with_context(
+                Style { min_size: Size { width: length(10.0), height: auto() }, ..Default::default() },
+                (),
+            )
+            .unwrap();
+        let root = taffy.new_with_children(Style::default(), &[child]).unwrap();
+
+        taffy.compute_layout_with_measure_output(root, Size::MAX_CONTENT, assert_not_min_content).unwrap();
     }
 
     #[test]
@@ -349,7 +373,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 50.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 50.0);
@@ -370,7 +394,7 @@ mod measure {
             )
             .unwrap();
 
-        taffy.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         assert_eq!(taffy.layout(child).unwrap().size.width, 100.0);
         assert_eq!(taffy.layout(child).unwrap().size.height, 100.0);

@@ -38,7 +38,7 @@
 //!   - [flexbox_gap](https://github.com/DioxusLabs/taffy/blob/main/examples/flexbox_gap.rs)
 //!   - [grid_holy_grail](https://github.com/DioxusLabs/taffy/blob/main/examples/grid_holy_grail.rs)
 //!   - [measure](https://github.com/DioxusLabs/taffy/blob/main/examples/measure.rs)
-//!   - [cosmic_text](https://github.com/DioxusLabs/taffy/blob/main/examples/cosmic_text.rs)
+//!   - [parley](https://github.com/DioxusLabs/taffy/blob/main/examples/parley/src/main.rs)
 //!
 //! In particular, the "measure" example shows how to integrate Taffy layout with other layout modalities such as text or image layout when using the high level API.
 //!
@@ -77,7 +77,7 @@
 #[macro_use]
 extern crate std;
 
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
+#[cfg(not(feature = "std"))]
 extern crate alloc;
 
 #[cfg_attr(feature = "serde", macro_use)]
@@ -97,22 +97,20 @@ mod readme_doctest {
     #![doc = include_str!("../README.md")]
 }
 
-#[cfg(feature = "block_layout")]
-#[doc(inline)]
-pub use crate::compute::compute_block_layout;
 #[cfg(feature = "flexbox")]
 #[doc(inline)]
 pub use crate::compute::compute_flexbox_layout;
 #[cfg(feature = "grid")]
 #[doc(inline)]
 pub use crate::compute::compute_grid_layout;
-#[cfg(feature = "detailed_layout_info")]
 pub use crate::compute::detailed_info::*;
+#[cfg(feature = "block_layout")]
+#[doc(inline)]
+pub use crate::compute::{compute_block_align_content_offset, compute_block_layout};
 #[doc(inline)]
 pub use crate::compute::{
-    compute_cached_layout, compute_cached_size, compute_hidden_layout, compute_leaf_layout, compute_root_layout,
-    measure_intrinsic_width_constraints, resolve_intrinsic_width_inputs_with_provenance, resolve_used_width_inputs,
-    round_layout, round_layout_with_scale_factor, IntrinsicWidthConstraints, ResolvedWidthInputs,
+    compute_cached_layout, compute_hidden_layout, compute_leaf_layout, compute_oof_layout, compute_oof_layout_for_area,
+    compute_root_layout, resolve_static_offset, round_layout, OofLayoutResult,
 };
 #[doc(inline)]
 pub use crate::style::Style;
@@ -133,3 +131,14 @@ pub use crate::geometry::*;
 pub use crate::style::*;
 pub use crate::tree::*;
 pub use crate::util::*;
+
+pub use compute::round_layout_with_scale_factor;
+pub use compute::{
+    compute_cached_size, measure_intrinsic_width_constraints, resolve_intrinsic_width_inputs_with_provenance,
+    resolve_used_width_inputs, IntrinsicWidthConstraints, ResolvedWidthInputs,
+};
+
+pub use compute::{
+    compute_leaf_layout_with_aspect_ratio, compute_leaf_layout_with_aspect_ratio_and_writing_mode,
+    compute_leaf_layout_with_context, compute_leaf_layout_with_scrollbar_insets, LeafLayoutContext,
+};

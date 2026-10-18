@@ -20,7 +20,7 @@ fn main_axis_auto_margin_consumes_free_space_before_justification() {
             Style {
                 display: Display::Flex,
                 size: Size { width: length(1392.0), height: length(45.0) },
-                justify_content: Some(JustifyContent::SPACE_BETWEEN),
+                justify_content: JustifyContent::SPACE_BETWEEN,
                 ..Style::default()
             },
             &[leading, trailing],

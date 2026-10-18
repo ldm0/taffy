@@ -28,7 +28,11 @@ fn absolutely_positioned_overflowing_child() -> TestNode {
 fn definite_container(display: Display, insets: Rect<f32>) -> TestNode {
     TestNode::container(
         display,
-        Style { size: Size { width: length(200.0), height: length(100.0) }, ..Style::default() },
+        Style {
+            position: Position::Relative,
+            size: Size { width: length(200.0), height: length(100.0) },
+            ..Style::default()
+        },
         insets,
     )
 }
@@ -62,7 +66,14 @@ fn leading_physical_insets_do_not_create_phantom_scrollable_overflow() {
             tree.compute(Size::MAX_CONTENT);
 
             let container = tree.layout(0);
-            assert_eq!(container.content_size, Size { width: 182.0, height: 70.0 }, "{display:?} {direction:?}");
+            assert_eq!(
+                taffy::Size {
+                    width: container.scrollable_overflow_rect.right,
+                    height: container.scrollable_overflow_rect.bottom
+                },
+                Size { width: 182.0, height: 70.0 },
+                "{display:?} {direction:?}"
+            );
             assert_eq!(container.scroll_width(), 0.0, "{display:?} {direction:?}");
             assert_eq!(container.scroll_height(), 0.0, "{display:?} {direction:?}");
         }
@@ -81,7 +92,14 @@ fn physical_insets_reduce_the_scrollport_without_inflating_overflow_content() {
             tree.compute(Size::MAX_CONTENT);
 
             let container = tree.layout(0);
-            assert_eq!(container.content_size, Size { width: 400.0, height: 200.0 }, "{display:?} {direction:?}");
+            assert_eq!(
+                taffy::Size {
+                    width: container.scrollable_overflow_rect.right,
+                    height: container.scrollable_overflow_rect.bottom
+                },
+                Size { width: 400.0, height: 200.0 },
+                "{display:?} {direction:?}"
+            );
             assert_eq!(container.scroll_width(), 218.0, "{display:?} {direction:?}");
             assert_eq!(container.scroll_height(), 130.0, "{display:?} {direction:?}");
         }
@@ -101,7 +119,14 @@ fn absolute_overflow_is_also_relative_to_the_inner_scrollport_origin() {
         tree.compute(Size::MAX_CONTENT);
 
         let container = tree.layout(0);
-        assert_eq!(container.content_size, Size { width: 400.0, height: 200.0 }, "{display:?}");
+        assert_eq!(
+            taffy::Size {
+                width: container.scrollable_overflow_rect.right,
+                height: container.scrollable_overflow_rect.bottom
+            },
+            Size { width: 400.0, height: 200.0 },
+            "{display:?}"
+        );
         assert_eq!(container.scroll_width(), 218.0, "{display:?}");
         assert_eq!(container.scroll_height(), 130.0, "{display:?}");
     }

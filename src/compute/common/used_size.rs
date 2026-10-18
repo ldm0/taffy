@@ -45,6 +45,24 @@ pub(crate) fn resolve_used_width_inputs_with_auto_width(
         return ResolvedWidthInputs { inputs, depends_on_block_constraints: false, applied_aspect_ratio: false };
     }
 
+    let style = tree.get_core_container_style(node_id);
+    let min = style.min_size().width;
+    let max = style.max_size().width;
+    let preferred = style.size().width;
+    let has_constrained_intrinsic_preferred = preferred.is_intrinsic() && (!min.is_auto() || !max.is_auto());
+    let has_intrinsic_bounds = preferred.is_stretch()
+        || has_constrained_intrinsic_preferred
+        || min.is_intrinsic()
+        || min.is_stretch()
+        || max.is_intrinsic()
+        || max.is_stretch();
+    drop(style);
+    // Unconstrained preferred keywords remain owned by the upstream algorithms.
+    // Resolve constrained keywords before an orthogonal contribution is measured,
+    // so its wrapping height reflects the used width rather than max-content.
+    if !has_intrinsic_bounds {
+        return ResolvedWidthInputs { inputs, depends_on_block_constraints: false, applied_aspect_ratio: false };
+    }
     let intrinsic = measure_intrinsic_width_constraints(tree, node_id, inputs);
     if intrinsic.preferred.is_none() && intrinsic.min.is_none() && intrinsic.max.is_none() {
         return ResolvedWidthInputs {

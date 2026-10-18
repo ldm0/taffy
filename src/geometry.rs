@@ -147,6 +147,12 @@ impl<T> Size<T> {
             AbsoluteAxis::Vertical => self.height,
         }
     }
+
+    /// Swap the width and height components
+    #[inline(always)]
+    pub fn transpose(self) -> Size<T> {
+        Size { width: self.height, height: self.width }
+    }
 }
 
 impl<T: Add> Rect<T> {
@@ -253,12 +259,19 @@ impl<U, T: Add<U>> Add<Rect<U>> for Rect<T> {
 }
 
 impl<T> Rect<T> {
+    /// Swap the horizontal and vertical sides (`left <-> top`, `right <-> bottom`)
+    #[inline(always)]
+    pub fn transpose(self) -> Rect<T> {
+        Rect { left: self.top, right: self.bottom, top: self.left, bottom: self.right }
+    }
+
     /// Applies the function `f` to all four sides of the rect
     ///
     /// When applied to the left and right sides, the width is used
     /// as the second parameter of `f`.
     /// When applied to the top or bottom sides, the height is used instead.
     #[cfg(any(feature = "flexbox", feature = "block_layout"))]
+    #[inline(always)]
     pub(crate) fn zip_size<R, F, U>(self, size: Size<U>, f: F) -> Rect<R>
     where
         F: Fn(T, U) -> R,
@@ -275,6 +288,7 @@ impl<T> Rect<T> {
     /// Applies the function `f` to the left, right, top, and bottom properties
     ///
     /// This is used to transform a `Rect<T>` into a `Rect<R>`.
+    #[inline(always)]
     pub fn map<R, F>(self, f: F) -> Rect<R>
     where
         F: Fn(T) -> R,
@@ -400,6 +414,11 @@ where
     }
 }
 
+impl Rect<Option<f32>> {
+    /// A [`Rect`] with `None` as all parameters
+    pub const NONE: Rect<Option<f32>> = Self { left: None, right: None, top: None, bottom: None };
+}
+
 impl Rect<f32> {
     /// Creates a new Rect with `0.0` as all parameters
     pub const ZERO: Rect<f32> = Self { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
@@ -408,6 +427,19 @@ impl Rect<f32> {
     #[must_use]
     pub const fn new(start: f32, end: f32, top: f32, bottom: f32) -> Self {
         Self { left: start, right: end, top, bottom }
+    }
+
+    /// Returns the smallest rectangle that contains both `self` and `other`, where the fields
+    /// of each `Rect` are interpreted as edge coordinates (`left`/`top` being the minimum
+    /// coordinates and `right`/`bottom` the maximum coordinates of the rectangle)
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            right: self.right.max(other.right),
+            top: self.top.min(other.top),
+            bottom: self.bottom.max(other.bottom),
+        }
     }
 }
 
@@ -918,4 +950,30 @@ pub struct MinMax<Min, Max> {
     pub min: Min,
     /// The value representing the maximum
     pub max: Max,
+}
+
+#[cfg(feature = "flexbox")]
+impl<T: Copy> Point<T> {
+    /// Return the coordinate along the physical flex main axis.
+    pub fn main(self, direction: crate::FlexDirection) -> T {
+        if direction.is_row() {
+            self.x
+        } else {
+            self.y
+        }
+    }
+    /// Return the coordinate along the physical flex cross axis.
+    pub fn cross(self, direction: crate::FlexDirection) -> T {
+        if direction.is_row() {
+            self.y
+        } else {
+            self.x
+        }
+    }
+}
+
+impl From<Size<f32>> for Rect<f32> {
+    fn from(size: Size<f32>) -> Self {
+        Self { left: 0.0, top: 0.0, right: size.width, bottom: size.height }
+    }
 }

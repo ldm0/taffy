@@ -33,7 +33,7 @@ impl MaybeResolve<Option<f32>, Option<f32>> for LengthPercentage {
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
             #[cfg(feature = "calc")]
-            _ if self.0.is_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
+            _ if self.0.is_plain_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
             _ => unreachable!(),
         }
     }
@@ -48,7 +48,8 @@ impl MaybeResolve<Option<f32>, Option<f32>> for LengthPercentageAuto {
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
             #[cfg(feature = "calc")]
-            _ if self.0.is_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
+            _ if self.0.is_plain_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
+            _ if self.0.is_sizing_keyword() || self.0.is_content() => None,
             _ => unreachable!(),
         }
     }
@@ -60,16 +61,16 @@ impl MaybeResolve<Option<f32>, Option<f32>> for Dimension {
     /// Can return `None`
     fn maybe_resolve(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> Option<f32> {
         match self.0.tag() {
-            CompactLength::AUTO_TAG
-            | CompactLength::CONTENT_TAG
-            | CompactLength::MIN_CONTENT_TAG
-            | CompactLength::MAX_CONTENT_TAG
-            | CompactLength::FIT_CONTENT_KEYWORD_TAG
-            | CompactLength::STRETCH_TAG => None,
+            CompactLength::AUTO_TAG => None,
+            // The content keyword is only valid for flex-basis. In any other context it behaves as auto.
+            CompactLength::CONTENT_TAG => None,
             CompactLength::LENGTH_TAG => Some(self.0.value()),
             CompactLength::PERCENT_TAG => context.map(|dim| dim * self.0.value()),
             #[cfg(feature = "calc")]
-            _ if self.0.is_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
+            _ if self.0.is_plain_calc() => context.map(|dim| calc(self.0.calc_value(), dim)),
+            // Intrinsic sizing keywords cannot be resolved to a definite size out of context.
+            // Layout algorithms that support them must handle them explicitly.
+            _ if self.0.is_sizing_keyword() => None,
             _ => unreachable!(),
         }
     }
@@ -88,6 +89,7 @@ impl<T: MaybeResolve<Option<f32>, Option<f32>>> MaybeResolve<f32, Option<f32>> f
 // Generic MaybeResolve for Size
 impl<In, Out, T: MaybeResolve<In, Out>> MaybeResolve<Size<In>, Size<Out>> for Size<T> {
     /// Converts any `parent`-relative values for size into an absolute size
+    #[inline(always)]
     fn maybe_resolve(self, context: Size<In>, calc: impl Fn(*const (), f32) -> f32) -> Size<Out> {
         Size {
             width: self.width.maybe_resolve(context.width, &calc),
@@ -97,31 +99,35 @@ impl<In, Out, T: MaybeResolve<In, Out>> MaybeResolve<Size<In>, Size<Out>> for Si
 }
 
 impl ResolveOrZero<Option<f32>, f32> for LengthPercentage {
-    /// Resolve an indefinite percentage basis as zero.
-    ///
-    /// This distinction matters for `calc()`: `calc(10% + 100px)` contributes
-    /// `100px` when its percentage basis is indefinite, rather than making the
-    /// entire expression disappear. Callers that need to preserve
-    /// indefiniteness must use [`MaybeResolve`] instead.
+    /// Will return a default value of result is evaluated to `None`
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
+        #[cfg(feature = "calc")]
+        if self.0.is_plain_calc() {
+            return calc(self.0.calc_value(), context.unwrap_or(0.0));
+        }
+        self.maybe_resolve(context, calc).unwrap_or(0.0)
     }
 }
 
 impl ResolveOrZero<Option<f32>, f32> for LengthPercentageAuto {
-    /// Resolve an indefinite percentage basis as zero while retaining the
-    /// absolute component of `calc()` values. `auto` still resolves to zero.
+    /// Will return a default value of result is evaluated to `None`
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
+        #[cfg(feature = "calc")]
+        if self.0.is_plain_calc() {
+            return calc(self.0.calc_value(), context.unwrap_or(0.0));
+        }
+        self.maybe_resolve(context, calc).unwrap_or(0.0)
     }
 }
 
 impl ResolveOrZero<Option<f32>, f32> for Dimension {
-    /// Resolve an indefinite percentage basis as zero while retaining the
-    /// absolute component of `calc()` values. Intrinsic keywords and `auto`
-    /// still resolve to zero at this scalar boundary.
+    /// Will return a default value of result is evaluated to `None`
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> f32 {
-        self.maybe_resolve(Some(context.unwrap_or(0.0)), calc).unwrap_or(0.0)
+        #[cfg(feature = "calc")]
+        if self.0.is_plain_calc() {
+            return calc(self.0.calc_value(), context.unwrap_or(0.0));
+        }
+        self.maybe_resolve(context, calc).unwrap_or(0.0)
     }
 }
 
@@ -152,6 +158,7 @@ impl<In: Copy, Out: TaffyZero, T: ResolveOrZero<In, Out>> ResolveOrZero<Size<In>
 // Generic ResolveOrZero for resolving Rect against Option
 impl<Out: TaffyZero, T: ResolveOrZero<Option<f32>, Out>> ResolveOrZero<Option<f32>, Rect<Out>> for Rect<T> {
     /// Converts any `parent`-relative values for Rect into an absolute Rect
+    #[inline(always)]
     fn resolve_or_zero(self, context: Option<f32>, calc: impl Fn(*const (), f32) -> f32) -> Rect<Out> {
         Rect {
             left: self.left.resolve_or_zero(context, &calc),
@@ -213,18 +220,6 @@ mod tests {
             mr_case(Dimension::AUTO, Some(5.0), None);
             mr_case(Dimension::AUTO, Some(-5.0), None);
             mr_case(Dimension::AUTO, Some(0.), None);
-        }
-
-        /// Intrinsic and stretch keywords require content/available-space
-        /// layout and therefore remain unresolved by the scalar resolver.
-        #[test]
-        fn intrinsic_keywords_remain_unresolved() {
-            for value in
-                [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content(), Dimension::stretch()]
-            {
-                mr_case(value, None, None);
-                mr_case(value, Some(50.0), None);
-            }
         }
 
         /// `Dimension::Length` should always return `Some(f32)`
@@ -386,33 +381,41 @@ mod tests {
             roz_case(Rect::from_percent(5.0, 5.0, 5.0, 5.0), Some(0.0), Rect::zero());
         }
     }
+}
 
-    #[cfg(feature = "calc")]
-    mod resolve_or_zero_calc {
-        use super::{MaybeResolve, ResolveOrZero};
-        use crate::style::{Dimension, LengthPercentage, LengthPercentageAuto};
+#[cfg(test)]
+mod moli_regressions {
+    use super::*;
+    use crate::{Dimension, LengthPercentage, LengthPercentageAuto};
+    #[repr(align(16))]
+    struct CalcToken;
+    static CALC_TOKEN: CalcToken = CalcToken;
 
-        #[repr(align(8))]
-        struct CalcToken;
-
-        static CALC_TOKEN: CalcToken = CalcToken;
-
-        #[test]
-        fn indefinite_basis_keeps_the_absolute_calc_component() {
-            let pointer = (&CALC_TOKEN as *const CalcToken).cast();
-            let resolve = |_: *const (), basis: f32| 100.0 + 0.1 * basis;
-
-            let length_percentage = LengthPercentage::calc(pointer);
-            let length_percentage_auto = LengthPercentageAuto::calc(pointer);
-            let dimension = Dimension::calc(pointer);
-
-            assert_eq!(length_percentage.maybe_resolve(None, resolve), None);
-            assert_eq!(length_percentage_auto.maybe_resolve(None, resolve), None);
-            assert_eq!(dimension.maybe_resolve(None, resolve), None);
-
-            assert_eq!(length_percentage.resolve_or_zero(None, resolve), 100.0);
-            assert_eq!(length_percentage_auto.resolve_or_zero(None, resolve), 100.0);
-            assert_eq!(dimension.resolve_or_zero(None, resolve), 100.0);
+    #[test]
+    fn intrinsic_keywords_remain_unresolved() {
+        for value in
+            [Dimension::min_content(), Dimension::max_content(), Dimension::fit_content(), Dimension::stretch()]
+        {
+            assert_eq!(value.maybe_resolve(None, |_, _| 42.42), None);
+            assert_eq!(value.maybe_resolve(Some(50.0), |_, _| 42.42), None);
         }
+    }
+
+    #[test]
+    fn indefinite_basis_keeps_the_absolute_calc_component() {
+        let pointer = (&CALC_TOKEN as *const CalcToken).cast();
+        let resolve = |_: *const (), basis: f32| 100.0 + 0.1 * basis;
+
+        let length_percentage = LengthPercentage::calc(pointer);
+        let length_percentage_auto = LengthPercentageAuto::calc(pointer);
+        let dimension = Dimension::calc(pointer);
+
+        assert_eq!(length_percentage.maybe_resolve(None, resolve), None);
+        assert_eq!(length_percentage_auto.maybe_resolve(None, resolve), None);
+        assert_eq!(dimension.maybe_resolve(None, resolve), None);
+
+        assert_eq!(length_percentage.resolve_or_zero(None, resolve), 100.0);
+        assert_eq!(length_percentage_auto.resolve_or_zero(None, resolve), 100.0);
+        assert_eq!(dimension.resolve_or_zero(None, resolve), 100.0);
     }
 }

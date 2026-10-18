@@ -1,17 +1,17 @@
 <test name="grid_relayout_vertical_text__border_box_rtl" use-rounding="true">
   <viewport width="max-content" height="max-content"/>
   <input>
-    <div display="grid" direction="rtl" grid-template-rows="40px" grid-template-columns="min-content">
-      <text direction="rtl" writing-mode="vertical-lr">
+    <div display="grid" direction="rtl" position="absolute" grid-template-rows="40px" grid-template-columns="min-content">
+      <text direction="rtl" writing-mode="vertical-lr" position="relative">
         HH​HH​HH​HH​HH​HH​HH
       </text>
-      <text direction="rtl">
+      <text direction="rtl" position="relative">
         HH​HH​HH
       </text>
     </div>
   </input>
   <expectations>
-    <node x="0" y="0" width="40" height="60">
+    <node x="0" y="0" width="40" height="60" resolved-rows="40px 20px" resolved-columns="40px">
       <node x="0" y="0" width="40" height="40"/>
       <node x="0" y="40" width="40" height="20"/>
     </node>

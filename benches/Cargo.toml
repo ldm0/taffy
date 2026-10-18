@@ -21,7 +21,7 @@ taffy_03 = { package = "taffy", version = "0.3", optional = true }
 yoga = { version = "0.5.0", optional = true }
 ordered-float = { version = "4", optional = true }
 slotmap = { version = "1.0.6", optional = true }
-parley = "0.7"
+parley = "0.11.1"
 
 [features]
 yoga = ["dep:yoga", "dep:slotmap", "dep:ordered-float"]
@@ -31,6 +31,12 @@ content_size = ["taffy/content_size"]
 strict_provenance = ["taffy/strict_provenance"]
 small = []
 large = []
+grid-alternating-spans = []
+
+# The library only contains helpers for the benchmarks. Disabling the default `libtest` bench harness for it
+# allows Criterion's CLI options to be passed straight through (e.g. `cargo bench -- --save-baseline main`).
+[lib]
+bench = false
 
 [[bench]]
 name = "tree_creation"
@@ -50,4 +56,14 @@ harness = false
 [[bench]]
 name = "mixed"
 path = "benches/mixed.rs"
+harness = false
+
+[[bench]]
+name = "relayout"
+path = "benches/relayout.rs"
+harness = false
+
+[[bench]]
+name = "pangui"
+path = "benches/pangui.rs"
 harness = false

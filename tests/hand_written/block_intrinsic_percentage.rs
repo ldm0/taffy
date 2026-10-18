@@ -18,7 +18,7 @@ mod tests {
     }
 
     fn layout(taffy: &mut TaffyTree<TestNodeContext>, root: NodeId) {
-        taffy.compute_layout_with_measure(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
     }
 
     #[test]
@@ -75,6 +75,7 @@ mod tests {
             let mut root = TestNode::container(
                 Display::Block,
                 Style {
+                    position: Position::Relative,
                     size: Size { width: length(100.0), height: length(120.0) },
                     padding: Rect::length(5.0),
                     border: Rect::length(5.0),

@@ -1,8 +1,9 @@
 use roxmltree::Document;
 use std::{fmt::Debug, io::Write, path::PathBuf, str::FromStr};
 use taffy::{
-    prelude::TaffyZero as _, AvailableSpace, CheapCloneStr, Dimension, GridAutoTracks, GridTemplateComponent,
-    GridTemplateTracks, LengthPercentage, LengthPercentageAuto, Line, NodeId, Point, PrintTree, Rect, Size, TaffyTree,
+    prelude::TaffyZero as _, AlignContent, AlignItems, AlignSelf, AvailableSpace, CheapCloneStr, Dimension,
+    GridAutoTracks, GridTemplateComponent, GridTemplateTracks, JustifyContent, JustifyItems, LengthPercentage,
+    LengthPercentageAuto, Line, NodeId, Point, PrintTree, Rect, Size, TaffyTree,
 };
 use taffy_test_helpers::{test_measure_function, TestNodeContext};
 
@@ -15,7 +16,62 @@ struct OutputNode {
     location: Point<f32>,
     size: Size<f32>,
     scroll_size: Option<Size<f32>>,
+    resolved_rows: Option<String>,
+    resolved_columns: Option<String>,
     children: Vec<OutputNode>,
+}
+
+/// A single token of a resolved track list string
+/// (see <https://www.w3.org/TR/css-grid-1/#resolved-track-list>)
+#[derive(Debug, PartialEq)]
+enum TrackListToken {
+    /// A bracketed line name group, e.g. `[foo bar]`
+    Names(Vec<String>),
+    /// A used track size in pixels, e.g. `10.5px`
+    Size(f32),
+}
+
+/// Parse a resolved track list string (e.g. `[foo] 10px 20.5px [bar baz]` or `none`) into tokens
+fn parse_track_list(input: &str) -> Vec<TrackListToken> {
+    let input = input.trim();
+    if input == "none" {
+        return Vec::new();
+    }
+    let mut tokens = Vec::new();
+    let mut rest = input;
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        if let Some(after_bracket) = rest.strip_prefix('[') {
+            let end = after_bracket.find(']').unwrap_or_else(|| panic!("unterminated line name group in {input:?}"));
+            let names = after_bracket[..end].split_whitespace().map(str::to_string).collect();
+            tokens.push(TrackListToken::Names(names));
+            rest = &after_bracket[end + 1..];
+        } else {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            let size = rest[..end]
+                .strip_suffix("px")
+                .and_then(|size| size.parse::<f32>().ok())
+                .unwrap_or_else(|| panic!("invalid track size {:?} in {input:?}", &rest[..end]));
+            tokens.push(TrackListToken::Size(size));
+            rest = &rest[end..];
+        }
+    }
+    tokens
+}
+
+/// Compare two resolved track list strings, comparing line names exactly and track sizes with
+/// a tolerance (Chrome and Taffy format/round subpixel used sizes slightly differently)
+fn track_lists_match(expected: &str, actual: &str) -> bool {
+    let expected = parse_track_list(expected);
+    let actual = parse_track_list(actual);
+    expected.len() == actual.len()
+        && expected.iter().zip(actual.iter()).all(|(expected, actual)| match (expected, actual) {
+            (TrackListToken::Size(expected), TrackListToken::Size(actual)) => (expected - actual).abs() < 0.1,
+            (expected, actual) => expected == actual,
+        })
 }
 
 impl PartialEq for OutputNode {
@@ -27,12 +83,21 @@ impl PartialEq for OutputNode {
             // Only assert scroll sizes when both the expectation and the computed value are available
             _ => true,
         };
+        // Only assert resolved track lists when both the expectation and the computed value are available
+        let track_lists_match = |expected: &Option<String>, actual: &Option<String>| match (expected, actual) {
+            (Some(expected), Some(actual)) => track_lists_match(expected, actual),
+            _ => true,
+        };
+        let resolved_rows_match = track_lists_match(&self.resolved_rows, &other.resolved_rows);
+        let resolved_columns_match = track_lists_match(&self.resolved_columns, &other.resolved_columns);
         self.node_id == other.node_id
             && (self.location.x - other.location.x).abs() < 0.1
             && (self.location.y - other.location.y).abs() < 0.1
             && (self.size.width - other.size.width).abs() < 0.1
             && (self.size.height - other.size.height).abs() < 0.1
             && scroll_size_matches
+            && resolved_rows_match
+            && resolved_columns_match
             && self.children == other.children
     }
 }
@@ -47,6 +112,12 @@ impl OutputNode {
         .unwrap();
         if let Some(scroll_size) = self.scroll_size {
             write!(w, " [scroll_w: {:<4} scroll_h: {:<4}]", scroll_size.width, scroll_size.height).unwrap();
+        }
+        if let Some(resolved_rows) = &self.resolved_rows {
+            write!(w, " [rows: {resolved_rows}]").unwrap();
+        }
+        if let Some(resolved_columns) = &self.resolved_columns {
+            write!(w, " [columns: {resolved_columns}]").unwrap();
         }
     }
 
@@ -131,7 +202,20 @@ fn run_xml_test(group: &str, name: &str) {
     let root_node_id = expected_output.node_id;
 
     // Compute layout
-    tree.compute_layout_with_measure(root_node_id, available_space, test_measure_function).unwrap();
+    #[cfg(all(debug_assertions, feature = "std"))]
+    let cache_mode_change_evictions = taffy::tree::cache_mode_change_evictions();
+
+    tree.compute_layout_with_measure_output(root_node_id, available_space, test_measure_function).unwrap();
+
+    // The layout cache of a node only holds results computed with a single `sizing_mode` and
+    // `vertical_margins_are_collapsible`, so laying a node out with more than one combination
+    // of the two in a single pass would make it throw its cache away on every change.
+    #[cfg(all(debug_assertions, feature = "std"))]
+    assert_eq!(
+        taffy::tree::cache_mode_change_evictions(),
+        cache_mode_change_evictions,
+        "a node was laid out with more than one cache mode in a single layout pass"
+    );
     let actual_output = get_computed_expectations(&tree, root_node_id);
 
     println!("\nINPUT");
@@ -197,6 +281,11 @@ fn parse_or<T: FromStr<Err: Debug>>(input: Option<&str>, fallback: T) -> T {
     input.map(|input| input.parse().unwrap()).unwrap_or(fallback)
 }
 
+/// Parse an `align-self` / `justify-self` value, where `auto` (the default) is represented by `None`
+fn parse_self_alignment(input: Option<&str>) -> Option<AlignSelf> {
+    input.filter(|input| !input.trim().eq_ignore_ascii_case("auto")).map(|input| input.parse().unwrap())
+}
+
 fn maybe_parse<T: FromStr>(input: Option<&str>) -> Option<T> {
     input.and_then(|input| input.parse().ok())
 }
@@ -207,14 +296,39 @@ fn get_computed_expectations(tree: &TaffyTree<TestNodeContext>, node_id: NodeId)
     let scroll_size = Some(Size { width: layout.scroll_width(), height: layout.scroll_height() });
     #[cfg(not(feature = "content_size"))]
     let scroll_size = None;
-    let mut output =
-        OutputNode { node_id, location: layout.location, size: layout.size, scroll_size, children: Vec::new() };
+    let (resolved_rows, resolved_columns) = get_resolved_track_lists(tree, node_id);
+    let mut output = OutputNode {
+        node_id,
+        location: layout.location,
+        size: layout.size,
+        scroll_size,
+        resolved_rows,
+        resolved_columns,
+        children: Vec::new(),
+    };
 
     for child_id in tree.children(node_id).unwrap() {
         output.children.push(get_computed_expectations(tree, child_id));
     }
 
     output
+}
+
+/// Get the resolved value of the grid-template-rows/grid-template-columns properties for grid
+/// containers, as exposed through [`taffy::DetailedGridInfo`]
+#[cfg(all(feature = "grid", feature = "detailed_layout_info"))]
+fn get_resolved_track_lists(tree: &TaffyTree<TestNodeContext>, node_id: NodeId) -> (Option<String>, Option<String>) {
+    match tree.detailed_layout_info(node_id) {
+        taffy::DetailedLayoutInfo::Grid(info) => {
+            (Some(info.grid_template_rows(1.0)), Some(info.grid_template_columns(1.0)))
+        }
+        taffy::DetailedLayoutInfo::None => (None, None),
+    }
+}
+
+#[cfg(not(all(feature = "grid", feature = "detailed_layout_info")))]
+fn get_resolved_track_lists(_tree: &TaffyTree<TestNodeContext>, _node_id: NodeId) -> (Option<String>, Option<String>) {
+    (None, None)
 }
 
 fn build_expectations(xnode: roxmltree::Node, node_id: NodeId) -> OutputNode {
@@ -234,6 +348,8 @@ fn build_expectations(xnode: roxmltree::Node, node_id: NodeId) -> OutputNode {
             height: xnode.attribute("height").unwrap().parse().unwrap(),
         },
         scroll_size,
+        resolved_rows: xnode.attribute("resolved-rows").map(str::to_string),
+        resolved_columns: xnode.attribute("resolved-columns").map(str::to_string),
         children: Vec::new(),
     }
 }
@@ -250,12 +366,14 @@ fn build_style<S: CheapCloneStr>(xnode: roxmltree::Node) -> taffy::Style<S> {
         direction: parse_or_default(xnode.attribute("direction")),
         item_is_table: false,
         item_is_replaced: false,
+        item_is_compressible_replaced: false,
         box_sizing: parse_or_default(xnode.attribute("box-sizing")),
         overflow: Point {
             x: parse_or_default(xnode.attribute("overflow-x")),
             y: parse_or_default(xnode.attribute("overflow-y")),
         },
         scrollbar_width: parse_or_default(xnode.attribute("scrollbar-width")),
+        contain: parse_or_default(xnode.attribute("contain")),
         float: parse_or_default(xnode.attribute("float")),
         clear: parse_or_default(xnode.attribute("clear")),
         position: parse_or_default(xnode.attribute("position")),
@@ -265,12 +383,12 @@ fn build_style<S: CheapCloneStr>(xnode: roxmltree::Node) -> taffy::Style<S> {
             height: parse_or(xnode.attribute("height"), Dimension::auto()),
         },
         min_size: Size {
-            width: parse_or(xnode.attribute("min-width"), Dimension::auto()),
-            height: parse_or(xnode.attribute("min-height"), Dimension::auto()),
+            width: parse_or(xnode.attribute("min-width"), LengthPercentageAuto::auto()),
+            height: parse_or(xnode.attribute("min-height"), LengthPercentageAuto::auto()),
         },
         max_size: Size {
-            width: parse_or(xnode.attribute("max-width"), Dimension::auto()),
-            height: parse_or(xnode.attribute("max-height"), Dimension::auto()),
+            width: parse_or(xnode.attribute("max-width"), LengthPercentageAuto::auto()),
+            height: parse_or(xnode.attribute("max-height"), LengthPercentageAuto::auto()),
         },
         inset: Rect {
             top: parse_or(xnode.attribute("top"), LengthPercentageAuto::auto()),
@@ -302,16 +420,18 @@ fn build_style<S: CheapCloneStr>(xnode: roxmltree::Node) -> taffy::Style<S> {
         },
 
         aspect_ratio: maybe_parse(xnode.attribute("aspect-ratio")),
-        align_items: maybe_parse(xnode.attribute("align-items")),
-        align_self: maybe_parse(xnode.attribute("align-self")),
-        justify_items: maybe_parse(xnode.attribute("justify-items")),
-        justify_self: maybe_parse(xnode.attribute("justify-self")),
-        align_content: maybe_parse(xnode.attribute("align-content")),
-        justify_content: maybe_parse(xnode.attribute("justify-content")),
+        align_items: parse_or(xnode.attribute("align-items"), AlignItems::NORMAL),
+        align_self: parse_self_alignment(xnode.attribute("align-self")),
+        justify_items: parse_or(xnode.attribute("justify-items"), JustifyItems::NORMAL),
+        justify_self: parse_self_alignment(xnode.attribute("justify-self")),
+        align_content: parse_or(xnode.attribute("align-content"), AlignContent::NORMAL),
+        justify_content: parse_or(xnode.attribute("justify-content"), JustifyContent::NORMAL),
 
         text_align: parse_or_default(xnode.attribute("text-align")),
         flex_direction: parse_or_default(xnode.attribute("flex-direction")),
         flex_wrap: parse_or_default(xnode.attribute("flex-wrap")),
+        #[cfg(feature = "flexbox_balance")]
+        flex_line_count: parse_or(xnode.attribute("flex-line-count"), 1),
         flex_grow: parse_or(xnode.attribute("flex-grow"), 0.0),
         flex_shrink: parse_or(xnode.attribute("flex-shrink"), 1.0),
         flex_basis: parse_or(xnode.attribute("flex-basis"), Dimension::auto()),

@@ -1,15 +1,10 @@
 //! Generic code that is shared between multiple layout algorithms
-pub(crate) mod aspect_ratio;
-
-#[cfg(any(feature = "block_layout", feature = "flexbox"))]
-/// Shared sizing helpers for absolutely positioned boxes.
-pub(crate) mod absolute;
-
 pub(crate) mod alignment;
-
-pub(crate) mod intrinsic_size;
-
-pub(crate) mod used_size;
+pub(crate) mod sizing_keyword;
 
 #[cfg(feature = "content_size")]
-pub(crate) mod content_size;
+pub(crate) mod scrollable_overflow;
+
+pub(crate) mod aspect_ratio;
+pub(crate) mod intrinsic_size;
+pub(crate) mod used_size;

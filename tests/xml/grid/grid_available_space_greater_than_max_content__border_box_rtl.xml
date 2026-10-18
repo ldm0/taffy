@@ -1,17 +1,17 @@
 <test name="grid_available_space_greater_than_max_content__border_box_rtl" use-rounding="true">
   <viewport width="400px" height="max-content"/>
   <input>
-    <div display="grid" direction="rtl" grid-template-columns="auto auto">
-      <text direction="rtl">
+    <div display="grid" direction="rtl" position="relative" grid-template-columns="auto auto">
+      <text direction="rtl" position="relative">
         HH​HH​HH​HH
       </text>
-      <text direction="rtl">
+      <text direction="rtl" position="relative">
         HH​HH​HH​HH
       </text>
     </div>
   </input>
   <expectations>
-    <node x="240" y="0" width="160" height="10">
+    <node x="240" y="0" width="160" height="10" resolved-rows="10px" resolved-columns="80px 80px">
       <node x="80" y="0" width="80" height="10"/>
       <node x="0" y="0" width="80" height="10"/>
     </node>

@@ -46,6 +46,7 @@ mod absolute_position {
             .new_with_children(
                 Style {
                     display: parent_display,
+                    position: Position::Relative,
                     size: Size { width: length(containing_width), height: length(100.0) },
                     ..Default::default()
                 },
@@ -53,7 +54,7 @@ mod absolute_position {
             )
             .unwrap();
 
-        tree.compute_layout_with_measure(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
 
         Fixture { tree, absolute, percentage_block, flex, text }
     }

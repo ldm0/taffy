@@ -66,11 +66,6 @@ impl ResolvedSizeConstraints {
             self.constraint_sources.width.resolve(intrinsic.min, intrinsic.max, None);
         self
     }
-
-    /// Return source-preserving constraints for the logical block axis.
-    pub(crate) fn block_axis_constraints(self, writing_mode: WritingMode) -> ResolvedAxisConstraints {
-        writing_mode.to_logical(self.constraint_sources).block_size
-    }
 }
 
 /// Controls whether min/max constraints from the opposite axis participate in
@@ -86,6 +81,7 @@ pub(crate) enum TransferredSizesMode {
     /// Apply min/max constraints transferred through the preferred ratio.
     Normal,
     /// Retain only constraints explicitly authored in the requested axis.
+    #[cfg(test)]
     Ignore,
 }
 
@@ -142,6 +138,7 @@ pub(crate) fn resolve_size_constraints(input: SizeConstraintInput) -> ResolvedSi
             transferred_constraints(min_size, size_is_auto, aspect_ratio, padding_border),
             transferred_constraints(max_size, size_is_auto, aspect_ratio, padding_border),
         ),
+        #[cfg(test)]
         TransferredSizesMode::Ignore => (Size::NONE, Size::NONE),
     };
 

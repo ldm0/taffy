@@ -18,7 +18,7 @@ fn layout_child(container_display: Display, mut child_style: Style) -> f32 {
             &[child],
         )
         .unwrap();
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_output(
         root,
         Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::Definite(70.0) },
         test_measure_function,
@@ -62,7 +62,7 @@ fn fit_content_clamps_to_available_width() {
             Display::Block,
             Style {
                 size: Size { width: Dimension::fit_content(), height: Dimension::length(20.0) },
-                max_size: Size { width: Dimension::length(200.0), height: Dimension::auto() },
+                max_size: Size { width: Dimension::length(200.0).into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
         ),
@@ -77,7 +77,7 @@ fn intrinsic_min_and_max_clamp_preferred_width() {
             Display::Block,
             Style {
                 size: Size::from_lengths(100.0, 20.0),
-                min_size: Size { width: Dimension::max_content(), height: Dimension::auto() },
+                min_size: Size { width: Dimension::max_content().into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
         ),
@@ -88,7 +88,7 @@ fn intrinsic_min_and_max_clamp_preferred_width() {
             Display::Block,
             Style {
                 size: Size::from_lengths(300.0, 20.0),
-                max_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                max_size: Size { width: Dimension::min_content().into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
         ),
@@ -102,13 +102,13 @@ fn auto_root_width_obeys_an_intrinsic_maximum_without_a_parent_supplied_width() 
     let node = tree
         .new_leaf_with_context(
             Style {
-                max_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                max_size: Size { width: Dimension::min_content().into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
             text_context(),
         )
         .unwrap();
-    tree.compute_layout_with_measure(node, Size::MAX_CONTENT, test_measure_function).unwrap();
+    tree.compute_layout_with_measure_output(node, Size::MAX_CONTENT, test_measure_function).unwrap();
     assert_eq!(tree.layout(node).unwrap().size.width, 160.0);
 }
 
@@ -127,14 +127,14 @@ fn auto_block_root_retains_stretching_before_intrinsic_bounds_are_applied() {
             .new_leaf_with_context(
                 Style {
                     display: Display::Block,
-                    min_size: Size { width: minimum, height: auto() },
-                    max_size: Size { width: maximum, height: auto() },
+                    min_size: Size { width: minimum.into(), height: auto() },
+                    max_size: Size { width: maximum.into(), height: auto() },
                     ..Default::default()
                 },
                 text_context(),
             )
             .unwrap();
-        tree.compute_layout_with_measure(
+        tree.compute_layout_with_measure_output(
             node,
             Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::MaxContent },
             test_measure_function,
@@ -150,7 +150,7 @@ fn auto_block_width_obeys_an_intrinsic_maximum() {
         layout_child(
             Display::Block,
             Style {
-                max_size: Size { width: Dimension::min_content(), height: Dimension::auto() },
+                max_size: Size { width: Dimension::min_content().into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
         ),
@@ -164,7 +164,10 @@ fn auto_block_width_with_an_intrinsic_minimum_can_still_fill_available_space() {
         assert_eq!(
             layout_child(
                 Display::Block,
-                Style { min_size: Size { width: minimum, height: Dimension::auto() }, ..Default::default() },
+                Style {
+                    min_size: Size { width: minimum.into(), height: Dimension::auto().into() },
+                    ..Default::default()
+                },
             ),
             300.0,
         );
@@ -179,7 +182,7 @@ fn fit_content_and_stretch_apply_as_min_and_max_constraints() {
                 Display::Block,
                 Style {
                     size: Size::from_lengths(100.0, 20.0),
-                    min_size: Size { width: constraint, height: Dimension::auto() },
+                    min_size: Size { width: constraint.into(), height: Dimension::auto().into() },
                     ..Default::default()
                 },
             ),
@@ -191,7 +194,7 @@ fn fit_content_and_stretch_apply_as_min_and_max_constraints() {
                 Display::Block,
                 Style {
                     size: Size::from_lengths(400.0, 20.0),
-                    max_size: Size { width: constraint, height: Dimension::auto() },
+                    max_size: Size { width: constraint.into(), height: Dimension::auto().into() },
                     ..Default::default()
                 },
             ),
@@ -221,7 +224,7 @@ fn layout_absolute_child(container_display: Display, container_width: f32, width
             &[child],
         )
         .unwrap();
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_output(
         root,
         Size { width: AvailableSpace::Definite(container_width), height: AvailableSpace::Definite(70.0) },
         test_measure_function,
@@ -259,7 +262,7 @@ fn layout_root_width(width: Dimension, available_width: f32) -> f32 {
             text_context(),
         )
         .unwrap();
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_output(
         root,
         Size { width: AvailableSpace::Definite(available_width), height: AvailableSpace::Definite(70.0) },
         test_measure_function,
@@ -299,7 +302,7 @@ fn definite_opposite_size_transfers_before_intrinsic_width_measurement() {
                 &[child],
             )
             .unwrap();
-        tree.compute_layout_with_measure(
+        tree.compute_layout_with_measure_output(
             root,
             Size { width: AvailableSpace::Definite(300.0), height: AvailableSpace::Definite(70.0) },
             test_measure_function,
@@ -318,7 +321,7 @@ fn intrinsic_grid_track_width(item_width: Dimension) -> (f32, f32) {
         )
         .unwrap();
     let grid = tree.new_with_children(Style { display: Display::Grid, ..Default::default() }, &[item]).unwrap();
-    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+    tree.compute_layout_with_measure_output(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
     (tree.layout(grid).unwrap().size.width, tree.layout(item).unwrap().size.width)
 }
 
@@ -344,7 +347,7 @@ fn intrinsic_grid_item_minimum_is_applied_before_measuring_its_row_height() {
         .new_leaf_with_context(
             Style {
                 size: Size { width: length(0.0), height: auto() },
-                min_size: Size { width: Dimension::max_content(), height: auto() },
+                min_size: Size { width: Dimension::max_content().into(), height: auto() },
                 ..Default::default()
             },
             text_context(),
@@ -362,7 +365,7 @@ fn intrinsic_grid_item_minimum_is_applied_before_measuring_its_row_height() {
             &[item, next],
         )
         .unwrap();
-    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+    tree.compute_layout_with_measure_output(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
     assert_eq!(tree.layout(item).unwrap().size, Size { width: 240.0, height: 10.0 });
     assert_eq!(tree.layout(next).unwrap().location.x, 240.0);
     assert_eq!(tree.layout(grid).unwrap().size.height, 10.0);
@@ -383,7 +386,7 @@ fn grid_track_with_intrinsic_minimum(width: Dimension, min_width: Dimension) -> 
         .new_leaf_with_context(
             Style {
                 size: Size { width, height: Dimension::length(20.0) },
-                min_size: Size { width: min_width, height: Dimension::auto() },
+                min_size: Size { width: min_width.into(), height: Dimension::auto().into() },
                 ..Default::default()
             },
             text_context(),
@@ -401,7 +404,7 @@ fn grid_track_with_intrinsic_minimum(width: Dimension, min_width: Dimension) -> 
             &[item, next],
         )
         .unwrap();
-    tree.compute_layout_with_measure(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
+    tree.compute_layout_with_measure_output(grid, Size::MAX_CONTENT, test_measure_function).unwrap();
     (tree.layout(item).unwrap().size.width, tree.layout(next).unwrap().location.x)
 }
 
@@ -416,7 +419,7 @@ fn flexible_intrinsic_item_width(mut item_style: Style, container_width: f32) ->
             &[item],
         )
         .unwrap();
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_output(
         flex,
         Size { width: AvailableSpace::Definite(container_width), height: AvailableSpace::Definite(70.0) },
         test_measure_function,
@@ -443,7 +446,7 @@ fn intrinsic_preferred_width_participates_in_flexing_without_becoming_final() {
         flexible_intrinsic_item_width(
             Style {
                 size: Size { width: Dimension::max_content(), height: Dimension::auto() },
-                min_size: Size { width: Dimension::length(0.0), height: Dimension::auto() },
+                min_size: Size { width: Dimension::length(0.0).into(), height: Dimension::auto().into() },
                 flex_grow: 0.0,
                 flex_shrink: 1.0,
                 ..Default::default()
@@ -498,7 +501,7 @@ fn content_flex_basis_includes_percentage_padding_from_the_containing_block() {
                         &[item],
                     )
                     .unwrap();
-                tree.compute_layout_with_measure(flex, Size::MAX_CONTENT, test_measure_function).unwrap();
+                tree.compute_layout_with_measure_output(flex, Size::MAX_CONTENT, test_measure_function).unwrap();
                 let size = tree.layout(item).unwrap().size;
                 assert_eq!(size.width, 120.0 + 2.0 * percentage * container_width);
                 assert_eq!(size.height, 10.0);
@@ -527,7 +530,7 @@ fn floated_keyword_width(width: Dimension) -> f32 {
             &[item],
         )
         .unwrap();
-    tree.compute_layout_with_measure(
+    tree.compute_layout_with_measure_output(
         root,
         Size { width: AvailableSpace::Definite(200.0), height: AvailableSpace::Definite(70.0) },
         test_measure_function,
@@ -540,6 +543,23 @@ fn floated_keyword_width(width: Dimension) -> f32 {
 fn floated_intrinsic_and_stretch_widths_consume_margins_once() {
     assert_eq!(floated_keyword_width(Dimension::fit_content()), 175.0);
     assert_eq!(floated_keyword_width(Dimension::stretch()), 175.0);
+}
+
+#[test]
+fn block_stretch_bounds_consume_margins_once() {
+    for minimum in [false, true] {
+        let mut style = Style {
+            size: Size { width: length(if minimum { 100.0 } else { 400.0 }), height: auto() },
+            margin: Rect { left: length(10.0), right: length(15.0), top: auto(), bottom: auto() },
+            ..Default::default()
+        };
+        if minimum {
+            style.min_size.width = Dimension::stretch().into();
+        } else {
+            style.max_size.width = Dimension::stretch().into();
+        }
+        assert_eq!(layout_child(Display::Block, style), 275.0, "minimum={minimum}");
+    }
 }
 
 #[cfg(feature = "parse")]
@@ -565,4 +585,36 @@ fn intrinsic_dimension_tags_round_trip_through_serde() {
         let serialized = serde_json::to_string(&value).unwrap();
         assert_eq!(serde_json::from_str::<Dimension>(&serialized).unwrap(), value);
     }
+}
+
+/// Auto row contributions must use the wrapped height after a definite
+/// percentage maximum clamps a max-content preferred inline size.
+#[test]
+fn grid_max_content_with_percentage_maximum_contributes_wrapped_height() {
+    let mut tree = new_test_tree();
+    let item = tree
+        .new_leaf_with_context(
+            Style {
+                size: Size { width: Dimension::max_content(), height: auto() },
+                max_size: Size { width: percent(1.0), height: auto() },
+                justify_self: Some(AlignSelf::CENTER),
+                ..Default::default()
+            },
+            text_context(),
+        )
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(200.0), height: auto() },
+                grid_template_columns: vec![minmax(length(0.0), fr(1.0))],
+                ..Default::default()
+            },
+            &[item],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+    assert_eq!(tree.layout(item).unwrap().size, Size { width: 200.0, height: 20.0 });
+    assert_eq!(tree.layout(root).unwrap().size.height, 20.0);
 }

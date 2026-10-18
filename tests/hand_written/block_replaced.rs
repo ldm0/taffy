@@ -17,7 +17,7 @@ mod block_replaced {
     }
 
     fn layout(taffy: &mut TaffyTree<TestNodeContext>, root: NodeId) {
-        taffy.compute_layout_with_measure(root, Size::MAX_CONTENT, test_measure_function).unwrap();
+        taffy.compute_layout_with_measure_output(root, Size::MAX_CONTENT, test_measure_function).unwrap();
     }
 
     #[test]
