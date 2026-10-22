@@ -17,6 +17,7 @@ mod hand_written {
     mod flex_auto_margins;
     mod flex_basis_content;
     mod flex_line_count;
+    mod flex_percent_definiteness;
     mod flex_writing_modes;
     mod floats;
     mod grid_detailed_layout_info;
