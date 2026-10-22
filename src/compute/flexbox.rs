@@ -192,8 +192,10 @@ struct FlexItem {
     /// The size that this item wants to be, plus any padding and border
     outer_target_size: Size<f32>,
 
-    /// The position of the bottom edge of this item
+    /// Cross-axis alignment baseline, converted to physical y by final layout.
     baseline: f32,
+    /// A horizontal-writing column item has a synthesized physical-x baseline.
+    has_synthesized_column_baseline: bool,
     /// Last baseline measured from the physical block start.
     last_baseline: f32,
 
@@ -260,6 +262,11 @@ impl FlexItem {
         self.align_self == AlignSelf::BASELINE
             && !self.margin_is_auto.cross_start(dir)
             && !self.margin_is_auto.cross_end(dir)
+    }
+
+    /// Whether the item has a measured or synthesized baseline on the cross axis.
+    fn has_cross_axis_baseline(&self, dir: FlexDirection) -> bool {
+        self.participates_in_baseline_alignment(dir) && (dir.is_row() || self.has_synthesized_column_baseline)
     }
 }
 
@@ -996,6 +1003,7 @@ fn generate_anonymous_flex_items(
                 content_flex_fraction: 0.0,
 
                 baseline: 0.0,
+                has_synthesized_column_baseline: false,
                 last_baseline: 0.0,
 
                 offset_main: 0.0,
@@ -1564,13 +1572,21 @@ fn collect_balanced_flex_lines<'a>(
 }
 
 /// Compute whether each of an item's known dimensions should be treated as definite when performing
-/// layout on the item. An item's post-flexing main size is only treated as definite if the container
-/// has a definite main size or the item's used flex basis is definite.
+/// layout on the item. A post-flexing block size is definite if the container's
+/// main size or the item's used flex basis is definite. An inline axis remains
+/// definite even when an orthogonal flow maps it onto the physical main axis.
 /// See <https://www.w3.org/TR/css-flexbox-1/#definite-sizes>
 #[inline]
-fn item_known_dimension_definiteness(constants: &AlgoConstants, item: &FlexItem) -> Size<bool> {
+fn item_known_dimension_definiteness(
+    tree: &impl LayoutFlexboxContainer,
+    constants: &AlgoConstants,
+    item: &FlexItem,
+) -> Size<bool> {
     let dir = constants.dir;
-    let main_is_definite = constants.has_definite_main_size || item.flex_basis_is_definite;
+    let main_is_definite = constants.has_definite_main_size
+        || item.flex_basis_is_definite
+        || constants.flow.main_axis_is_inline
+        || tree.get_writing_mode(item.node).inline_axis() == dir.main_axis();
 
     // An item's cross size is definite if it is stretched (it stretches to the flex line, whose
     // size is known by the time the item's final layout is performed), or if its cross size style
@@ -2232,7 +2248,7 @@ fn determine_hypothetical_cross_size(
                         width: if constants.is_row { child.target_size.width.into() } else { child_cross },
                         height: if constants.is_row { child_cross } else { child.target_size.height.into() },
                     },
-                    known_dimensions_are_definite: item_known_dimension_definiteness(constants, child),
+                    known_dimensions_are_definite: item_known_dimension_definiteness(tree, constants, child),
                     parent_size: constants.node_inner_size,
                     parent_writing_mode: constants.writing_mode,
                     available_space: Size {
@@ -2265,8 +2281,23 @@ fn calculate_children_base_lines(
     flex_lines: &mut [FlexLine],
     constants: &AlgoConstants,
 ) {
-    // The reported baseline is physical y. Only share it for a horizontal
-    // inline main axis; a vertical column's physical row is not that axis.
+    // Horizontal-writing items in a column need a synthesized vertical
+    // baseline, measured from the physical left border edge. Keep their
+    // margins in the ascent/descent just as for a measured row baseline.
+    if constants.is_column && constants.writing_mode.is_horizontal() {
+        for line in flex_lines {
+            for child in line.items.iter_mut() {
+                if child.participates_in_baseline_alignment(constants.dir)
+                    && tree.get_writing_mode(child.node).is_horizontal()
+                {
+                    child.baseline = child.margin.left;
+                    child.has_synthesized_column_baseline = true;
+                }
+            }
+        }
+        return;
+    }
+    // The measured baseline is physical y.
     if !constants.flow.main_axis_is_inline || !constants.is_row {
         return;
     }
@@ -2303,7 +2334,7 @@ fn calculate_children_base_lines(
                             child.target_size.height.into()
                         },
                     },
-                    known_dimensions_are_definite: item_known_dimension_definiteness(constants, child),
+                    known_dimensions_are_definite: item_known_dimension_definiteness(tree, constants, child),
                     parent_size: constants.node_inner_size,
                     parent_writing_mode: constants.writing_mode,
                     // The available space passed to the child excludes the child's margins
@@ -2370,12 +2401,17 @@ fn calculate_cross_size(flex_lines: &mut [FlexLine], node_size: Size<Option<f32>
         //    3. The used cross-size of the flex line is the largest of the numbers found in the
         //       previous two steps and zero.
         for line in flex_lines.iter_mut() {
-            let max_baseline: f32 = line.items.iter().map(|child| child.baseline).fold(0.0, |acc, x| acc.max(x));
+            let max_baseline: f32 = line
+                .items
+                .iter()
+                .filter(|child| child.has_cross_axis_baseline(constants.dir))
+                .map(|child| child.baseline)
+                .fold(0.0, |acc, x| acc.max(x));
             line.cross_size = line
                 .items
                 .iter()
                 .map(|child| {
-                    if child.participates_in_baseline_alignment(constants.dir) {
+                    if child.has_cross_axis_baseline(constants.dir) {
                         max_baseline - child.baseline + child.hypothetical_outer_size.cross(constants.dir)
                     } else {
                         child.hypothetical_outer_size.cross(constants.dir)
@@ -2572,11 +2608,16 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
 fn resolve_cross_axis_auto_margins(flex_lines: &mut [FlexLine], constants: &AlgoConstants) {
     for line in flex_lines {
         let line_cross_size = line.cross_size;
-        let max_baseline: f32 = line.items.iter_mut().map(|child| child.baseline).fold(0.0, |acc, x| acc.max(x));
+        let max_baseline: f32 = line
+            .items
+            .iter()
+            .filter(|child| child.has_cross_axis_baseline(constants.dir))
+            .map(|child| child.baseline)
+            .fold(0.0, |acc, x| acc.max(x));
         let max_baseline_to_bottom_distance: f32 = line
             .items
             .iter_mut()
-            .filter(|child| child.participates_in_baseline_alignment(constants.dir))
+            .filter(|child| child.has_cross_axis_baseline(constants.dir))
             .map(|child| child.outer_target_size.cross(constants.dir) - child.baseline)
             .fold(0.0, |acc, x| acc.max(x));
 
@@ -2683,9 +2724,17 @@ fn align_flex_items_along_cross_axis(
                 } else {
                     max_baseline - child.baseline
                 }
+            } else if child.has_synthesized_column_baseline {
+                // Align only the participating group at flex-start, not every
+                // item at the line edge. A wider non-baseline item must not
+                // move a lone baseline item away from flex-start.
+                if constants.flow.cross_axis_flex_start_reversed {
+                    let line_cross_size = free_space + child.outer_target_size.cross(constants.dir);
+                    line_cross_size - max_baseline_to_bottom_distance - child.baseline
+                } else {
+                    max_baseline - child.baseline
+                }
             } else {
-                // Until we support vertical writing modes, baseline alignment only makes sense if
-                // the constants.direction is row, so we treat it as flex-start alignment in columns.
                 let baseline_column_should_reverse = cross_axis_should_reverse && !constants.is_wrap;
                 if constants.is_wrap_reverse ^ baseline_column_should_reverse {
                     free_space
@@ -2796,7 +2845,7 @@ fn calculate_flex_item(
     let node_inner_size = constants.node_inner_size;
     let direction = constants.dir;
     let layout_direction = constants.layout_direction;
-    let item_known_dimension_definiteness = item_known_dimension_definiteness(constants, item);
+    let item_known_dimension_definiteness = item_known_dimension_definiteness(tree, constants, item);
     let mut layout_output = tree.compute_child_layout(
         item.node,
         LayoutInput {
